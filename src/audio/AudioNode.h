@@ -75,6 +75,14 @@ public:
         }
     }
     
+    struct FileProperty {
+        std::string uri;
+        std::string label;
+        std::string fileValue; // Current loaded file path
+    };
+    virtual std::vector<FileProperty> getFileProperties() const { return {}; }
+    virtual void setFileProperty(const std::string& uri, const std::string& path) {}
+
     virtual void loadModelFile(const std::string& path) {}
     virtual const std::string& getModelFilePath() const {
         static const std::string empty = "";

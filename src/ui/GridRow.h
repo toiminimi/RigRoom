@@ -1,18 +1,33 @@
 #pragma once
 #include <vector>
 #include <memory>
+#include <string>
 #include "../audio/AudioNode.h"
 
 // A row is an ordered sequence of plugin stages (up to 12 slots per row).
 // "plugins" avoids the Qt reserved word "slots".
 struct GridRow {
+    enum class SplitMode { Copy, AB };
+
     std::vector<std::shared_ptr<AudioNode>> plugins; // indexed 0..NUM_COLS-1
-    int splitCol = -1; // -1 means System Input, otherwise column index of row 1 node to split from
-    int mergeCol = -1; // -1 means System Output, otherwise column index of row 1 node to merge before
+    // Empty anchors refer to the system endpoints. Columns are derived from these
+    // stable IDs for display and legacy-preset compatibility only.
+    std::string splitAfterNodeId;
+    std::string mergeBeforeNodeId;
+    int parentRow = 1;
+    bool hasSplitSection = false;
+    SplitMode splitMode = SplitMode::Copy;
+    float splitPosition = 0.0f; // -1 main/A, +1 branch/B
+    bool mainInputEnabled = true;
+    float mainMix = 1.0f;
     float mix = 1.0f;  // Path level (0.0 to 1.0)
     float pan = 0.0f;  // Stereo balance (-1.0 left to 1.0 right)
     bool enabled = false;
     bool levelConfigured = false;
+    bool polarityInverted = false;
+    std::string name;
+    double parentSplitX = 0.0;
+    double parentMergeX = 0.0;
     
     GridRow() {
         plugins.resize(12, nullptr);

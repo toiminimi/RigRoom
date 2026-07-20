@@ -11,6 +11,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QSet>
+#include <QPointer>
 #include <functional>
 #include <memory>
 #include "../audio/AudioEngine.h"
@@ -19,6 +20,7 @@
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
+    friend class ExternalPluginUIWindow;
 public:
     MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
@@ -28,6 +30,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private slots:
+    void onNewPreset();
     void onSavePreset();
     void onSavePresetAs();
     void onRenamePreset();
@@ -38,7 +41,7 @@ private slots:
     void onNodeSelected(std::shared_ptr<AudioNode> node);
     void updateCPUStatus();
     void showPluginControls(std::shared_ptr<AudioNode> node);
-    void onPlusButtonClicked(int row, int col, QPoint screenPos);
+    void onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol);
     void onInputHardwareChanged(int index);
     void onOutputHardwareChanged(int index);
     void onInputModeChanged(int index);
@@ -47,6 +50,7 @@ private slots:
     void onOutputGainChanged(int value);
     void onNodeContextMenuRequested(int row, int col, QPoint screenPos);
     void showBranchControls(int row);
+    void showRoutingNodeControls(int row, bool isSplit);
 
 private:
     void setupUI();
@@ -59,7 +63,6 @@ private:
     void populateOutputPorts();
     void refreshAudioPorts();
     void syncParameterControls();
-    void appendBranchControls(int row);
     QString pluginPresetDirectory(const AudioNode& node) const;
     void refreshPluginPresetList(const std::shared_ptr<AudioNode>& node, QComboBox* combo, const QString& selected = {});
     bool savePluginPreset(const std::shared_ptr<AudioNode>& node, const QString& name);
@@ -117,7 +120,7 @@ private:
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentDownloadReply = nullptr;
-    void downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QComboBox* combo, QLabel* fileLabel, bool isRedirect = false);
+    void downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect = false);
     
     struct PluginInfo {
         std::string name;

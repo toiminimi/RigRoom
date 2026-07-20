@@ -304,7 +304,7 @@ void NodeWidget::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
             }
 
             if (closestPb) {
-                canvas->setDragGap(closestPb->getRow(), closestPb->getCol());
+                canvas->setDragGap(closestPb->getRow(), closestPb->getCol(), closestPb->isSecondOfCol());
             } else {
                 canvas->clearDragGap();
             }
@@ -330,16 +330,17 @@ void NodeWidget::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         if (canvas) {
             int toRow = canvas->getDragGapRow();
             int toCol = canvas->getDragGapCol();
+            bool isSecondOfCol = canvas->getDragGapIsSecondOfCol();
             
             // Clear gap visualization first
             canvas->clearDragGap();
             
             if (toRow != -1 && toCol != -1) {
                 const auto audioNode = m_audioNode;
-                QTimer::singleShot(0, canvas, [canvas, audioNode, toRow, toCol]() {
+                QTimer::singleShot(0, canvas, [canvas, audioNode, toRow, toCol, isSecondOfCol]() {
                     auto [fromRow, fromCol] = canvas->findNode(audioNode);
                     if (fromRow != -1 && fromCol != -1) {
-                        canvas->movePluginToGap(fromRow, fromCol, toRow, toCol);
+                        canvas->movePluginToGap(fromRow, fromCol, toRow, toCol, isSecondOfCol);
                     } else {
                         canvas->updateLayout();
                     }

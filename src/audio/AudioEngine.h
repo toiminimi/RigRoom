@@ -48,6 +48,7 @@ public:
     void connectPorts(const std::string& srcId, int srcPort, const std::string& dstId, int dstPort,
                       float gain = 1.0f, std::shared_ptr<std::atomic<float>> liveGain = nullptr);
     void disconnectPorts(const std::string& srcId, int srcPort, const std::string& dstId, int dstPort);
+    void clearConnections();
     void clearGraph();
     
     void setBufferSize(int size);
@@ -121,6 +122,8 @@ private:
     
     // Double buffered execution details for real-time safety
     struct RTGraphData {
+        // Keep processors alive for the complete lifetime of a published graph.
+        std::vector<std::shared_ptr<AudioNode>> nodeRefs;
         std::vector<AudioNode*> executionOrder;
         // Connections stored as pointers for faster RT lookup
         struct RTConnection {
@@ -133,10 +136,11 @@ private:
         std::vector<RTConnection> rtConnections;
     };
     
-    RTGraphData* m_activeGraphData = nullptr;
-    RTGraphData* m_pendingGraphData = nullptr;
-    std::atomic<RTGraphData*> m_rtGraphData{nullptr};
-    RTGraphData* m_suspendedGraphData = nullptr;
+    // A callback keeps its own shared reference while processing, so replacing a
+    // compiled graph cannot free buffers still in use by JACK.
+    std::atomic<std::shared_ptr<RTGraphData>> m_rtGraphData;
+    std::shared_ptr<RTGraphData> m_suspendedGraphData;
+    std::atomic<bool> m_needsNodePrepare{false};
     
     std::mutex m_graphMutex;
 };

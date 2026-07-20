@@ -155,6 +155,7 @@ LV2PluginNode::LV2PluginNode(LilvWorld* world, const LilvPlugin* plugin)
     m_features[7] = nullptr;
     
     scanPorts();
+    scanFileProperties();
 }
 
 LV2PluginNode::~LV2PluginNode() {
@@ -512,18 +513,33 @@ void LV2PluginNode::flushWorker() {
     }
 }
 
-static const void* state_retrieve(LV2_State_Handle handle,
+const void* state_retrieve(LV2_State_Handle handle,
                                   uint32_t         key,
                                   size_t*          size,
                                   uint32_t*        type,
                                   uint32_t*        flags) {
     auto* node = static_cast<LV2PluginNode*>(handle);
     if (!node) return nullptr;
-    LV2_URID modelKeyUrid = map_uri(nullptr, "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model");
-    LV2_URID modelPathTypeUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Path");
     
+    const char* keyUri = unmap_uri(nullptr, key);
+    if (!keyUri) return nullptr;
+
+    std::string uriStr(keyUri);
+    LV2_URID modelPathTypeUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Path");
+
+    // Look up in our map first
+    auto it = node->m_filePropertiesMap.find(uriStr);
+    if (it != node->m_filePropertiesMap.end()) {
+        *size = it->second.size() + 1; // include null terminator
+        *type = modelPathTypeUrid;
+        *flags = LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE;
+        return it->second.c_str();
+    }
+
+    // Fallback for NAM model key
+    LV2_URID modelKeyUrid = map_uri(nullptr, "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model");
     if (key == modelKeyUrid) {
-        *size = node->getModelFilePath().size() + 1; // include null terminator
+        *size = node->getModelFilePath().size() + 1;
         *type = modelPathTypeUrid;
         *flags = LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE;
         return node->getModelFilePath().c_str();
@@ -532,8 +548,111 @@ static const void* state_retrieve(LV2_State_Handle handle,
     return nullptr;
 }
 
+static bool parsePatchSet(const void* buffer, uint32_t size, std::string& outPropertyUri, std::string& outPath) {
+    if (size < 16) return false;
+
+    // URIDs
+    LV2_URID patchSetUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/patch#Set");
+    LV2_URID patchPropertyUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/patch#property");
+    LV2_URID patchValueUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/patch#value");
+    LV2_URID pathUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Path");
+    LV2_URID uridUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#URID");
+    LV2_URID objectUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Object");
+
+    const uint32_t* p = static_cast<const uint32_t*>(buffer);
+    uint32_t atomSize = p[0];
+    uint32_t atomType = p[1];
+    uint32_t otype = p[2];
+    uint32_t context = p[3];
+
+    if (atomType != objectUrid || otype != patchSetUrid) return false;
+
+    // Iterator
+    const uint8_t* start = static_cast<const uint8_t*>(buffer);
+    const uint8_t* end = start + 8 + atomSize;
+    const uint8_t* curr = start + 16;
+
+    std::string propertyUri = "";
+    std::string filePath = "";
+
+    while (curr + 8 <= end) {
+        uint32_t key = *reinterpret_cast<const uint32_t*>(curr);
+        uint32_t propContext = *reinterpret_cast<const uint32_t*>(curr + 4);
+        curr += 8;
+
+        if (curr + 8 > end) break;
+        uint32_t valSize = *reinterpret_cast<const uint32_t*>(curr);
+        uint32_t valType = *reinterpret_cast<const uint32_t*>(curr + 4);
+        curr += 8;
+
+        auto align8 = [](size_t size) { return (size + 7) & ~7; };
+        size_t paddedSize = align8(valSize);
+        if (curr + paddedSize > end) break;
+
+        if (key == patchPropertyUrid && valType == uridUrid) {
+            uint32_t propUrid = *reinterpret_cast<const uint32_t*>(curr);
+            const char* unmapped = unmap_uri(nullptr, propUrid);
+            if (unmapped) propertyUri = unmapped;
+        } else if (key == patchValueUrid && valType == pathUrid) {
+            filePath = std::string(reinterpret_cast<const char*>(curr), valSize);
+            if (!filePath.empty() && filePath.back() == '\0') {
+                filePath.pop_back();
+            }
+        }
+
+        curr += paddedSize;
+    }
+
+    if (!propertyUri.empty() && !filePath.empty()) {
+        outPropertyUri = propertyUri;
+        outPath = filePath;
+        return true;
+    }
+
+    return false;
+}
+
+bool LV2PluginNode::handlePortEvent(uint32_t portIndex, uint32_t protocol, const void* buffer, uint32_t size) {
+    LV2_URID seqUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Sequence");
+    if (protocol != seqUrid) return false;
+
+    std::string propUri = "";
+    std::string filePath = "";
+    if (parsePatchSet(buffer, size, propUri, filePath)) {
+        setFileProperty(propUri, filePath);
+        return true;
+    }
+    return false;
+}
+
 void LV2PluginNode::loadModelFile(const std::string& path) {
     m_modelFilePath = path;
+    
+    std::string key = "";
+    if (getPluginURI().find("neural-amp-modeler") != std::string::npos ||
+        getPluginURI() == "http://github.com/mikeoliphant/neural-amp-modeler-lv2") {
+        key = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model";
+    } else if (getPluginURI().find("toob-nam") != std::string::npos) {
+        key = "http://two-play.com/plugins/toob-nam#modelFile";
+    } else if (getPluginURI().find("toob-ml") != std::string::npos) {
+        key = "http://two-play.com/plugins/toob-ml#modelFile";
+    } else if (getPluginURI().find("toob-cab-ir") != std::string::npos) {
+        key = "http://two-play.com/plugins/toob-cab-ir#impulseFile";
+    } else if (getPluginURI().find("convolver") != std::string::npos) {
+        key = "http://gareus.org/oss/lv2/convolver#irfile";
+    } else if (getPluginURI().find("toob.mx/plugins/ir") != std::string::npos) {
+        key = "http://toob.mx/plugins/ir#irFile";
+    }
+
+    if (!key.empty()) {
+        m_filePropertiesMap[key] = path;
+        for (auto& fp : m_fileProperties) {
+            if (fp.uri == key) {
+                fp.fileValue = path;
+                break;
+            }
+        }
+    }
     
     if (!m_instance) return;
     
@@ -550,5 +669,129 @@ void LV2PluginNode::loadModelFile(const std::string& path) {
         );
         
         flushWorker();
+    }
+}
+
+void LV2PluginNode::setFileProperty(const std::string& uri, const std::string& path) {
+    m_filePropertiesMap[uri] = path;
+    for (auto& fp : m_fileProperties) {
+        if (fp.uri == uri) {
+            fp.fileValue = path;
+            break;
+        }
+    }
+
+    if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
+        m_modelFilePath = path;
+    }
+
+    if (!m_instance) return;
+    
+    const LV2_State_Interface* stateInterface = (const LV2_State_Interface*)
+        lilv_instance_get_extension_data(m_instance, "http://lv2plug.in/ns/ext/state#interface");
+        
+    if (stateInterface && stateInterface->restore) {
+        stateInterface->restore(
+            m_instance->lv2_handle,
+            state_retrieve,
+            this,
+            0,
+            m_features
+        );
+        
+        flushWorker();
+    }
+}
+
+void LV2PluginNode::scanFileProperties() {
+    m_fileProperties.clear();
+
+    // 1. Gather all patch writable properties
+    LilvNode* patchWritable = lilv_new_uri(m_world, "http://lv2plug.in/ns/ext/patch#writable");
+    LilvNodes* writables = lilv_plugin_get_value(m_plugin, patchWritable);
+    std::vector<std::string> discoveredUris;
+
+    if (writables) {
+        LILV_FOREACH(nodes, i, writables) {
+            const LilvNode* prop = lilv_nodes_get(writables, i);
+            
+            LilvNode* rangeNode = lilv_new_uri(m_world, "http://www.w3.org/2000/01/rdf-schema#range");
+            LilvNode* pathNode = lilv_new_uri(m_world, "http://lv2plug.in/ns/ext/atom#Path");
+            LilvNodes* ranges = lilv_world_find_nodes(m_world, prop, rangeNode, nullptr);
+            bool isPath = false;
+            if (ranges) {
+                isPath = lilv_nodes_contains(ranges, pathNode);
+                lilv_nodes_free(ranges);
+            }
+            lilv_node_free(rangeNode);
+            lilv_node_free(pathNode);
+
+            if (isPath) {
+                discoveredUris.push_back(lilv_node_as_string(prop));
+            }
+        }
+        lilv_nodes_free(writables);
+    }
+    lilv_node_free(patchWritable);
+
+    // 2. Add fallback list of known properties
+    std::vector<std::string> fallbacks = {
+        "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model",
+        "http://two-play.com/plugins/toob-nam#modelFile",
+        "http://two-play.com/plugins/toob-ml#modelFile",
+        "http://two-play.com/plugins/toob-cab-ir#impulseFile",
+        "http://two-play.com/plugins/toob-cab-ir#impulseFile2",
+        "http://two-play.com/plugins/toob-cab-ir#impulseFile3",
+        "http://gareus.org/oss/lv2/convolver#irfile",
+        "http://toob.mx/plugins/ir#irFile",
+        "http://toob.mx/plugins/ir#irfile"
+    };
+
+    for (const auto& uriStr : fallbacks) {
+        if (std::find(discoveredUris.begin(), discoveredUris.end(), uriStr) == discoveredUris.end()) {
+            bool match = false;
+            std::string pluginUri = getPluginURI();
+            if (uriStr.find("neural-amp-modeler") != std::string::npos && pluginUri.find("neural-amp-modeler") != std::string::npos) match = true;
+            else if (uriStr.find("toob-nam") != std::string::npos && pluginUri.find("toob-nam") != std::string::npos) match = true;
+            else if (uriStr.find("toob-ml") != std::string::npos && pluginUri.find("toob-ml") != std::string::npos) match = true;
+            else if (uriStr.find("toob-cab-ir") != std::string::npos && pluginUri.find("toob-cab-ir") != std::string::npos) match = true;
+            else if (uriStr.find("convolver") != std::string::npos && pluginUri.find("convolver") != std::string::npos) match = true;
+            else if (uriStr.find("toob.mx/plugins/ir") != std::string::npos && pluginUri.find("toob.mx/plugins/ir") != std::string::npos) match = true;
+
+            if (match) {
+                discoveredUris.push_back(uriStr);
+            }
+        }
+    }
+
+    // 3. Populate m_fileProperties
+    for (const auto& uriStr : discoveredUris) {
+        LilvNode* prop = lilv_new_uri(m_world, uriStr.c_str());
+        std::string label = "";
+        
+        LilvNode* labelNode = lilv_new_uri(m_world, "http://www.w3.org/2000/01/rdf-schema#label");
+        LilvNodes* labels = lilv_world_find_nodes(m_world, prop, labelNode, nullptr);
+        if (labels) {
+            const LilvNode* firstLabel = lilv_nodes_get_first(labels);
+            if (firstLabel) {
+                label = lilv_node_as_string(firstLabel);
+            }
+            lilv_nodes_free(labels);
+        }
+        lilv_node_free(labelNode);
+
+        if (label.empty()) {
+            size_t hash = uriStr.find_last_of("#/");
+            label = (hash != std::string::npos) ? uriStr.substr(hash + 1) : uriStr;
+            if (!label.empty()) label[0] = std::toupper(label[0]);
+        }
+
+        lilv_node_free(prop);
+
+        FileProperty fp;
+        fp.uri = uriStr;
+        fp.label = label;
+        fp.fileValue = "";
+        m_fileProperties.push_back(fp);
     }
 }

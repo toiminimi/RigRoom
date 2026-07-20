@@ -21,6 +21,8 @@ public:
     int getCol() const { return m_col; }
     Style getStyle() const { return m_style; }
     void setRoutingTarget(bool target) { m_routingTarget = target; update(); }
+    void setIsSecondOfCol(bool second) { m_isSecondOfCol = second; }
+    bool isSecondOfCol() const { return m_isSecondOfCol; }
     
 protected:
     void mousePressEvent(QGraphicsSceneMouseEvent* event) override;
@@ -33,4 +35,5 @@ private:
     Style m_style;
     bool m_hovered = false;
     bool m_routingTarget = false;
+    bool m_isSecondOfCol = false;
 };

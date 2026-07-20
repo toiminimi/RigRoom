@@ -62,7 +62,7 @@ void PlusButtonWidget::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     if (!scene() || scene()->views().isEmpty()) { event->accept(); return; }
     auto* canvas = dynamic_cast<NodeCanvas*>(scene()->views().first());
     if (canvas) {
-        canvas->onPlusButtonClicked(m_row, m_col, QCursor::pos());
+        canvas->onPlusButtonClicked(m_row, m_col, QCursor::pos(), m_isSecondOfCol);
     }
     event->accept();
 }

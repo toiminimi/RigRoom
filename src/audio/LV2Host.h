@@ -11,11 +11,18 @@
 #include <memory>
 #include <mutex>
 #include <cstdint>
+#include <unordered_map>
 
 class LV2PluginNode : public AudioNode {
 public:
     LV2PluginNode(LilvWorld* world, const LilvPlugin* plugin);
     ~LV2PluginNode() override;
+    
+    friend const void* state_retrieve(LV2_State_Handle handle,
+                                      uint32_t         key,
+                                      size_t*          size,
+                                      uint32_t*        type,
+                                      uint32_t*        flags);
     
     std::string getName() const override { return m_name; }
     std::string getPluginURI() const override { return m_uri; }
@@ -50,12 +57,16 @@ public:
     
     void loadModelFile(const std::string& path) override;
     const std::string& getModelFilePath() const override { return m_modelFilePath; }
+    std::vector<FileProperty> getFileProperties() const override { return m_fileProperties; }
+    void setFileProperty(const std::string& uri, const std::string& path) override;
+    bool handlePortEvent(uint32_t portIndex, uint32_t protocol, const void* buffer, uint32_t size);
     
     const LilvPlugin* getLilvPlugin() const { return m_plugin; }
     LilvWorld* getLilvWorld() const { return m_world; }
     
 private:
     void scanPorts();
+    void scanFileProperties();
     
     std::vector<PendingWorkerTask> m_pendingWork;
     std::mutex m_workerMutex;
@@ -64,6 +75,8 @@ private:
     std::mutex m_responseMutex;
     std::vector<AtomPortData> m_atomPorts;
     std::string m_modelFilePath;
+    std::vector<FileProperty> m_fileProperties;
+    std::unordered_map<std::string, std::string> m_filePropertiesMap;
     
     std::string m_name;
     std::string m_uri;

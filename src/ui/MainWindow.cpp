@@ -262,6 +262,7 @@ struct PickerPluginInfo {
     QString brand;
     QString thumbnailPath;
     QString format;
+    QString searchable;
 };
 
 static QString pluginCategoryGlyph(const QString& category) {
@@ -295,6 +296,14 @@ public:
             "QToolButton { border: none; color: #ffc857; font-size: 18px; padding: 5px; }"
             "QPushButton { background: #00a8e8; border: none; border-radius: 5px; color: white; font-weight: bold; padding: 7px 14px; }"
             "QPushButton:hover { background: #27b9f0; }");
+
+        // Pre-load and scale all thumbnails to cache
+        for (const auto& plugin : m_plugins) {
+            if (!plugin.thumbnailPath.isEmpty() && QFileInfo::exists(plugin.thumbnailPath)) {
+                QPixmap thumbnail(plugin.thumbnailPath);
+                m_thumbnailCache.insert(plugin.thumbnailPath, thumbnail.scaled(42, 42, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            }
+        }
 
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(16, 16, 16, 16);
@@ -336,7 +345,11 @@ public:
         categoryList.sort();
         m_category->addItems(categoryList);
 
-        connect(m_search, &QLineEdit::textChanged, this, [this] { refreshResults(); });
+        m_searchTimer = new QTimer(this);
+        m_searchTimer->setSingleShot(true);
+        connect(m_searchTimer, &QTimer::timeout, this, [this] { refreshResults(); });
+
+        connect(m_search, &QLineEdit::textChanged, this, [this] { m_searchTimer->start(120); });
         connect(m_search, &QLineEdit::returnPressed, this, [this] { acceptSelection(); });
         connect(m_category, &QComboBox::currentTextChanged, this, [this] { refreshResults(); });
         connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
@@ -350,15 +363,14 @@ public:
 
 private:
     void refreshResults() {
-        const QString query = m_search->text().trimmed();
+        const QString query = m_search->text().trimmed().toLower();
         const QString category = m_category->currentText();
         std::vector<PickerPluginInfo> results;
         for (const auto& plugin : m_plugins) {
             const bool favorite = m_favorites->contains(plugin.uri);
             if (category == "Favorites" && !favorite) continue;
             if (category != "All Categories" && category != "Favorites" && plugin.category != category) continue;
-            const QString searchable = plugin.name + " " + plugin.category + " " + plugin.brand + " " + plugin.uri;
-            if (!query.isEmpty() && !searchable.contains(query, Qt::CaseInsensitive)) continue;
+            if (!query.isEmpty() && !plugin.searchable.contains(query)) continue;
             results.push_back(plugin);
         }
         std::sort(results.begin(), results.end(), [this](const PickerPluginInfo& left, const PickerPluginInfo& right) {
@@ -371,7 +383,7 @@ private:
         m_list->clear();
         m_resultCount->setText(QString::number(results.size()) + " plugins");
         for (const auto& plugin : results) {
-            const bool hasThumbnail = !plugin.thumbnailPath.isEmpty() && QFileInfo::exists(plugin.thumbnailPath);
+            const bool hasThumbnail = !plugin.thumbnailPath.isEmpty() && m_thumbnailCache.contains(plugin.thumbnailPath);
             auto* item = new QListWidgetItem(m_list);
             item->setData(Qt::UserRole, plugin.uri);
             item->setSizeHint(QSize(0, hasThumbnail ? 54 : 40));
@@ -385,8 +397,7 @@ private:
             visual->setFixedSize(hasThumbnail ? 42 : 28, hasThumbnail ? 42 : 28);
             visual->setAlignment(Qt::AlignCenter);
             if (hasThumbnail) {
-                QPixmap thumbnail(plugin.thumbnailPath);
-                visual->setPixmap(thumbnail.scaled(42, 42, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                visual->setPixmap(m_thumbnailCache.value(plugin.thumbnailPath));
             } else {
                 visual->setText(pluginCategoryGlyph(plugin.category));
                 visual->setStyleSheet("background: #123348; color: #38c5ff; border-radius: 4px; font-weight: bold; font-size: 9px;");
@@ -433,6 +444,8 @@ private:
     QComboBox* m_category = nullptr;
     QListWidget* m_list = nullptr;
     QLabel* m_resultCount = nullptr;
+    QTimer* m_searchTimer = nullptr;
+    QHash<QString, QPixmap> m_thumbnailCache;
     QString m_selectedUri;
 };
 }
@@ -537,6 +550,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Setup UI
     setupUI();
     m_canvas->setSystemChannelModes(m_engine.isHardwareInputStereo(), m_engine.isHardwareOutputStereo());
+    m_canvas->applyRoutingChange(true);
     
     // Connect canvas signals
     connect(m_canvas, &NodeCanvas::editPluginUI, this, &MainWindow::showPluginControls);
@@ -544,6 +558,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_canvas, &NodeCanvas::plusButtonClicked, this, &MainWindow::onPlusButtonClicked);
     connect(m_canvas, &NodeCanvas::nodeContextMenuRequested, this, &MainWindow::onNodeContextMenuRequested);
     connect(m_canvas, &NodeCanvas::branchSelected, this, &MainWindow::showBranchControls);
+    connect(m_canvas, &NodeCanvas::routingNodeSelected, this, &MainWindow::showRoutingNodeControls);
     connect(m_canvas, &NodeCanvas::routingChanged, this, [this]() {
         if (!m_isLoadingPreset) {
             setUnsavedChanges(true);
@@ -714,14 +729,18 @@ void MainWindow::setupUI() {
     topBar->addWidget(saveBtn);
     
     QPushButton* presetMenuBtn = new QPushButton("⋯", this);
-    presetMenuBtn->setToolTip("Preset actions (Save As, Rename, Delete)");
+    presetMenuBtn->setToolTip("Preset actions (New, Save As, Rename, Delete)");
     presetMenuBtn->setFixedWidth(30);
     
     QMenu* presetMenu = new QMenu(this);
+    QAction* newAct = presetMenu->addAction("New Empty Preset");
+    newAct->setShortcut(QKeySequence::New);
+    presetMenu->addSeparator();
     QAction* saveAsAct = presetMenu->addAction("Save As...");
     QAction* renameAct = presetMenu->addAction("Rename...");
     QAction* deleteAct = presetMenu->addAction("Delete");
     
+    connect(newAct, &QAction::triggered, this, &MainWindow::onNewPreset);
     connect(saveAsAct, &QAction::triggered, this, &MainWindow::onSavePresetAs);
     connect(renameAct, &QAction::triggered, this, &MainWindow::onRenamePreset);
     connect(deleteAct, &QAction::triggered, this, &MainWindow::onDeletePreset);
@@ -898,7 +917,7 @@ void MainWindow::setupUI() {
         m_settingsDialog->exec();
     });
     topBar->addWidget(settingsBtn);
-    
+
     topBar->addSpacing(15);
     
     // CPU load meter
@@ -931,7 +950,7 @@ void MainWindow::setupUI() {
     rightLayout->setContentsMargins(12, 12, 12, 12);
     
     // --- PARAMETER CONTROL PANEL HEADER ---
-    QLabel* paramHeader = new QLabel("Plugin Parameters", this);
+    QLabel* paramHeader = new QLabel("Inspector", this);
     paramHeader->setStyleSheet("font-weight: bold; font-size: 14px; color: #00B0FF;");
     rightLayout->addWidget(paramHeader);
     
@@ -1209,18 +1228,24 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
     return true;
 }
 
-void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos) {
+void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol) {
     Q_UNUSED(screenPos);
     std::vector<PickerPluginInfo> plugins;
     plugins.reserve(m_availablePlugins.size());
     for (const auto& info : m_availablePlugins) {
+        QString name = QString::fromStdString(info.name);
+        QString category = QString::fromStdString(info.category);
+        QString brand = QString::fromStdString(info.brand);
+        QString uri = QString::fromStdString(info.uri);
+        QString searchable = (name + " " + category + " " + brand + " " + uri).toLower();
         plugins.push_back({
-            QString::fromStdString(info.name),
-            QString::fromStdString(info.uri),
-            QString::fromStdString(info.category),
-            QString::fromStdString(info.brand),
+            name,
+            uri,
+            category,
+            brand,
             info.thumbnailPath,
-            info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : "VST3")
+            info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : "VST3"),
+            searchable
         });
     }
     PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
@@ -1254,7 +1279,7 @@ void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos) {
         newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
         // col here is the chain insertion index (from PlusButtonWidget), not a fixed grid column.
         // Use insertPluginBefore to shift the chain correctly.
-        m_canvas->insertPluginBefore(row, col, newNode);
+        m_canvas->insertPluginBefore(row, col, newNode, isSecondOfCol);
     }
 }
 
@@ -1277,58 +1302,7 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
     
     QAction* bypassAct = menu.addAction(node->isBypassed() ? "Enable" : "Bypass");
     QAction* removeAct = menu.addAction("Remove Effect");
-    
-    QMenu* replaceSubmenu = menu.addMenu("Replace Effect");
-    replaceSubmenu->setStyleSheet(menu.styleSheet());
-    
-    std::map<std::string, QMenu*> submenus;
-    for (const auto& info : m_availablePlugins) {
-        QMenu* sub = nullptr;
-        auto it = submenus.find(info.category);
-        if (it == submenus.end()) {
-            sub = replaceSubmenu->addMenu(QString::fromStdString(info.category));
-            sub->setStyleSheet(menu.styleSheet());
-            submenus[info.category] = sub;
-        } else {
-            sub = it->second;
-        }
-        
-        QAction* act = sub->addAction(QString::fromStdString(info.name));
-        act->setData(QString::fromStdString(info.uri));
-    }
-    
-    QMenu* splitMenu = nullptr;
-    QMenu* mergeMenu = nullptr;
-    if (row == 0 || row == 2) {
-        menu.addSeparator();
-        splitMenu = menu.addMenu("Set Split Point (Input source)");
-        splitMenu->setStyleSheet(menu.styleSheet());
-        
-        QAction* splitHw = splitMenu->addAction("System Input");
-        splitHw->setData(-1);
-        
-        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
-            auto mainNode = m_canvas->getPluginAt(1, c);
-            if (mainNode) {
-                QAction* act = splitMenu->addAction("After: " + QString::fromStdString(mainNode->getName()));
-                act->setData(c);
-            }
-        }
-
-        mergeMenu = menu.addMenu("Set Merge Point (Output destination)");
-        mergeMenu->setStyleSheet(menu.styleSheet());
-        
-        QAction* mergeHw = mergeMenu->addAction("System Output");
-        mergeHw->setData(-1);
-        
-        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
-            auto mainNode = m_canvas->getPluginAt(1, c);
-            if (mainNode) {
-                QAction* act = mergeMenu->addAction("Before: " + QString::fromStdString(mainNode->getName()));
-                act->setData(c);
-            }
-        }
-    }
+    QAction* replaceAct = menu.addAction("Replace Effect");
     
     QAction* selected = menu.exec(screenPos);
     if (!selected) return;
@@ -1338,45 +1312,58 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
         m_canvas->updateLayout();
     } else if (selected == removeAct) {
         m_canvas->removePluginAt(row, col);
-    } else if (splitMenu && splitMenu->actions().contains(selected)) {
-        int splitCol = selected->data().toInt();
-        m_canvas->setSplitCol(row, splitCol);
-        saveConfigSettings();
-    } else if (mergeMenu && mergeMenu->actions().contains(selected)) {
-        int mergeCol = selected->data().toInt();
-        m_canvas->setMergeCol(row, mergeCol);
-        saveConfigSettings();
-    } else {
-        std::string uri = selected->data().toString().toStdString();
-        
-        std::shared_ptr<AudioNode> newNode;
-        if (uri == "builtin:bypass") {
-            newNode = std::make_shared<BypassNode>();
-        } else {
-            for (const auto& info : m_availablePlugins) {
-                if (info.uri == uri) {
-                    if (info.isLV2) {
-                        const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
-                        LILV_FOREACH(plugins, i, plugins) {
-                            const LilvPlugin* p = lilv_plugins_get(plugins, i);
-                            const LilvNode* uriNode = lilv_plugin_get_uri(p);
-                            std::string puri = lilv_node_as_string(uriNode);
-                            if (puri == uri) {
-                                newNode = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
-                                break;
+    } else if (selected == replaceAct) {
+        std::vector<PickerPluginInfo> plugins;
+        plugins.reserve(m_availablePlugins.size());
+        for (const auto& info : m_availablePlugins) {
+            QString name = QString::fromStdString(info.name);
+            QString category = QString::fromStdString(info.category);
+            QString brand = QString::fromStdString(info.brand);
+            QString uri = QString::fromStdString(info.uri);
+            QString searchable = (name + " " + category + " " + brand + " " + uri).toLower();
+            plugins.push_back({
+                name,
+                uri,
+                category,
+                brand,
+                info.thumbnailPath,
+                info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : "VST3"),
+                searchable
+            });
+        }
+        PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
+        if (picker.exec() == QDialog::Accepted) {
+            std::string uri = picker.selectedUri().toStdString();
+            
+            std::shared_ptr<AudioNode> newNode;
+            if (uri == "builtin:bypass") {
+                newNode = std::make_shared<BypassNode>();
+            } else {
+                for (const auto& info : m_availablePlugins) {
+                    if (info.uri == uri) {
+                        if (info.isLV2) {
+                            const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
+                            LILV_FOREACH(plugins, i, plugins) {
+                                const LilvPlugin* p = lilv_plugins_get(plugins, i);
+                                const LilvNode* uriNode = lilv_plugin_get_uri(p);
+                                std::string puri = lilv_node_as_string(uriNode);
+                                if (puri == uri) {
+                                    newNode = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
+                                    break;
+                                }
                             }
+                        } else {
+                            newNode = std::make_shared<VST3PluginNode>(info.uri);
                         }
-                    } else {
-                        newNode = std::make_shared<VST3PluginNode>(info.uri);
+                        break;
                     }
-                    break;
                 }
             }
-        }
-        
-        if (newNode) {
-            newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-            m_canvas->replacePluginAt(row, col, newNode);
+            
+            if (newNode) {
+                newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+                m_canvas->replacePluginAt(row, col, newNode);
+            }
         }
     }
 }
@@ -1481,6 +1468,24 @@ void MainWindow::onSavePreset() {
     QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + presetName + ".json";
     savePresetToFile(fullPath);
     setUnsavedChanges(false);
+    saveConfigSettings();
+}
+
+void MainWindow::onNewPreset() {
+    if (!promptUnsavedChanges()) return;
+
+    m_isLoadingPreset = true;
+    m_parameterControlNode.reset();
+    m_parameterControlBindings.clear();
+    m_activePluginPresetNodeId.clear();
+    m_activePluginPresetName.clear();
+    showPluginControls(nullptr);
+    m_canvas->clearCanvas();
+    m_presetCombo->setCurrentIndex(-1);
+    m_presetCombo->setPlaceholderText("Untitled");
+    m_currentPresetIndex = -1;
+    m_isLoadingPreset = false;
+    setUnsavedChanges(true);
     saveConfigSettings();
 }
 
@@ -1840,9 +1845,10 @@ void MainWindow::onOutputGainChanged(int value) {
 
 void MainWindow::savePresetToFile(const QString& path) {
     QJsonObject presetObj;
+    presetObj["formatVersion"] = 4;
     
     QJsonArray nodesArray;
-    for (int r = 0; r < 3; ++r) {
+    for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
         for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
             auto node = m_canvas->getPluginAt(r, c);
             if (node) {
@@ -1857,6 +1863,13 @@ void MainWindow::savePresetToFile(const QString& path) {
                 nodeObj["model_file_path"] = QString::fromStdString(node->getModelFilePath());
                 nodeObj["model_display_name"] = QString::fromStdString(node->getModelDisplayName());
                 nodeObj["model_source_url"] = QString::fromStdString(node->getModelSourceUrl());
+                
+                // Serialize file properties
+                QJsonObject filePropsObj;
+                for (const auto& fp : node->getFileProperties()) {
+                    filePropsObj[QString::fromStdString(fp.uri)] = QString::fromStdString(fp.fileValue);
+                }
+                nodeObj["file_properties"] = filePropsObj;
                 
                 // Serialize model variants
                 QJsonArray varsArray;
@@ -1883,16 +1896,31 @@ void MainWindow::savePresetToFile(const QString& path) {
             }
         }
     }
-    presetObj["branch0SplitCol"] = m_canvas->getSplitCol(0);
-    presetObj["branch0MergeCol"] = m_canvas->getMergeCol(0);
-    presetObj["branch0Mix"] = static_cast<double>(m_canvas->getMix(0));
-    presetObj["branch0Enabled"] = m_canvas->isBranchEnabled(0);
-    presetObj["branch0Pan"] = static_cast<double>(m_canvas->getPan(0));
-    presetObj["branch2SplitCol"] = m_canvas->getSplitCol(2);
-    presetObj["branch2MergeCol"] = m_canvas->getMergeCol(2);
-    presetObj["branch2Mix"] = static_cast<double>(m_canvas->getMix(2));
-    presetObj["branch2Enabled"] = m_canvas->isBranchEnabled(2);
-    presetObj["branch2Pan"] = static_cast<double>(m_canvas->getPan(2));
+    auto serializeBranch = [this](int row) {
+        QJsonObject branch;
+        branch["hasSplitSection"] = m_canvas->hasSplitSection(row);
+        branch["parentRow"] = m_canvas->getSplitParentRow(row);
+        branch["splitMode"] = m_canvas->getSplitMode(row) == GridRow::SplitMode::AB ? "ab" : "copy";
+        branch["splitPosition"] = static_cast<double>(m_canvas->getSplitPosition(row));
+        branch["mainInputEnabled"] = m_canvas->isMainInputEnabled(row);
+        branch["mainMix"] = static_cast<double>(m_canvas->getMainMix(row));
+        branch["name"] = m_canvas->getBranchName(row);
+        branch["splitAfterNodeId"] = QString::fromStdString(m_canvas->getSplitAnchor(row));
+        branch["mergeBeforeNodeId"] = QString::fromStdString(m_canvas->getMergeAnchor(row));
+        branch["mix"] = static_cast<double>(m_canvas->getMix(row));
+        branch["pan"] = static_cast<double>(m_canvas->getPan(row));
+        branch["enabled"] = m_canvas->isBranchEnabled(row);
+        branch["polarityInverted"] = m_canvas->isPolarityInverted(row);
+        return branch;
+    };
+    QJsonObject routing;
+    routing["model"] = "nestedSplitSections5";
+    QJsonArray branchesArray;
+    for (int r : {0, 1, 3, 4}) {
+        branchesArray.append(serializeBranch(r));
+    }
+    routing["branches"] = branchesArray;
+    presetObj["routing"] = routing;
 
     presetObj["nodes"] = nodesArray;
     
@@ -1924,15 +1952,8 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     
     QJsonObject presetObj = doc.object();
     
+    m_canvas->beginRoutingUpdate();
     m_canvas->clearCanvas();
-
-    // Load branch routing configs
-    m_canvas->setSplitCol(0, presetObj["branch0SplitCol"].toInt(-1));
-    m_canvas->setMergeCol(0, presetObj["branch0MergeCol"].toInt(-1));
-    m_canvas->setMix(0, static_cast<float>(presetObj["branch0Mix"].toDouble(1.0)));
-    m_canvas->setSplitCol(2, presetObj["branch2SplitCol"].toInt(-1));
-    m_canvas->setMergeCol(2, presetObj["branch2MergeCol"].toInt(-1));
-    m_canvas->setMix(2, static_cast<float>(presetObj["branch2Mix"].toDouble(1.0)));
     
     QJsonArray nodesArray = presetObj["nodes"].toArray();
     for (int i = 0; i < nodesArray.size(); ++i) {
@@ -1978,6 +1999,13 @@ void MainWindow::loadPresetFromFile(const QString& path) {
             node->setModelDisplayName(nObj["model_display_name"].toString().toStdString());
             node->setModelSourceUrl(nObj["model_source_url"].toString().toStdString());
             
+            QJsonObject filePropsObj = nObj["file_properties"].toObject();
+            for (auto it = filePropsObj.constBegin(); it != filePropsObj.constEnd(); ++it) {
+                std::string u = it.key().toStdString();
+                std::string val = it.value().toString().toStdString();
+                node->setFileProperty(u, val);
+            }
+            
             QJsonArray paramsArray = nObj["parameters"].toArray();
             for (int j = 0; j < paramsArray.size(); ++j) {
                 QJsonObject pObj = paramsArray[j].toObject();
@@ -2001,18 +2029,63 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         }
     }
 
-    // Older presets have no explicit branch state; plugin-containing rows were
-    // enabled by insertion above, while empty rows remain disabled.
-    if (presetObj.contains("branch0Enabled")) {
-        m_canvas->setBranchEnabled(0, presetObj["branch0Enabled"].toBool());
+    const QJsonObject routing = presetObj["routing"].toObject();
+    auto restoreBranch = [this](int row, const QJsonObject& branch, bool isLegacy) {
+        bool containsPlugins = false;
+        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) containsPlugins = containsPlugins || static_cast<bool>(m_canvas->getPluginAt(row, c));
+        m_canvas->setSplitSectionPresent(row, branch["hasSplitSection"].toBool(branch["enabled"].toBool(false) || containsPlugins));
+        int parent = branch["parentRow"].toInt(1);
+        if (isLegacy) {
+            if (parent == 1) parent = 2;
+            else if (parent == 0) parent = 1;
+            else if (parent == 2) parent = 3;
+        }
+        m_canvas->setSplitParentRow(row, parent);
+        m_canvas->setSplitMode(row, branch["splitMode"].toString() == "ab"
+            ? GridRow::SplitMode::AB : GridRow::SplitMode::Copy);
+        m_canvas->setSplitPosition(row, static_cast<float>(branch["splitPosition"].toDouble(0.0)));
+        m_canvas->setMainInputEnabled(row, branch["mainInputEnabled"].toBool(true));
+        m_canvas->setMainMix(row, static_cast<float>(branch["mainMix"].toDouble(1.0)));
+        m_canvas->setBranchName(row, branch["name"].toString());
+        m_canvas->setSplitAnchor(row, branch["splitAfterNodeId"].toString().toStdString());
+        m_canvas->setMergeAnchor(row, branch["mergeBeforeNodeId"].toString().toStdString());
+        m_canvas->setMix(row, static_cast<float>(branch["mix"].toDouble(1.0)));
+        m_canvas->setPan(row, static_cast<float>(branch["pan"].toDouble(0.0)));
+        m_canvas->setPolarityInverted(row, branch["polarityInverted"].toBool(false));
+        m_canvas->setBranchEnabled(row, branch["enabled"].toBool(false));
+    };
+    if (!routing.isEmpty()) {
+        const bool legacyMainOutputEnabled = routing["mainOutputEnabled"].toBool(true);
+        m_canvas->setMainOutputEnabled(true);
+        if (routing["model"].toString() == "nestedSplitSections5") {
+            QJsonArray branches = routing["branches"].toArray();
+            int bIdx = 0;
+            for (int r : {0, 1, 3, 4}) {
+                if (bIdx < branches.size()) {
+                    restoreBranch(r, branches[bIdx].toObject(), false);
+                    bIdx++;
+                }
+            }
+        } else {
+            restoreBranch(1, routing["branchA"].toObject(), true);
+            restoreBranch(3, routing["branchB"].toObject(), true);
+        }
+    } else {
+        // Version 1 presets used main-row columns.
+        m_canvas->setSplitCol(1, presetObj["branch0SplitCol"].toInt(-1));
+        m_canvas->setMergeCol(1, presetObj["branch0MergeCol"].toInt(-1));
+        m_canvas->setMix(1, static_cast<float>(presetObj["branch0Mix"].toDouble(1.0)));
+        m_canvas->setPan(1, static_cast<float>(presetObj["branch0Pan"].toDouble(0.0)));
+        m_canvas->setBranchEnabled(1, presetObj["branch0Enabled"].toBool(m_canvas->isBranchEnabled(1)));
+        m_canvas->setSplitSectionPresent(1, m_canvas->isBranchEnabled(1));
+        m_canvas->setSplitCol(3, presetObj["branch2SplitCol"].toInt(-1));
+        m_canvas->setMergeCol(3, presetObj["branch2MergeCol"].toInt(-1));
+        m_canvas->setMix(3, static_cast<float>(presetObj["branch2Mix"].toDouble(1.0)));
+        m_canvas->setPan(3, static_cast<float>(presetObj["branch2Pan"].toDouble(0.0)));
+        m_canvas->setBranchEnabled(3, presetObj["branch2Enabled"].toBool(m_canvas->isBranchEnabled(3)));
+        m_canvas->setSplitSectionPresent(3, m_canvas->isBranchEnabled(3));
     }
-    if (presetObj.contains("branch2Enabled")) {
-        m_canvas->setBranchEnabled(2, presetObj["branch2Enabled"].toBool());
-    }
-    m_canvas->setPan(0, static_cast<float>(presetObj["branch0Pan"].toDouble(0.0)));
-    m_canvas->setPan(2, static_cast<float>(presetObj["branch2Pan"].toDouble(0.0)));
-    
-    m_canvas->updateLayout();
+    m_canvas->endRoutingUpdate();
     
     // Layout and selection notifications posted while nodes are restored can arrive
     // after this function returns. Keep them from being treated as user edits.
@@ -2114,12 +2187,25 @@ public:
 private:
     void sendPortValues() {
         if (!m_socket || m_socket->state() != QLocalSocket::ConnectedState || !m_node) return;
+        
+        // 1. Send parameter control values
         for (const auto& param : m_node->getControlPorts()) {
             QByteArray message;
             QDataStream stream(&message, QIODevice::WriteOnly);
             stream << quint8('P') << quint32(param.index) << param.value;
             m_socket->write(message);
         }
+
+        // 2. Send file property values
+        for (const auto& fp : m_node->getFileProperties()) {
+            if (!fp.fileValue.empty()) {
+                QByteArray message;
+                QDataStream stream(&message, QIODevice::WriteOnly);
+                stream << quint8('S') << QString::fromStdString(fp.uri) << QString::fromStdString(fp.fileValue);
+                m_socket->write(message);
+            }
+        }
+
         m_socket->flush();
     }
 
@@ -2129,11 +2215,32 @@ private:
         while (true) {
             stream.startTransaction();
             quint8 command = 0;
-            quint32 index = 0;
-            float value = 0.0f;
-            stream >> command >> index >> value;
-            if (!stream.commitTransaction()) break;
-            if (command == 'P') m_node->setParameter(index, value);
+            stream >> command;
+            if (command == 'P') {
+                quint32 index = 0;
+                float value = 0.0f;
+                stream >> index >> value;
+                if (!stream.commitTransaction()) break;
+                m_node->setParameter(index, value);
+            } else if (command == 'A') {
+                quint32 index = 0;
+                quint32 protocol = 0;
+                QByteArray buffer;
+                stream >> index >> protocol >> buffer;
+                if (!stream.commitTransaction()) break;
+
+                if (m_node->handlePortEvent(index, protocol, buffer.constData(), buffer.size())) {
+                    MainWindow* mw = qobject_cast<MainWindow*>(parent());
+                    if (mw) {
+                        mw->setUnsavedChanges(true);
+                        mw->saveConfigSettings();
+                        mw->showPluginControls(std::shared_ptr<AudioNode>(m_node, [](AudioNode*){}));
+                    }
+                }
+            } else {
+                stream.rollbackTransaction();
+                break;
+            }
         }
         m_incoming.remove(0, static_cast<int>(stream.device()->pos()));
     }
@@ -2406,7 +2513,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     }
 
     auto [row, col] = m_canvas->findNode(node);
-    bool isSideRow = (row == 0 || row == 2);
+    bool isSideRow = (row != NodeCanvas::MAIN_ROW && row >= 0 && row < NodeCanvas::NUM_ROWS);
 
     if (node->getControlPorts().empty()) {
         if (!isSideRow) {
@@ -2697,344 +2804,376 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         m_paramLayout->addWidget(rowWidget);
     }
     
-    // Add custom file picker button for Neural Amp Modeler
-    if (node && (node->getPluginURI() == "http://github.com/mikeoliphant/neural-amp-modeler-lv2" || 
-                 node->getName().find("Neural Amp Modeler") != std::string::npos)) {
-        
+    // Add custom file picker buttons dynamically for any file-loading parameters
+    std::vector<AudioNode::FileProperty> fileProps = node ? node->getFileProperties() : std::vector<AudioNode::FileProperty>{};
+    QLabel* namFileLabel = nullptr;
+    
+    if (!fileProps.empty()) {
         QFrame* separator = new QFrame(m_paramContainer);
         separator->setFrameShape(QFrame::HLine);
         separator->setFrameShadow(QFrame::Sunken);
         separator->setStyleSheet("background-color: #333333; margin-top: 10px; margin-bottom: 10px;");
         m_paramLayout->addWidget(separator);
-        
-        QPushButton* loadBtn = new QPushButton("Load Neural Model...", m_paramContainer);
-        loadBtn->setStyleSheet(
-            "QPushButton { background-color: #00B0FF; color: white; font-weight: bold; border-radius: 4px; padding: 8px; border: none; }"
-            "QPushButton:hover { background-color: #40C4FF; }"
-            "QPushButton:pressed { background-color: #0091EA; }"
-        );
-        m_paramLayout->addWidget(loadBtn);
 
-        QPushButton* browseBtn = new QPushButton("Browse TONE3000...", m_paramContainer);
-        browseBtn->setStyleSheet(
-            "QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 8px; border: none; margin-top: 5px; }"
-            "QPushButton:hover { background-color: #388E3C; }"
-            "QPushButton:pressed { background-color: #1B5E20; }"
-        );
-        m_paramLayout->addWidget(browseBtn);
-        
-        QLabel* fileLabel = new QLabel(m_paramContainer);
-        fileLabel->setAlignment(Qt::AlignCenter);
-        fileLabel->setStyleSheet("color: #888888; font-size: 11px; font-style: italic; margin-top: 4px;");
-        
-        std::string currentPath = node->getModelFilePath();
-        if (currentPath.empty()) {
-            fileLabel->setText("No model loaded");
-        } else {
-            size_t slash = currentPath.find_last_of("/\\");
-            std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
-            const std::string& displayName = node->getModelDisplayName();
-            fileLabel->setText("Loaded: " + QString::fromStdString(displayName.empty() ? filename : displayName));
-        }
-        m_paramLayout->addWidget(fileLabel);
+        for (const auto& fp : fileProps) {
+            QFrame* fpFrame = new QFrame(m_paramContainer);
+            fpFrame->setStyleSheet("background-color: #252528; border-radius: 6px; padding: 10px; margin-bottom: 8px;");
+            QVBoxLayout* fpLayout = new QVBoxLayout(fpFrame);
+            fpLayout->setContentsMargins(6, 6, 6, 6);
+            fpLayout->setSpacing(4);
 
-        if (!currentPath.empty()) {
-            auto* modelActions = new QHBoxLayout();
-            auto* exportButton = new QPushButton("Export NAM...", m_paramContainer);
-            exportButton->setToolTip("Copy the active NAM file to a location you choose");
-            modelActions->addWidget(exportButton);
-            connect(exportButton, &QPushButton::clicked, this, [this, node]() {
-                const QString sourcePath = QString::fromStdString(node->getModelFilePath());
-                if (!QFileInfo(sourcePath).isFile()) {
-                    QMessageBox::warning(this, "Export NAM", "The active NAM file is unavailable.");
-                    return;
-                }
-                const QString destination = QFileDialog::getSaveFileName(
-                    this, "Export NAM", QFileInfo(sourcePath).fileName(), "NAM Models (*.nam);;All Files (*)");
-                if (destination.isEmpty()) return;
-                if (QFileInfo(destination).absoluteFilePath() == QFileInfo(sourcePath).absoluteFilePath()) return;
-                QFile::remove(destination);
-                if (!QFile::copy(sourcePath, destination)) {
-                    QMessageBox::warning(this, "Export NAM", "Could not export the NAM file.");
-                }
-            });
+            QLabel* titleLabel = new QLabel(QString::fromStdString(fp.label), fpFrame);
+            titleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 12px;");
+            fpLayout->addWidget(titleLabel);
 
-            const QString sourceUrl = QString::fromStdString(node->getModelSourceUrl());
-            if (!sourceUrl.isEmpty()) {
-                auto* sourceButton = new QPushButton("Open on TONE3000", m_paramContainer);
-                sourceButton->setToolTip("Open the source profile in your browser");
-                modelActions->addWidget(sourceButton);
-                connect(sourceButton, &QPushButton::clicked, this, [sourceUrl] {
-                    QDesktopServices::openUrl(QUrl(sourceUrl));
-                });
-            }
-            m_paramLayout->addLayout(modelActions);
-        }
-        
-        connect(loadBtn, &QPushButton::clicked, this, [this, node, fileLabel]() {
-            QString filePath = QFileDialog::getOpenFileName(
-                this,
-                "Select Neural Amp Model",
-                "",
-                "Neural Models (*.nam *.nammodel *.json *.aidax *.aidadspmodel);;All Files (*)"
-            );
-            if (!filePath.isEmpty()) {
-                m_engine.suspendProcessing();
-                node->loadModelFile(filePath.toStdString());
-                m_engine.resumeProcessing();
-                size_t slash = filePath.toStdString().find_last_of("/\\");
-                std::string filename = (slash != std::string::npos) ? filePath.toStdString().substr(slash + 1) : filePath.toStdString();
-                node->setModelDisplayName(filename);
-                node->setModelSourceUrl({});
+            QLabel* fileLabel = new QLabel(fpFrame);
+            fileLabel->setStyleSheet("color: #E0E0E0; font-size: 11px; font-style: italic;");
+            std::string currentPath = fp.fileValue;
+            if (currentPath.empty()) {
+                fileLabel->setText("No file loaded");
+            } else {
+                size_t slash = currentPath.find_last_of("/\\");
+                std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
                 fileLabel->setText("Loaded: " + QString::fromStdString(filename));
-                setUnsavedChanges(true);
-                saveConfigSettings();
             }
-        });
+            fpLayout->addWidget(fileLabel);
 
-        connect(browseBtn, &QPushButton::clicked, this, [this, node, fileLabel]() {
-            Tone3000Dialog dialog(node.get(), &m_engine, this);
-            if (dialog.exec() == QDialog::Accepted) {
-                std::string filePath = dialog.getDownloadedModelPath();
-                if (!filePath.empty()) {
+            if (fp.uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
+                namFileLabel = fileLabel;
+                const std::string& displayName = node->getModelDisplayName();
+                if (!currentPath.empty()) {
+                    size_t slash = currentPath.find_last_of("/\\");
+                    std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
+                    fileLabel->setText("Loaded: " + QString::fromStdString(displayName.empty() ? filename : displayName));
+                }
+            }
+
+            QHBoxLayout* btnLayout = new QHBoxLayout();
+            btnLayout->setSpacing(6);
+
+            QPushButton* loadBtn = new QPushButton("Load File...", fpFrame);
+            loadBtn->setStyleSheet(
+                "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 6px; border: none; }"
+                "QPushButton:hover { background-color: #009688; }"
+            );
+            btnLayout->addWidget(loadBtn);
+
+            std::string uri = fp.uri;
+
+            QPushButton* browseBtn = nullptr;
+            if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
+                browseBtn = new QPushButton("Browse TONE3000...", fpFrame);
+                browseBtn->setStyleSheet(
+                    "QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 6px; border: none; }"
+                    "QPushButton:hover { background-color: #388E3C; }"
+                );
+                btnLayout->addWidget(browseBtn);
+            }
+
+            fpLayout->addLayout(btnLayout);
+
+            connect(loadBtn, &QPushButton::clicked, this, [this, node, uri, fileLabel]() {
+                QString filter = "All Files (*)";
+                if (uri.find("model") != std::string::npos) {
+                    filter = "Neural Models (*.nam *.nammodel *.json *.aidax *.aidadspmodel);;All Files (*)";
+                } else if (uri.find("File") != std::string::npos || uri.find("file") != std::string::npos || uri.find("ir") != std::string::npos) {
+                    filter = "Impulse Responses (*.wav *.flac *.ir);;All Files (*)";
+                }
+
+                QString filePath = QFileDialog::getOpenFileName(
+                    this,
+                    "Select File",
+                    "",
+                    filter
+                );
+                if (!filePath.isEmpty()) {
                     m_engine.suspendProcessing();
-                    node->loadModelFile(filePath);
+                    node->setFileProperty(uri, filePath.toStdString());
                     m_engine.resumeProcessing();
-                    size_t slash = filePath.find_last_of("/\\");
-                    std::string filename = (slash != std::string::npos) ? filePath.substr(slash + 1) : filePath;
-                    const QString toneName = dialog.getDownloadedToneName();
-                    node->setModelDisplayName((toneName.isEmpty() ? QString::fromStdString(filename) : toneName).toStdString());
-                    node->setModelSourceUrl(dialog.getDownloadedToneUrl().toStdString());
-                    fileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
+                    
+                    size_t slash = filePath.toStdString().find_last_of("/\\");
+                    std::string filename = (slash != std::string::npos) ? filePath.toStdString().substr(slash + 1) : filePath.toStdString();
+                    fileLabel->setText("Loaded: " + QString::fromStdString(filename));
+                    
+                    if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
+                        node->setModelDisplayName(filename);
+                        node->setModelSourceUrl({});
+                    }
+
                     setUnsavedChanges(true);
                     saveConfigSettings();
-                    
-                    // Rebuild parameter controls to update variants combo box immediately!
-                    showPluginControls(node);
-                }
-            }
-        });
-
-        // Add variants dropdown combo box if variants list is populated
-        if (!node->getModelVariants().empty()) {
-            QFrame* separator2 = new QFrame(m_paramContainer);
-            separator2->setFrameShape(QFrame::HLine);
-            separator2->setFrameShadow(QFrame::Sunken);
-            separator2->setStyleSheet("background-color: #333333; margin-top: 10px; margin-bottom: 10px;");
-            m_paramLayout->addWidget(separator2);
-
-            QLabel* varTitleLabel = new QLabel("Profile Variants:", m_paramContainer);
-            varTitleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; margin-bottom: 6px;");
-            m_paramLayout->addWidget(varTitleLabel);
-
-            QComboBox* varCombo = new QComboBox(m_paramContainer);
-            varCombo->setMinimumWidth(200);
-
-            const auto& vars = node->getModelVariants();
-            int activeIdx = -1;
-            std::string currentModelPath = node->getModelFilePath();
-
-            for (size_t i = 0; i < vars.size(); ++i) {
-                QString nameStr = QString::fromStdString(vars[i].name);
-                if (!vars[i].localPath.empty() && QFile::exists(QString::fromStdString(vars[i].localPath))) {
-                    nameStr += " (Cached)";
-                }
-                varCombo->addItem(nameStr, static_cast<int>(i));
-
-                if (!vars[i].localPath.empty() && vars[i].localPath == currentModelPath) {
-                    activeIdx = static_cast<int>(i);
-                }
-            }
-
-            if (activeIdx != -1) {
-                varCombo->setCurrentIndex(activeIdx);
-            }
-
-            m_paramLayout->addWidget(varCombo);
-
-            connect(varCombo, &QComboBox::activated, this, [this, node, varCombo, fileLabel](int index) {
-                int variantIdx = varCombo->itemData(index).toInt();
-                const auto& vars = node->getModelVariants();
-                if (variantIdx >= 0 && variantIdx < (int)vars.size()) {
-                    auto& selectedVar = vars[variantIdx];
-                    if (!selectedVar.localPath.empty() && QFile::exists(QString::fromStdString(selectedVar.localPath))) {
-                        // Already downloaded, load instantly
-                        m_engine.suspendProcessing();
-                        node->loadModelFile(selectedVar.localPath);
-                        m_engine.resumeProcessing();
-
-                        size_t slash = selectedVar.localPath.find_last_of("/\\");
-                        std::string filename = (slash != std::string::npos) ? selectedVar.localPath.substr(slash + 1) : selectedVar.localPath;
-                        node->setModelDisplayName(selectedVar.name.empty() ? filename : selectedVar.name);
-                        fileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
-
-                        setUnsavedChanges(true);
-                        saveConfigSettings();
-                    } else {
-                        // Start background download
-                        downloadVariant(node, variantIdx, varCombo, fileLabel);
-                    }
                 }
             });
+
+            if (browseBtn) {
+                connect(browseBtn, &QPushButton::clicked, this, [this, node, uri, fileLabel]() {
+                    Tone3000Dialog dialog(node.get(), &m_engine, this);
+                    if (dialog.exec() == QDialog::Accepted) {
+                        std::string filePath = dialog.getDownloadedModelPath();
+                        if (!filePath.empty()) {
+                            m_engine.suspendProcessing();
+                            node->setFileProperty(uri, filePath);
+                            m_engine.resumeProcessing();
+                            
+                            size_t slash = filePath.find_last_of("/\\");
+                            std::string filename = (slash != std::string::npos) ? filePath.substr(slash + 1) : filePath;
+                            const QString toneName = dialog.getDownloadedToneName();
+                            node->setModelDisplayName((toneName.isEmpty() ? QString::fromStdString(filename) : toneName).toStdString());
+                            node->setModelSourceUrl(dialog.getDownloadedToneUrl().toStdString());
+                            
+                            fileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
+                            setUnsavedChanges(true);
+                            saveConfigSettings();
+                            
+                            showPluginControls(node);
+                        }
+                    }
+                });
+            }
+
+            if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model" && !currentPath.empty()) {
+                auto* modelActions = new QHBoxLayout();
+                modelActions->setSpacing(6);
+
+                auto* exportButton = new QPushButton("Export NAM...", fpFrame);
+                exportButton->setStyleSheet("QPushButton { padding: 4px; }");
+                modelActions->addWidget(exportButton);
+                connect(exportButton, &QPushButton::clicked, this, [this, node]() {
+                    const QString sourcePath = QString::fromStdString(node->getModelFilePath());
+                    if (!QFileInfo(sourcePath).isFile()) {
+                        QMessageBox::warning(this, "Export NAM", "The active NAM file is unavailable.");
+                        return;
+                    }
+                    const QString destination = QFileDialog::getSaveFileName(
+                        this, "Export NAM", QFileInfo(sourcePath).fileName(), "NAM Models (*.nam);;All Files (*)");
+                    if (destination.isEmpty()) return;
+                    if (QFileInfo(destination).absoluteFilePath() == QFileInfo(sourcePath).absoluteFilePath()) return;
+                    QFile::remove(destination);
+                    if (!QFile::copy(sourcePath, destination)) {
+                        QMessageBox::warning(this, "Export NAM", "Could not export the NAM file.");
+                    }
+                });
+
+                const QString sourceUrl = QString::fromStdString(node->getModelSourceUrl());
+                if (!sourceUrl.isEmpty()) {
+                    auto* sourceButton = new QPushButton("Open on TONE3000", fpFrame);
+                    sourceButton->setStyleSheet("QPushButton { padding: 4px; }");
+                    modelActions->addWidget(sourceButton);
+                    connect(sourceButton, &QPushButton::clicked, this, [sourceUrl] {
+                        QDesktopServices::openUrl(QUrl(sourceUrl));
+                    });
+                }
+
+                fpLayout->addLayout(modelActions);
+            }
+
+            m_paramLayout->addWidget(fpFrame);
         }
     }
 
-    if (row == 0 || row == 2) appendBranchControls(row);
+    // Add variants dropdown combo box if variants list is populated
+    if (node && !node->getModelVariants().empty()) {
+        QFrame* separator2 = new QFrame(m_paramContainer);
+        separator2->setFrameShape(QFrame::HLine);
+        separator2->setFrameShadow(QFrame::Sunken);
+        separator2->setStyleSheet("background-color: #333333; margin-top: 10px; margin-bottom: 10px;");
+        m_paramLayout->addWidget(separator2);
+
+        QLabel* varTitleLabel = new QLabel("Profile Variants:", m_paramContainer);
+        varTitleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; margin-bottom: 6px;");
+        m_paramLayout->addWidget(varTitleLabel);
+
+        QComboBox* varCombo = new QComboBox(m_paramContainer);
+        varCombo->setMinimumWidth(200);
+
+        const auto& vars = node->getModelVariants();
+        int activeIdx = -1;
+        std::string currentModelPath = node->getModelFilePath();
+
+        for (size_t i = 0; i < vars.size(); ++i) {
+            QString nameStr = QString::fromStdString(vars[i].name);
+            if (!vars[i].localPath.empty() && QFile::exists(QString::fromStdString(vars[i].localPath))) {
+                nameStr += " (Cached)";
+            }
+            varCombo->addItem(nameStr, static_cast<int>(i));
+
+            if (!vars[i].localPath.empty() && vars[i].localPath == currentModelPath) {
+                activeIdx = static_cast<int>(i);
+            }
+        }
+
+        if (activeIdx != -1) {
+            varCombo->setCurrentIndex(activeIdx);
+        }
+
+        m_paramLayout->addWidget(varCombo);
+
+        connect(varCombo, &QComboBox::activated, this, [this, node, varCombo, namFileLabel](int index) {
+            int variantIdx = varCombo->itemData(index).toInt();
+            const auto& vars = node->getModelVariants();
+            if (variantIdx >= 0 && variantIdx < (int)vars.size()) {
+                auto& selectedVar = vars[variantIdx];
+                if (!selectedVar.localPath.empty() && QFile::exists(QString::fromStdString(selectedVar.localPath))) {
+                    m_engine.suspendProcessing();
+                    node->loadModelFile(selectedVar.localPath);
+                    m_engine.resumeProcessing();
+
+                    size_t slash = selectedVar.localPath.find_last_of("/\\");
+                    std::string filename = (slash != std::string::npos) ? selectedVar.localPath.substr(slash + 1) : selectedVar.localPath;
+                    node->setModelDisplayName(selectedVar.name.empty() ? filename : selectedVar.name);
+                    if (namFileLabel) {
+                        namFileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
+                    }
+
+                    setUnsavedChanges(true);
+                    saveConfigSettings();
+                } else {
+                    downloadVariant(node, variantIdx, varCombo, namFileLabel);
+                }
+            }
+        });
+    }
+
+    Q_UNUSED(row);
 }
 
 void MainWindow::showBranchControls(int row) {
-    if (row != 0 && row != 2) return;
+    showRoutingNodeControls(row, true);
+}
+
+void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
+    if (row == NodeCanvas::MAIN_ROW || row < 0 || row >= NodeCanvas::NUM_ROWS) {
+        showPluginControls(nullptr);
+        return;
+    }
     m_parameterControlBindings.clear();
     m_parameterControlNode.reset();
     clearLayoutContents(m_paramLayout);
     m_noParamLabel->hide();
-    appendBranchControls(row);
-}
 
-void MainWindow::appendBranchControls(int row) {
-    auto* routeHeader = new QLabel("Parallel Routing", m_paramContainer);
-    routeHeader->setStyleSheet("font-weight: bold; color: #00B0FF; margin: 6px 0 0 0;");
-    m_paramLayout->addWidget(routeHeader);
-
-    for (const int branchRow : {0, 2}) {
-        auto* card = new QFrame(m_paramContainer);
-        card->setStyleSheet("QFrame, QLabel, QCheckBox { background: transparent; border: none; }");
-        auto* cardLayout = new QVBoxLayout(card);
-        cardLayout->setContentsMargins(0, 5, 0, 7);
-        cardLayout->setSpacing(5);
-
-        auto* titleRow = new QHBoxLayout();
-        auto* title = new QLabel(branchRow == 0 ? "PATH A" : "PATH B", card);
-        title->setStyleSheet("font-weight: bold; color: #d8d8de;");
-        auto* enabled = new QCheckBox("Enabled", card);
-        enabled->setChecked(m_canvas->isBranchEnabled(branchRow));
-        titleRow->addWidget(title);
-        titleRow->addStretch();
-        titleRow->addWidget(enabled);
-        cardLayout->addLayout(titleRow);
-
-        auto* splitCombo = new QComboBox(card);
-        splitCombo->addItem("System Input", -1);
-        auto* mergeCombo = new QComboBox(card);
-        mergeCombo->addItem("System Output", -1);
-        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
-            if (auto mainNode = m_canvas->getPluginAt(1, c)) {
-                splitCombo->addItem("After: " + QString::fromStdString(mainNode->getName()), c);
-                mergeCombo->addItem("Before: " + QString::fromStdString(mainNode->getName()), c);
-            }
-        }
-        splitCombo->setCurrentIndex(std::max(0, splitCombo->findData(m_canvas->getSplitCol(branchRow))));
-        mergeCombo->setCurrentIndex(std::max(0, mergeCombo->findData(m_canvas->getMergeCol(branchRow))));
-        auto* routes = new QFormLayout();
-        routes->setContentsMargins(0, 0, 0, 0);
-        routes->setVerticalSpacing(4);
-        routes->setHorizontalSpacing(6);
-        routes->addRow("Split", splitCombo);
-        routes->addRow("Merge", mergeCombo);
-        cardLayout->addLayout(routes);
-
-        auto addSlider = [card, cardLayout](const QString& titleText, const QString& help,
-                                            int minimum, int maximum, int value) {
-            auto* heading = new QHBoxLayout();
-            auto* titleLabel = new QLabel(titleText, card);
-            titleLabel->setStyleSheet("font-weight: bold; color: #e6e6ea;");
-            titleLabel->setToolTip(help);
-            auto* slider = new QSlider(Qt::Horizontal, card);
-            slider->setRange(minimum, maximum);
-            slider->setValue(value);
-            slider->setToolTip(help);
-            auto* valueLabel = new QLabel(card);
-            valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            valueLabel->setStyleSheet("color: #35c7ff; font-weight: bold; font-size: 11px;");
-            heading->addWidget(titleLabel);
-            heading->addStretch();
-            heading->addWidget(valueLabel);
-            cardLayout->addLayout(heading);
-            cardLayout->addWidget(slider);
-            return std::tuple<QLabel*, QSlider*, QLabel*>{titleLabel, slider, valueLabel};
-        };
-
-        auto [levelTitle, levelSlider, levelLabel] = addSlider(
-            "Return Level", "Amount added at this path's merge point.",
-            0, 100, qRound(m_canvas->getMix(branchRow) * 100.0f));
-        Q_UNUSED(levelTitle);
-        levelSlider->setProperty("branchResetValue", 100);
-        levelSlider->setToolTip("Double-click to reset to Unity");
-        levelSlider->installEventFilter(this);
-        auto updateLevelLabel = [levelLabel](int value) {
-            if (value == 0) levelLabel->setText("Muted (-inf dB)");
-            else if (value == 100) levelLabel->setText("Unity (0.0 dB)");
-            else levelLabel->setText(QString("%1%  (%2 dB)").arg(value).arg(20.0 * std::log10(value / 100.0), 0, 'f', 1));
-        };
-        updateLevelLabel(levelSlider->value());
-
-        const bool stereoPath = m_canvas->getBranchOutputChannels(branchRow) >= 2;
-        const bool stereoDestination = m_canvas->getBranchDestinationChannels(branchRow) >= 2;
-        auto [placementTitle, placementSlider, placementLabel] = addSlider(
-            stereoPath ? "Stereo Balance" : "Pan",
-            stereoDestination
-                ? (stereoPath ? "Attenuates one side of this stereo path before it merges."
-                              : "Places this mono path between the left and right channels.")
-                : "Unavailable because this path merges into a mono input.",
-            -100, 100, qRound(m_canvas->getPan(branchRow) * 100.0f));
-        placementSlider->setEnabled(stereoDestination);
-        placementSlider->setProperty("branchResetValue", 0);
-        placementSlider->setToolTip(stereoDestination ? "Double-click to reset to Center" : "Mono merge destination");
-        placementSlider->installEventFilter(this);
-        auto updatePlacementLabel = [placementLabel, placementSlider](int value) {
-            if (!placementSlider->isEnabled()) placementLabel->setText("Mono destination");
-            else placementLabel->setText(value == 0 ? "Center" : QString("%1% %2").arg(std::abs(value)).arg(value < 0 ? "Left" : "Right"));
-        };
-        updatePlacementLabel(placementSlider->value());
-        auto refreshPlacementContext = [this, branchRow, placementTitle, placementSlider, updatePlacementLabel] {
-            const bool stereoPathNow = m_canvas->getBranchOutputChannels(branchRow) >= 2;
-            const bool stereoDestinationNow = m_canvas->getBranchDestinationChannels(branchRow) >= 2;
-            placementTitle->setText(stereoPathNow ? "Stereo Balance" : "Pan");
-            const QString help = stereoDestinationNow
-                ? (stereoPathNow ? "Attenuates one side of this stereo path before it merges."
-                                 : "Places this mono path between the left and right channels.")
-                : "Unavailable because this path merges into a mono input.";
-            placementTitle->setToolTip(help);
-            placementSlider->setToolTip(help);
-            placementSlider->setEnabled(stereoDestinationNow);
-            updatePlacementLabel(placementSlider->value());
-        };
-
-        connect(enabled, &QCheckBox::toggled, this, [this, branchRow, levelSlider, updateLevelLabel](bool checked) {
-            m_canvas->setBranchEnabled(branchRow, checked);
-            const QSignalBlocker blocker(levelSlider);
-            levelSlider->setValue(qRound(m_canvas->getMix(branchRow) * 100.0f));
-            updateLevelLabel(levelSlider->value());
-        });
-        connect(splitCombo, &QComboBox::currentIndexChanged, this, [this, branchRow, splitCombo, refreshPlacementContext] {
-            m_canvas->setSplitCol(branchRow, splitCombo->currentData().toInt());
-            refreshPlacementContext();
-        });
-        connect(mergeCombo, &QComboBox::currentIndexChanged, this, [this, branchRow, mergeCombo, refreshPlacementContext] {
-            m_canvas->setMergeCol(branchRow, mergeCombo->currentData().toInt());
-            refreshPlacementContext();
-        });
-        connect(levelSlider, &QSlider::valueChanged, this, [this, branchRow, updateLevelLabel](int value) {
-            m_canvas->setMix(branchRow, value / 100.0f);
-            updateLevelLabel(value);
-        });
-        connect(placementSlider, &QSlider::valueChanged, this, [this, branchRow, updatePlacementLabel](int value) {
-            m_canvas->setPan(branchRow, value / 100.0f);
-            updatePlacementLabel(value);
-        });
-
-        m_paramLayout->addWidget(card);
-        if (branchRow == 0) {
-            auto* separator = new QFrame(m_paramContainer);
-            separator->setFixedHeight(1);
-            separator->setStyleSheet("background: #303036; border: none;");
-            m_paramLayout->addWidget(separator);
-        }
+    const QString pathName = m_canvas->getBranchName(row);
+    QString pathLetter = pathName;
+    if (pathLetter.startsWith("Path ")) {
+        pathLetter = pathLetter.mid(5);
     }
-    Q_UNUSED(row);
+    const QString sectionType = isSplit ? "Split Section " : "Mixer Section ";
+    auto* header = new QLabel(sectionType + pathLetter, m_paramContainer);
+    header->setStyleSheet("font-weight: bold; color: #4f8cff; font-size: 14px;");
+    m_paramLayout->addWidget(header);
+
+    const int sourceCol = m_canvas->getSplitCol(row);
+    const int returnCol = m_canvas->getMergeCol(row);
+    const int parentRow = m_canvas->getSplitParentRow(row);
+    QString source = parentRow == NodeCanvas::MAIN_ROW ? "System Input" : m_canvas->getBranchName(parentRow) + " input";
+    QString destination = parentRow == NodeCanvas::MAIN_ROW ? "System Output" : m_canvas->getBranchName(parentRow) + " return";
+    if (sourceCol >= 0) {
+        if (auto node = m_canvas->getPluginAt(parentRow, sourceCol)) source = "After " + QString::fromStdString(node->getName());
+    }
+    if (returnCol >= 0) {
+        if (auto node = m_canvas->getPluginAt(parentRow, returnCol)) destination = "Before " + QString::fromStdString(node->getName());
+    }
+    auto* route = new QLabel(source + "  ->  " + destination, m_paramContainer);
+    route->setWordWrap(true);
+    route->setStyleSheet("color: #a6adb8; margin-bottom: 6px;");
+    m_paramLayout->addWidget(route);
+
+    auto* splitTitle = new QLabel("SPLIT", m_paramContainer);
+    splitTitle->setStyleSheet("font-weight: bold; color: #7da6ff; margin-top: 5px;");
+    m_paramLayout->addWidget(splitTitle);
+    auto* splitForm = new QFormLayout();
+    auto* type = new QComboBox(m_paramContainer);
+    type->addItem("Copy", static_cast<int>(GridRow::SplitMode::Copy));
+    type->addItem("A/B (Equal Power)", static_cast<int>(GridRow::SplitMode::AB));
+    type->setCurrentIndex(type->findData(static_cast<int>(m_canvas->getSplitMode(row))));
+    splitForm->addRow("Type", type);
+    m_paramLayout->addLayout(splitForm);
+
+    auto addSlider = [this](const QString& title, int minimum, int maximum, int value) {
+        auto* titleRow = new QHBoxLayout();
+        auto* label = new QLabel(title, m_paramContainer);
+        auto* valueLabel = new QLabel(m_paramContainer);
+        valueLabel->setStyleSheet("color: #35c7ff; font-weight: bold;");
+        titleRow->addWidget(label);
+        titleRow->addStretch();
+        titleRow->addWidget(valueLabel);
+        auto* slider = new QSlider(Qt::Horizontal, m_paramContainer);
+        slider->setRange(minimum, maximum);
+        slider->setValue(value);
+        m_paramLayout->addLayout(titleRow);
+        m_paramLayout->addWidget(slider);
+        return std::pair<QSlider*, QLabel*>{slider, valueLabel};
+    };
+    auto [splitPosition, splitPositionValue] = addSlider("Route A / B", -100, 100,
+                                                         qRound(m_canvas->getSplitPosition(row) * 100.0f));
+    auto updateSplitPosition = [splitPositionValue](int value) {
+        splitPositionValue->setText(value == 0 ? "A = B" : QString("%1 %2").arg(std::abs(value)).arg(value < 0 ? "to A" : "to B"));
+    };
+    updateSplitPosition(splitPosition->value());
+    splitPosition->setEnabled(m_canvas->getSplitMode(row) == GridRow::SplitMode::AB);
+
+    auto* mixerTitle = new QLabel("MIXER", m_paramContainer);
+    mixerTitle->setStyleSheet("font-weight: bold; color: #c18cff; margin-top: 9px;");
+    m_paramLayout->addWidget(mixerTitle);
+    auto [mainLevel, mainLevelValue] = addSlider("Path A Level", 0, 100,
+                                                qRound(m_canvas->getMainMix(row) * 100.0f));
+    auto updateMainLevel = [mainLevelValue](int value) {
+        mainLevelValue->setText(value == 0 ? "-inf dB" : QString("%1 dB").arg(20.0 * std::log10(value / 100.0), 0, 'f', 1));
+    };
+    updateMainLevel(mainLevel->value());
+    auto [level, levelValue] = addSlider(pathName + " Level", 0, 100, qRound(m_canvas->getMix(row) * 100.0f));
+    auto updateLevel = [levelValue](int value) {
+        levelValue->setText(value == 0 ? "-inf dB" : QString("%1 dB").arg(20.0 * std::log10(value / 100.0), 0, 'f', 1));
+    };
+    updateLevel(level->value());
+    auto [pan, panValue] = addSlider(m_canvas->getBranchOutputChannels(row) >= 2 ? pathName + " Balance" : pathName + " Pan",
+                                     -100, 100, qRound(m_canvas->getPan(row) * 100.0f));
+    auto updatePan = [panValue](int value) {
+        panValue->setText(value == 0 ? "Center" : QString("%1% %2").arg(std::abs(value)).arg(value < 0 ? "Left" : "Right"));
+    };
+    updatePan(pan->value());
+    auto* polarity = new QCheckBox("Invert " + pathName + " polarity", m_paramContainer);
+    polarity->setChecked(m_canvas->isPolarityInverted(row));
+    m_paramLayout->addWidget(polarity);
+    auto* hint = new QLabel("Drag SPLIT to move the source. Drag MIX to move the return. Drag a new Split onto this Split to divide " + pathName + " again.", m_paramContainer);
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: #8b929d; margin-top: 9px;");
+    m_paramLayout->addWidget(hint);
+
+    auto* remove = new QPushButton("Remove Split Section", m_paramContainer);
+    remove->setEnabled(true);
+    remove->setToolTip("Remove this Split and Mixer along with all plugins on this branch.");
+    m_paramLayout->addWidget(remove);
+
+    connect(type, &QComboBox::currentIndexChanged, this, [this, row, type, splitPosition](int) {
+        const auto mode = static_cast<GridRow::SplitMode>(type->currentData().toInt());
+        m_canvas->setSplitMode(row, mode);
+        splitPosition->setEnabled(mode == GridRow::SplitMode::AB);
+    });
+    connect(splitPosition, &QSlider::valueChanged, this, [this, row, updateSplitPosition](int value) {
+        m_canvas->setSplitPosition(row, value / 100.0f);
+        updateSplitPosition(value);
+    });
+    connect(polarity, &QCheckBox::toggled, this, [this, row](bool checked) { m_canvas->setPolarityInverted(row, checked); });
+    connect(mainLevel, &QSlider::valueChanged, this, [this, row, updateMainLevel](int value) {
+        m_canvas->setMainMix(row, value / 100.0f);
+        updateMainLevel(value);
+    });
+    connect(level, &QSlider::valueChanged, this, [this, row, updateLevel](int value) {
+        m_canvas->setMix(row, value / 100.0f);
+        updateLevel(value);
+    });
+    connect(pan, &QSlider::valueChanged, this, [this, row, updatePan](int value) {
+        m_canvas->setPan(row, value / 100.0f);
+        updatePan(value);
+    });
+    connect(remove, &QPushButton::clicked, this, [this, row] {
+        m_canvas->removeSplitSection(row);
+        showPluginControls(nullptr);
+    });
+    Q_UNUSED(isSplit);
 }
 
-void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QComboBox* combo, QLabel* fileLabel, bool isRedirect) {
+void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect) {
     if (variantIdx < 0 || variantIdx >= (int)node->getModelVariants().size()) return;
 
     if (m_currentDownloadReply) {
@@ -3059,8 +3198,8 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
     QDir().mkpath(cacheDir);
     QString localFilePath = cacheDir + "/" + safeName;
 
-    combo->setEnabled(false);
-    fileLabel->setText("Downloading variant: 0%...");
+    if (!combo.isNull()) combo->setEnabled(false);
+    if (!fileLabel.isNull()) fileLabel->setText("Downloading variant: 0%...");
 
     QSettings settings("PedalBoard", "PedalBoard");
     QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
@@ -3079,13 +3218,14 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
     m_currentDownloadReply = m_networkManager->get(request);
 
     connect(m_currentDownloadReply, &QNetworkReply::downloadProgress, this, [=](qint64 received, qint64 total) {
+        if (fileLabel.isNull()) return;
         if (total > 0) {
             int progress = static_cast<int>((received * 100) / total);
             fileLabel->setText(QString("Downloading variant: %1%...").arg(progress));
         }
     });
 
-    connect(m_currentDownloadReply, &QNetworkReply::finished, this, [=, &var, node]() {
+    connect(m_currentDownloadReply, &QNetworkReply::finished, this, [=, this, &var]() {
         if (!m_currentDownloadReply) return;
 
         // Check for redirection manually to strip auth headers on redirect target
@@ -3105,10 +3245,10 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
 
         if (m_currentDownloadReply->error() != QNetworkReply::NoError) {
             if (m_currentDownloadReply->error() != QNetworkReply::OperationCanceledError) {
-                fileLabel->setText("Download failed!");
+                if (!fileLabel.isNull()) fileLabel->setText("Download failed!");
                 QMessageBox::critical(this, "Download Error", "Failed to download variant: " + m_currentDownloadReply->errorString());
             }
-            combo->setEnabled(true);
+            if (!combo.isNull()) combo->setEnabled(true);
             m_currentDownloadReply->deleteLater();
             m_currentDownloadReply = nullptr;
             return;
@@ -3130,15 +3270,15 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
             m_engine.resumeProcessing();
 
             node->setModelDisplayName(var.name.empty() ? safeName.toStdString() : var.name);
-            fileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
+            if (!fileLabel.isNull()) fileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
             setUnsavedChanges(true);
             saveConfigSettings();
 
-            combo->setItemText(variantIdx, QString::fromStdString(var.name) + " (Cached)");
+            if (!combo.isNull()) combo->setItemText(variantIdx, QString::fromStdString(var.name) + " (Cached)");
         } else {
-            fileLabel->setText("Failed to save model file!");
+            if (!fileLabel.isNull()) fileLabel->setText("Failed to save model file!");
         }
 
-        combo->setEnabled(true);
+        if (!combo.isNull()) combo->setEnabled(true);
     });
 }

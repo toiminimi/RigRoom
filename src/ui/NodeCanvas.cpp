@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <iostream>
 #include <cmath>
+#include <limits>
+#include <functional>
 
 // ─── Dimensions ───────────────────────────────────────────────────────────────
 static constexpr qreal SYS_NODE_W  = 120.0;
@@ -24,7 +26,7 @@ static constexpr qreal MARGIN_Y    = 30.0;
 // Width of the small '+' slot between nodes
 static constexpr qreal INSERT_BTN_W = 18.0;
 static constexpr qreal MIN_SPACING = 4.0;
-static constexpr qreal MAX_SPACING = 12.0;
+static constexpr qreal MAX_SPACING = 120.0;
 static constexpr qreal CANVAS_GRID = 28.0;
 
 static qreal snapToGrid(qreal value) {
@@ -47,6 +49,157 @@ static QPainterPath makeCurve(QPointF a, QPointF b) {
     return p;
 }
 
+class SplitToolItem final : public QGraphicsItem {
+public:
+    explicit SplitToolItem(NodeCanvas* canvas) : m_canvas(canvas) {
+        setAcceptHoverEvents(true);
+        setCursor(Qt::OpenHandCursor);
+        setZValue(30);
+        setToolTip("Drag onto a connection point in any active lane to create a Split Section.");
+    }
+
+    bool isLimitReached() const {
+        return false;
+    }
+
+    QRectF boundingRect() const override { return QRectF(0, 0, 132, 38); }
+
+    void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
+        painter->setRenderHint(QPainter::Antialiasing);
+        const bool disabled = isLimitReached();
+        if (disabled) {
+            painter->setOpacity(0.35);
+        } else {
+            painter->setOpacity(1.0);
+        }
+        const QColor accent = m_dragging ? QColor(255, 200, 50)
+            : (m_hovered ? QColor(83, 216, 255) : QColor(53, 199, 255));
+        painter->setPen(QPen(accent, m_hovered || m_dragging ? 2.0 : 1.2));
+        painter->setBrush(QColor(25, 29, 36, 235));
+        painter->drawRoundedRect(boundingRect().adjusted(1, 1, -1, -1), 7, 7);
+
+        painter->setPen(QPen(accent, 1.8, Qt::SolidLine, Qt::RoundCap));
+        painter->drawLine(QPointF(13, 19), QPointF(25, 19));
+        painter->drawLine(QPointF(25, 19), QPointF(34, 11));
+        painter->drawLine(QPointF(25, 19), QPointF(34, 27));
+        painter->setBrush(accent);
+        painter->setPen(Qt::NoPen);
+        painter->drawEllipse(QPointF(25, 19), 3, 3);
+
+        QFont font = painter->font();
+        font.setPixelSize(10);
+        font.setBold(true);
+        painter->setFont(font);
+        painter->setPen(QColor(235, 240, 246));
+        painter->drawText(QRectF(43, 0, 82, 38), Qt::AlignVCenter | Qt::AlignLeft, "DRAG SPLIT");
+    }
+
+protected:
+    void mousePressEvent(QGraphicsSceneMouseEvent* event) override {
+        if (isLimitReached()) {
+            event->ignore();
+            return;
+        }
+        m_dragging = true;
+        setCursor(Qt::ClosedHandCursor);
+        update();
+        event->accept();
+    }
+
+    void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override {
+        if (!m_dragging) return;
+        PlusButtonWidget* target = nearestTarget(event->scenePos());
+        setTarget(target);
+        if (target) setPos(target->scenePos().x() - boundingRect().width() / 2.0,
+                           event->scenePos().y() - boundingRect().height() / 2.0);
+        else setPos(event->scenePos() - QPointF(boundingRect().width() / 2.0, boundingRect().height() / 2.0));
+        event->accept();
+    }
+
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override {
+        if (!m_dragging) return;
+        m_dragging = false;
+        int parentRow = -1;
+        bool droppedOnSplit = false;
+        for (QGraphicsItem* item : scene()->items(event->scenePos())) {
+            auto* routingNode = dynamic_cast<RoutingHandleItem*>(item);
+            if (routingNode && routingNode->isSplitHandle()) {
+                parentRow = routingNode->branchRow();
+                droppedOnSplit = true;
+                break;
+            }
+        }
+        PlusButtonWidget* target = m_target ? m_target : nearestTarget(event->scenePos());
+        const int gap = target ? target->getCol() : -1;
+        if (parentRow < 0 && target) parentRow = target->getRow();
+        setTarget(nullptr);
+        setCursor(Qt::OpenHandCursor);
+        update();
+        if (parentRow >= 0) {
+            NodeCanvas* canvas = m_canvas;
+            const int targetGap = droppedOnSplit ? 0 : (gap >= 0 ? gap : 0);
+            QTimer::singleShot(0, canvas, [canvas, parentRow, targetGap] {
+                canvas->createSplitAtPathGap(parentRow, targetGap);
+            });
+        } else {
+            NodeCanvas* canvas = m_canvas;
+            QTimer::singleShot(0, canvas, [canvas] { canvas->updateLayout(); });
+        }
+        event->accept();
+    }
+
+    void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override {
+        m_hovered = true;
+        if (isLimitReached()) {
+            setCursor(Qt::ForbiddenCursor);
+            setToolTip("Maximum split limit reached. Delete an existing split section to create a new one.");
+        } else {
+            setCursor(Qt::OpenHandCursor);
+            setToolTip("Drag onto a connection point in any active lane to create a Split Section.");
+        }
+        update();
+        event->accept();
+    }
+
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent* event) override {
+        m_hovered = false;
+        setCursor(Qt::ArrowCursor);
+        update();
+        event->accept();
+    }
+
+private:
+    PlusButtonWidget* nearestTarget(const QPointF& scenePoint) const {
+        PlusButtonWidget* nearest = nullptr;
+        qreal distance = std::numeric_limits<qreal>::max();
+        for (QGraphicsItem* item : scene()->items()) {
+            auto* plus = dynamic_cast<PlusButtonWidget*>(item);
+            if (!plus) continue;
+            const int row = plus->getRow();
+            if (row != NodeCanvas::MAIN_ROW && !m_canvas->hasSplitSection(row)) continue;
+            const QPointF delta = plus->scenePos() - scenePoint;
+            const qreal candidate = std::hypot(delta.x(), delta.y());
+            if (candidate < distance) {
+                distance = candidate;
+                nearest = plus;
+            }
+        }
+        return nearest;
+    }
+
+    void setTarget(PlusButtonWidget* target) {
+        if (m_target == target) return;
+        if (m_target) m_target->setRoutingTarget(false);
+        m_target = target;
+        if (m_target) m_target->setRoutingTarget(true);
+    }
+
+    NodeCanvas* m_canvas;
+    PlusButtonWidget* m_target = nullptr;
+    bool m_hovered = false;
+    bool m_dragging = false;
+};
+
 class BranchLabelItem final : public QGraphicsItem {
 public:
     BranchLabelItem(NodeCanvas* canvas, int row, bool enabled)
@@ -56,15 +209,19 @@ public:
         setZValue(8);
     }
 
-    QRectF boundingRect() const override { return QRectF(0, 0, 66, 22); }
+    QRectF boundingRect() const override { return QRectF(0, 0, 112, 26); }
 
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(QPen(m_enabled ? QColor(0, 176, 255) : QColor(75, 75, 85), 1));
-        painter->setBrush(m_hovered ? QColor(38, 48, 58) : QColor(25, 25, 30));
-        painter->drawRoundedRect(boundingRect(), 5, 5);
-        painter->setPen(m_enabled ? QColor(90, 210, 255) : QColor(125, 125, 135));
-        painter->drawText(boundingRect(), Qt::AlignCenter, m_row == 0 ? "PATH A" : "PATH B");
+        painter->setPen(QPen(m_enabled ? QColor(65, 74, 86) : QColor(55, 58, 66), 1));
+        painter->setBrush(m_hovered ? QColor(38, 43, 51) : QColor(25, 27, 32));
+        painter->drawRoundedRect(boundingRect(), 6, 6);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(m_enabled ? QColor(53, 199, 255) : QColor(80, 84, 94));
+        painter->drawEllipse(QRectF(10, 9, 8, 8));
+        painter->setPen(m_enabled ? QColor(225, 229, 236) : QColor(130, 135, 145));
+        painter->drawText(QRectF(24, 0, 82, 26), Qt::AlignVCenter | Qt::AlignLeft,
+                          m_canvas->getBranchName(m_row));
     }
 
 protected:
@@ -118,6 +275,8 @@ NodeCanvas::NodeCanvas(AudioEngine* engine, QWidget* parent)
     // Initialize animation timer
     m_animationTimer = new QTimer(this);
     connect(m_animationTimer, &QTimer::timeout, this, &NodeCanvas::tickAnimations);
+    m_rows[0].name = "Path B";
+    m_rows[2].name = "Path B";
 }
 
 NodeCanvas::~NodeCanvas() {
@@ -129,26 +288,35 @@ void NodeCanvas::insertPluginAt(int row, int col, std::shared_ptr<AudioNode> nod
     if (row < 0 || row >= NUM_ROWS || col < 0 || col >= NUM_COLS) return;
     m_rows[row].plugins[col] = node;
     if (row == 0 || row == 2) {
-        if (!m_rows[row].levelConfigured) m_rows[row].mix = 1.0f;
+        m_rows[row].hasSplitSection = true;
+        if (!m_rows[row].levelConfigured) setBranchDefaults(row, 0.25118864f);
         m_rows[row].enabled = true;
         updateBranchGains(row);
     }
     m_engine->addNode(node);
-    updateLayout();
-    emit routingChanged();
+    applyRoutingChange();
 }
 
 // Insert before the current occupant at 'col' — shift everything right by one
-void NodeCanvas::insertPluginBefore(int row, int col, std::shared_ptr<AudioNode> node) {
+void NodeCanvas::insertPluginBefore(int row, int col, std::shared_ptr<AudioNode> node, bool isSecondOfCol) {
     if (row < 0 || row >= NUM_ROWS || col < 0 || col >= NUM_COLS) return;
     
+    // Record current split/merge locations of child rows before shift
+    std::vector<std::pair<int, int>> childSplits;
+    std::vector<std::pair<int, int>> childMerges;
+    for (int child : {0, 1, 3, 4}) {
+        if (child != row && m_rows[child].hasSplitSection && m_rows[child].parentRow == row) {
+            childSplits.push_back({child, getSplitCol(child)});
+            childMerges.push_back({child, getMergeCol(child)});
+        }
+    }
+
     // Collect the current chain in order
     std::vector<std::shared_ptr<AudioNode>> chain;
     for (int c = 0; c < NUM_COLS; ++c)
         if (m_rows[row].plugins[c]) chain.push_back(m_rows[row].plugins[c]);
     
     // Figure out the insertion position in the chain
-    // col here means "insert at position col within the chain" (0 = before first, chain.size() = after last)
     int insertPos = std::min(col, (int)chain.size());
     chain.insert(chain.begin() + insertPos, node);
     
@@ -158,46 +326,87 @@ void NodeCanvas::insertPluginBefore(int row, int col, std::shared_ptr<AudioNode>
     // Write back
     for (int c = 0; c < NUM_COLS; ++c)
         m_rows[row].plugins[c] = (c < (int)chain.size()) ? chain[c] : nullptr;
-    if (row == 0 || row == 2) {
-        if (!m_rows[row].levelConfigured) m_rows[row].mix = 1.0f;
+
+    // Adjust child routing anchors if dropped specifically before/after the connection point
+    for (const auto& pair : childSplits) {
+        int child = pair.first;
+        int oldSplitCol = pair.second;
+        if (oldSplitCol == col - 1) {
+            if (!isSecondOfCol) {
+                m_rows[child].splitAfterNodeId = node->uniqueId;
+            }
+        }
+    }
+    for (const auto& pair : childMerges) {
+        int child = pair.first;
+        int oldMergeCol = pair.second;
+        if (oldMergeCol == col) {
+            if (isSecondOfCol) {
+                m_rows[child].mergeBeforeNodeId = node->uniqueId;
+            }
+        }
+    }
+
+    if (row != MAIN_ROW) {
+        m_rows[row].hasSplitSection = true;
+        if (!m_rows[row].levelConfigured) setBranchDefaults(row, 0.25118864f);
         m_rows[row].enabled = true;
         updateBranchGains(row);
     }
     
     m_engine->addNode(node);
-    updateLayout();
-    emit routingChanged();
+    applyRoutingChange();
 }
 
 void NodeCanvas::removePluginAt(int row, int col) {
     if (row < 0 || row >= NUM_ROWS || col < 0 || col >= NUM_COLS) return;
     if (m_rows[row].plugins[col]) {
-        m_engine->removeNode(m_rows[row].plugins[col]->uniqueId);
+        const std::string removedId = m_rows[row].plugins[col]->uniqueId;
+        m_engine->removeNode(removedId);
+        if (row == MAIN_ROW) {
+            for (int branchRow : {0, 1, 3, 4}) {
+                if (m_rows[branchRow].splitAfterNodeId == removedId) {
+                    m_rows[branchRow].splitAfterNodeId.clear();
+                }
+                if (m_rows[branchRow].mergeBeforeNodeId == removedId) {
+                    m_rows[branchRow].mergeBeforeNodeId.clear();
+                }
+            }
+        }
         // Shift remaining nodes left so chain stays compact
         for (int c = col; c < NUM_COLS - 1; ++c)
             m_rows[row].plugins[c] = m_rows[row].plugins[c + 1];
         m_rows[row].plugins[NUM_COLS - 1] = nullptr;
     }
-    updateLayout();
-    emit routingChanged();
+    applyRoutingChange();
 }
 
 void NodeCanvas::replacePluginAt(int row, int col, std::shared_ptr<AudioNode> newNode) {
     if (row < 0 || row >= NUM_ROWS || col < 0 || col >= NUM_COLS) return;
     if (m_rows[row].plugins[col]) {
-        m_engine->removeNode(m_rows[row].plugins[col]->uniqueId);
+        const std::string removedId = m_rows[row].plugins[col]->uniqueId;
+        m_engine->removeNode(removedId);
+        if (row == MAIN_ROW) {
+            for (int branchRow : {0, 1, 3, 4}) {
+                if (m_rows[branchRow].splitAfterNodeId == removedId) {
+                    m_rows[branchRow].splitAfterNodeId = newNode ? newNode->uniqueId : std::string{};
+                }
+                if (m_rows[branchRow].mergeBeforeNodeId == removedId) {
+                    m_rows[branchRow].mergeBeforeNodeId = newNode ? newNode->uniqueId : std::string{};
+                }
+            }
+        }
     }
     m_rows[row].plugins[col] = newNode;
     if (newNode) {
-        if (row == 0 || row == 2) {
-            if (!m_rows[row].levelConfigured) m_rows[row].mix = 1.0f;
+        if (row != MAIN_ROW) {
+            if (!m_rows[row].levelConfigured) setBranchDefaults(row, 0.25118864f);
             m_rows[row].enabled = true;
             updateBranchGains(row);
         }
         m_engine->addNode(newNode);
     }
-    updateLayout();
-    emit routingChanged();
+    applyRoutingChange();
 }
 
 void NodeCanvas::movePlugin(int fromRow, int fromCol, int toRow, int toCol) {
@@ -239,37 +448,45 @@ void NodeCanvas::movePlugin(int fromRow, int fromCol, int toRow, int toCol) {
     } else {
         // Different row: simple swap of slots
         std::swap(m_rows[fromRow].plugins[fromCol], m_rows[toRow].plugins[toCol]);
-        if (toRow == 0 || toRow == 2) {
-            if (!m_rows[toRow].levelConfigured) m_rows[toRow].mix = 1.0f;
+        if (toRow != MAIN_ROW) {
+            m_rows[toRow].hasSplitSection = true;
+            if (!m_rows[toRow].levelConfigured) setBranchDefaults(toRow, 0.25118864f);
             m_rows[toRow].enabled = true;
             updateBranchGains(toRow);
         }
     }
 
-    updateLayout();
-    emit routingChanged();
+    applyRoutingChange();
 }
 
 void NodeCanvas::clearCanvas() {
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c)
             m_rows[r].plugins[c] = nullptr;
-        if (r == 0 || r == 2) {
-            m_rows[r].splitCol = -1;
-            m_rows[r].mergeCol = -1;
+        if (r != MAIN_ROW) {
+            m_rows[r].splitAfterNodeId.clear();
+            m_rows[r].mergeBeforeNodeId.clear();
+            m_rows[r].hasSplitSection = false;
+            m_rows[r].parentRow = MAIN_ROW;
+            m_rows[r].splitMode = GridRow::SplitMode::Copy;
+            m_rows[r].splitPosition = 0.0f;
+            m_rows[r].mainInputEnabled = true;
+            m_rows[r].mainMix = 1.0f;
             m_rows[r].mix = 1.0f;
             m_rows[r].pan = 0.0f;
             m_rows[r].enabled = false;
             m_rows[r].levelConfigured = false;
+            m_rows[r].polarityInverted = false;
             updateBranchGains(r);
         }
     }
+    m_mainOutputEnabled = true;
     m_engine->clearGraph();
     clearSceneItems();
     for (int r = 0; r < NUM_ROWS; ++r)
         for (int c = 0; c < NUM_COLS; ++c)
             m_nodeWidgets[r][c] = nullptr;
-    updateLayout();
+    applyRoutingChange();
 }
 
 std::shared_ptr<AudioNode> NodeCanvas::getPluginAt(int row, int col) const {
@@ -285,6 +502,191 @@ std::pair<int,int> NodeCanvas::findNode(const std::shared_ptr<AudioNode>& node) 
     return {-1, -1};
 }
 
+int NodeCanvas::findNodeColumn(int row, const std::string& nodeId) const {
+    if (nodeId.empty()) return -1;
+    for (int c = 0; c < NUM_COLS; ++c) {
+        if (m_rows[row].plugins[c] && m_rows[row].plugins[c]->uniqueId == nodeId) return c;
+    }
+    return -1;
+}
+
+int NodeCanvas::getSplitCol(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? findNodeColumn(m_rows[row].parentRow, m_rows[row].splitAfterNodeId) : -1;
+}
+
+int NodeCanvas::getMergeCol(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? findNodeColumn(m_rows[row].parentRow, m_rows[row].mergeBeforeNodeId) : -1;
+}
+
+std::string NodeCanvas::getSplitAnchor(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? m_rows[row].splitAfterNodeId : std::string{};
+}
+
+std::string NodeCanvas::getMergeAnchor(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? m_rows[row].mergeBeforeNodeId : std::string{};
+}
+
+bool NodeCanvas::createSplitAtMainGap(int gapIndex) {
+    return createSplitAtPathGap(1, gapIndex);
+}
+
+bool NodeCanvas::createSplitAtPathGap(int parentRow, int gapIndex) {
+    if (parentRow < 0 || parentRow >= NUM_ROWS) return false;
+
+    std::vector<int> occupied;
+    for (int c = 0; c < NUM_COLS; ++c) {
+        if (m_rows[parentRow].plugins[c]) occupied.push_back(c);
+    }
+    gapIndex = std::clamp(gapIndex, 0, static_cast<int>(occupied.size()));
+    const std::string targetNodeId = gapIndex > 0
+        ? m_rows[parentRow].plugins[occupied[gapIndex - 1]]->uniqueId : std::string{};
+
+    int row = -1;
+    if (parentRow == MAIN_ROW) {
+        if (!m_rows[1].hasSplitSection) {
+            row = 1;
+        } else if (!m_rows[3].hasSplitSection) {
+            row = 3;
+        } else {
+            // Both are active. Default to updating the split point of B1 (Row 1).
+            m_rows[1].splitAfterNodeId = targetNodeId;
+            applyRoutingChange();
+            selectRoutingNode(1, true);
+            return true;
+        }
+    } else if (parentRow == 1) {
+        if (!m_rows[0].hasSplitSection) {
+            row = 0;
+        } else {
+            // Update split point of B2 (Row 0)
+            m_rows[0].splitAfterNodeId = targetNodeId;
+            applyRoutingChange();
+            selectRoutingNode(0, true);
+            return true;
+        }
+    } else if (parentRow == 3) {
+        if (!m_rows[4].hasSplitSection) {
+            row = 4;
+        } else {
+            // Update split point of C2 (Row 4)
+            m_rows[4].splitAfterNodeId = targetNodeId;
+            applyRoutingChange();
+            selectRoutingNode(4, true);
+            return true;
+        }
+    }
+
+    if (row < 0) return false;
+
+    GridRow& section = m_rows[row];
+    section.hasSplitSection = true;
+    section.parentRow = parentRow;
+    section.enabled = true;
+    section.name = (row == 1 || row == 0) ? "Path B" : "Path C";
+    section.splitAfterNodeId = targetNodeId;
+    section.mergeBeforeNodeId.clear();
+    section.splitMode = GridRow::SplitMode::Copy;
+    section.splitPosition = 0.0f;
+    section.mainInputEnabled = true;
+    section.mainMix = 1.0f;
+    section.polarityInverted = false;
+    setBranchDefaults(row, 1.0f);
+    applyRoutingChange();
+    selectRoutingNode(row, true);
+    return true;
+}
+
+void NodeCanvas::removeSplitSection(int row) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+
+    for (int c = 0; c < NUM_COLS; ++c) {
+        if (m_rows[row].plugins[c]) {
+            m_engine->removeNode(m_rows[row].plugins[c]->uniqueId);
+            m_rows[row].plugins[c] = nullptr;
+        }
+    }
+
+    const int parent = m_rows[row].parentRow;
+    for (int r : {0, 1, 3, 4}) {
+        if (r != row && m_rows[r].hasSplitSection && m_rows[r].parentRow == row) {
+            m_rows[r].parentRow = parent;
+        }
+    }
+
+    m_rows[row].hasSplitSection = false;
+    m_rows[row].enabled = false;
+    m_rows[row].splitAfterNodeId.clear();
+    m_rows[row].mergeBeforeNodeId.clear();
+    applyRoutingChange();
+}
+
+bool NodeCanvas::hasSplitSection(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) && m_rows[row].hasSplitSection;
+}
+
+void NodeCanvas::setSplitSectionPresent(int row, bool present) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    m_rows[row].hasSplitSection = present;
+    applyRoutingChange();
+}
+
+int NodeCanvas::getSplitParentRow(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? m_rows[row].parentRow : MAIN_ROW;
+}
+
+void NodeCanvas::setSplitParentRow(int row, int parentRow) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS || parentRow < 0 || parentRow >= NUM_ROWS || parentRow == row) return;
+    if (m_rows[row].parentRow == parentRow) return;
+    m_rows[row].parentRow = parentRow;
+    applyRoutingChange();
+}
+
+GridRow::SplitMode NodeCanvas::getSplitMode(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? m_rows[row].splitMode : GridRow::SplitMode::Copy;
+}
+
+void NodeCanvas::setSplitMode(int row, GridRow::SplitMode mode) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    m_rows[row].splitMode = mode;
+    applyRoutingChange();
+}
+
+float NodeCanvas::getSplitPosition(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? m_rows[row].splitPosition : 0.0f;
+}
+
+void NodeCanvas::setSplitPosition(int row, float position) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    m_rows[row].splitPosition = std::clamp(position, -1.0f, 1.0f);
+    applyRoutingChange();
+}
+
+bool NodeCanvas::isMainInputEnabled(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) && m_rows[row].mainInputEnabled;
+}
+
+void NodeCanvas::setMainInputEnabled(int row, bool enabled) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    m_rows[row].mainInputEnabled = enabled;
+    applyRoutingChange();
+}
+
+float NodeCanvas::getMainMix(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? m_rows[row].mainMix : 1.0f;
+}
+
+void NodeCanvas::setMainMix(int row, float level) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    const int parentRow = m_rows[row].parentRow;
+    const float clamped = std::clamp(level, 0.0f, 1.0f);
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        if (r != MAIN_ROW && m_rows[r].parentRow == parentRow) {
+            m_rows[r].mainMix = clamped;
+        }
+    }
+    applyRoutingChange();
+}
+
 void NodeCanvas::nodeDoubleClicked(NodeWidget* node) {
     emit editPluginUI(node->getAudioNode());
 }
@@ -294,11 +696,66 @@ void NodeCanvas::setSystemChannelModes(bool inputStereo, bool outputStereo) {
     if (m_sysOutputWidget) m_sysOutputWidget->setChannelMode(outputStereo);
 }
 
-void NodeCanvas::onPlusButtonClicked(int row, int col, QPoint screenPos) {
-    emit plusButtonClicked(row, col, screenPos);
+void NodeCanvas::onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol) {
+    emit plusButtonClicked(row, col, screenPos, isSecondOfCol);
 }
 
 // ─── Layout Engine ────────────────────────────────────────────────────────────
+void NodeCanvas::calculateRowCenters(qreal rowCenters[NUM_ROWS], qreal H) const {
+    // Spacing between active lanes (spacious: 140px which snaps perfectly to grid and leaves ample room)
+    constexpr qreal LANE_HEIGHT = 140.0;
+
+    // Calculate Y offsets relative to Main Row (Row 2, offset = 0)
+    qreal offset[NUM_ROWS] = {0.0};
+    
+    // Row 2 is MAIN_ROW
+    offset[2] = 0.0;
+    
+    // Row 1 (B1) and Row 0 (B2) are top branches
+    if (m_rows[1].hasSplitSection) {
+        offset[1] = -LANE_HEIGHT;
+        if (m_rows[0].hasSplitSection) {
+            offset[0] = -2 * LANE_HEIGHT;
+        } else {
+            offset[0] = -LANE_HEIGHT;
+        }
+    } else {
+        offset[1] = 0.0;
+        offset[0] = 0.0;
+    }
+    
+    // Row 3 (C1) and Row 4 (C2) are bottom branches
+    if (m_rows[3].hasSplitSection) {
+        offset[3] = LANE_HEIGHT;
+        if (m_rows[4].hasSplitSection) {
+            offset[4] = 2 * LANE_HEIGHT;
+        } else {
+            offset[4] = LANE_HEIGHT;
+        }
+    } else {
+        offset[3] = 0.0;
+        offset[4] = 0.0;
+    }
+    
+    // Find min and max active offsets
+    qreal minY = 0.0;
+    qreal maxY = 0.0;
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        if (r == MAIN_ROW || m_rows[r].hasSplitSection) {
+            minY = std::min(minY, offset[r]);
+            maxY = std::max(maxY, offset[r]);
+        }
+    }
+    
+    // Center the active span vertically in the viewport
+    qreal viewportCY = H / 2.0;
+    qreal shift = viewportCY - (minY + maxY) / 2.0;
+    
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        rowCenters[r] = snapToGrid(shift + offset[r]);
+    }
+}
+
 void NodeCanvas::updateLayout() {
     clearSceneItems();
 
@@ -307,16 +764,35 @@ void NodeCanvas::updateLayout() {
     for (const auto& row : m_rows) longestChain = std::max(longestChain, row.count());
     qreal minimumChainW = longestChain * PLUG_NODE_W + (longestChain + 1) * (INSERT_BTN_W + 2 * MIN_SPACING);
     W = std::max(W, 2 * MARGIN_X + 2 * SYS_NODE_W + 32.0 + minimumChainW);
+    
     qreal H = std::max(200.0, (qreal)viewport()->height());
+    constexpr qreal LANE_HEIGHT = 140.0;
+    qreal offset[NUM_ROWS] = {0.0};
+    if (m_rows[1].hasSplitSection) {
+        offset[1] = -LANE_HEIGHT;
+        offset[0] = m_rows[0].hasSplitSection ? -2 * LANE_HEIGHT : -LANE_HEIGHT;
+    }
+    if (m_rows[3].hasSplitSection) {
+        offset[3] = LANE_HEIGHT;
+        offset[4] = m_rows[4].hasSplitSection ? 2 * LANE_HEIGHT : LANE_HEIGHT;
+    }
+    qreal minY = 0.0;
+    qreal maxY = 0.0;
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        if (r == MAIN_ROW || m_rows[r].hasSplitSection) {
+            minY = std::min(minY, offset[r]);
+            maxY = std::max(maxY, offset[r]);
+        }
+    }
+    qreal activeSpan = maxY - minY;
+    H = std::max(H, activeSpan + 2 * MARGIN_Y + 40.0);
+
     m_scene->setSceneRect(0, 0, W, H);
 
-    // Row centres (evenly divide vertical space)
-    qreal rowH = (H - 2 * MARGIN_Y) / (qreal)NUM_ROWS;
     qreal rowCenters[NUM_ROWS];
-    for (int r = 0; r < NUM_ROWS; ++r)
-        rowCenters[r] = snapToGrid(MARGIN_Y + (r + 0.5) * rowH);
+    calculateRowCenters(rowCenters, H);
 
-    qreal sysCY = rowCenters[1];
+    qreal sysCY = rowCenters[MAIN_ROW];
 
     // Place system nodes using actual dimensions
     qreal inputW = m_sysInputWidget ? m_sysInputWidget->width() : 160.0;
@@ -339,16 +815,25 @@ void NodeCanvas::updateLayout() {
     qreal sysLeftX   = W - MARGIN_X - outputW;
     qreal sysMidY    = sysCY;
 
-    // 1. Layout middle row (r == 1) first so that side rows can query its node positions
-    layoutRow(1, rowCenters[1], trackLeft, trackRight, trackW, sysRightX, sysLeftX, sysMidY);
+    // 1. Layout main row (r == MAIN_ROW) first so that side rows can query its node positions
+    layoutRow(MAIN_ROW, rowCenters[MAIN_ROW], trackLeft, trackRight, trackW, sysRightX, sysLeftX, sysMidY);
 
-    // 2. Layout side rows (r == 0 and r == 2)
-    layoutRow(0, rowCenters[0], trackLeft, trackRight, trackW, sysRightX, sysLeftX, sysMidY);
-    layoutRow(2, rowCenters[2], trackLeft, trackRight, trackW, sysRightX, sysLeftX, sysMidY);
+    // 2. Layout level 1 side rows (r == 1 and r == 3)
+    layoutRow(1, rowCenters[1], trackLeft, trackRight, trackW, sysRightX, sysLeftX, rowCenters[m_rows[1].parentRow]);
+    layoutRow(3, rowCenters[3], trackLeft, trackRight, trackW, sysRightX, sysLeftX, rowCenters[m_rows[3].parentRow]);
+
+    // 3. Layout level 2 side rows (r == 0 and r == 4)
+    layoutRow(0, rowCenters[0], trackLeft, trackRight, trackW, sysRightX, sysLeftX, rowCenters[m_rows[0].parentRow]);
+    layoutRow(4, rowCenters[4], trackLeft, trackRight, trackW, sysRightX, sysLeftX, rowCenters[m_rows[4].parentRow]);
+
+    auto* splitTool = new SplitToolItem(this);
+    splitTool->setPos(trackLeft, 12.0);
+    m_scene->addItem(splitTool);
+    m_dynamicItems.push_back(splitTool);
     
-    // ── If row[1] is empty but other rows have blocks, draw trunk ──────────
-    if (m_rows[1].isEmpty()) {
-        bool othersHaveBlocks = !m_rows[0].isEmpty() || !m_rows[2].isEmpty();
+    // ── If main row is empty but other rows have blocks, draw trunk ──────────
+    if (m_rows[MAIN_ROW].isEmpty()) {
+        bool othersHaveBlocks = !m_rows[0].isEmpty() || !m_rows[1].isEmpty() || !m_rows[3].isEmpty() || !m_rows[4].isEmpty();
         if (othersHaveBlocks) {
             auto* wire = new QGraphicsPathItem();
             QPainterPath path;
@@ -362,9 +847,6 @@ void NodeCanvas::updateLayout() {
 
         }
     }
-
-    // ── Rebuild audio engine connections ──────────────────────────────────
-    rebuildAudioConnections();
 
     // ── Small dot markers on system node edges ──────────────────────────
     auto makeDot = [&](qreal x, qreal y, QColor col) {
@@ -381,73 +863,80 @@ void NodeCanvas::updateLayout() {
     if (m_sysOutputWidget) {
         makeDot(sysLeftX, sysMidY, QColor(0, 200, 120));
     }
+
+    m_scene->setSceneRect(QRectF(0, 0, W, H).united(m_scene->itemsBoundingRect()));
 }
 
 void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, qreal trackW, qreal sysRightX, qreal sysLeftX, qreal sysMidY) {
     const GridRow& row = m_rows[r];
+    if (r != MAIN_ROW && !row.hasSplitSection) return;
     std::vector<int> occupied;
     for (int c = 0; c < NUM_COLS; ++c)
         if (row.plugins[c]) occupied.push_back(c);
+    int n = (int)occupied.size();
+
+    // Calculate child split/merge gaps on this row
+    int numGaps = 0;
+    for (int i = 0; i <= n; ++i) {
+        bool hasSplitGap = false;
+        bool hasMergeGap = false;
+        for (int child : {0, 1, 3, 4}) {
+            if (child != r && m_rows[child].hasSplitSection && m_rows[child].parentRow == r) {
+                int splitCol = getSplitCol(child);
+                int splitIdx = (splitCol < 0) ? 0 : splitCol + 1;
+                if (splitIdx == i) hasSplitGap = true;
+
+                int mergeCol = getMergeCol(child);
+                int mergeIdx = (mergeCol < 0) ? n : mergeCol;
+                if (mergeIdx == i) hasMergeGap = true;
+            }
+        }
+        if (hasSplitGap) numGaps++;
+        if (hasMergeGap) numGaps++;
+    }
+    qreal totalGapW = numGaps * 56.0;
 
     // Determine starting and ending X coordinates for this row based on split and merge configs
     qreal startX = trackLeft;
     qreal endX = trackRight;
+    qreal parentSplitX = trackLeft;
+    qreal parentMergeX = trackRight;
 
-    if (r == 0 || r == 2) {
-        auto getPlusButtonX = [&](int plusIdx) -> qreal {
-            for (auto* item : m_scene->items()) {
-                if (auto* plus = dynamic_cast<PlusButtonWidget*>(item)) {
-                    if (plus->getRow() == 1 && plus->getCol() == plusIdx) {
-                        return plus->scenePos().x();
-                    }
-                }
+    if (r != MAIN_ROW) {
+        parentSplitX = row.parentSplitX;
+        parentMergeX = row.parentMergeX;
+        startX = parentSplitX;
+
+        qreal requiredW = 0.0;
+        if (!occupied.empty()) {
+            qreal totalNodeW = 0.0;
+            for (int c : occupied) {
+                qreal w = m_nodeWidgets[r][c] ? m_nodeWidgets[r][c]->width() : PLUG_NODE_W;
+                totalNodeW += w;
             }
-            if (plusIdx == 0) return snapToGrid(sysRightX + 16.0);
-            return snapToGrid(sysLeftX - 16.0);
-        };
-
-        // Get occupied columns in row 1
-        std::vector<int> occupied1;
-        for (int c = 0; c < NUM_COLS; ++c) {
-            if (m_rows[1].plugins[c]) occupied1.push_back(c);
+            qreal totalInsertW = (occupied.size() + 1) * INSERT_BTN_W;
+            int numSpaces = 2 * occupied.size() + 2;
+            requiredW = totalNodeW + totalInsertW + numSpaces * MIN_SPACING + totalGapW;
+        } else {
+            requiredW = INSERT_BTN_W + 2 * MIN_SPACING + totalGapW;
         }
-        int n1 = (int)occupied1.size();
 
-        // Split X
-        int splitPlusIdx = 0;
-        if (row.splitCol >= 0) {
-            auto it = std::find(occupied1.begin(), occupied1.end(), row.splitCol);
-            if (it != occupied1.end()) {
-                int idx = std::distance(occupied1.begin(), it);
-                splitPlusIdx = idx + 1;
-            }
-        }
-        startX = getPlusButtonX(splitPlusIdx);
-
-        // Merge X
-        int mergePlusIdx = n1;
-        if (row.mergeCol >= 0) {
-            auto it = std::find(occupied1.begin(), occupied1.end(), row.mergeCol);
-            if (it != occupied1.end()) {
-                int idx = std::distance(occupied1.begin(), it);
-                mergePlusIdx = idx;
-            }
-        }
-        endX = getPlusButtonX(mergePlusIdx);
+        requiredW = std::max(requiredW, 168.0);
+        endX = std::max(parentMergeX, startX + requiredW);
     }
 
     qreal rowTrackW = std::max(50.0, endX - startX);
 
-    if (r == 0 || r == 2) {
+    if (r != MAIN_ROW) {
         auto* branchLabel = new BranchLabelItem(this, r, row.enabled);
         branchLabel->setPos(snapToGrid(trackLeft) + 6.0, cy - 36.0);
         m_scene->addItem(branchLabel);
         m_dynamicItems.push_back(branchLabel);
     }
 
-    if (occupied.empty()) {
+    if (occupied.empty() && numGaps == 0) {
         // Empty row
-        if (r == 1) {
+        if (r == MAIN_ROW) {
             auto* wire = new QGraphicsPathItem();
             QPainterPath path;
             path.moveTo(sysRightX, sysMidY);
@@ -471,10 +960,10 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
             if (row.enabled) {
                 auto* splitWire = new QGraphicsPathItem();
                 QPainterPath splitPath;
-                splitPath.moveTo(startX, sysMidY);
-                splitPath.lineTo(startX, cy);
+                splitPath.moveTo(startX, cy);
+                splitPath.cubicTo(startX, (cy + sysMidY)/2.0, parentSplitX, (cy + sysMidY)/2.0, parentSplitX, sysMidY);
                 splitWire->setPath(splitPath);
-                splitWire->setPen(QPen(QColor(0, 176, 255, 130), 1.5, Qt::DashLine));
+                splitWire->setPen(QPen(QColor(53, 199, 255, 150), 1.8, Qt::SolidLine));
                 splitWire->setZValue(-3);
                 m_scene->addItem(splitWire);
                 m_dynamicItems.push_back(splitWire);
@@ -482,20 +971,20 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
                 auto* mergeWire = new QGraphicsPathItem();
                 QPainterPath mergePath;
                 mergePath.moveTo(endX, cy);
-                mergePath.lineTo(endX, sysMidY);
+                mergePath.cubicTo(endX, (cy + sysMidY)/2.0, parentMergeX, (cy + sysMidY)/2.0, parentMergeX, sysMidY);
                 mergeWire->setPath(mergePath);
-                mergeWire->setPen(QPen(QColor(0, 176, 255, 130), 1.5, Qt::DashLine));
+                mergeWire->setPen(QPen(QColor(53, 199, 255, 150), 1.8, Qt::SolidLine));
                 mergeWire->setZValue(-3);
                 m_scene->addItem(mergeWire);
                 m_dynamicItems.push_back(mergeWire);
 
                 auto* splitHandle = new RoutingHandleItem(this, r, true);
-                splitHandle->setPos(startX, (sysMidY + cy) / 2.0);
+                splitHandle->setPos((startX + parentSplitX)/2.0, (sysMidY + cy) / 2.0);
                 m_scene->addItem(splitHandle);
                 m_dynamicItems.push_back(splitHandle);
 
                 auto* mergeHandle = new RoutingHandleItem(this, r, false);
-                mergeHandle->setPos(endX, (sysMidY + cy) / 2.0);
+                mergeHandle->setPos((endX + parentMergeX)/2.0, (sysMidY + cy) / 2.0);
                 m_scene->addItem(mergeHandle);
                 m_dynamicItems.push_back(mergeHandle);
             }
@@ -531,35 +1020,30 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
 
         // Draw horizontal wire segment
         {
-            qreal segStartX = (r == 1) ? sysRightX : startX;
-            qreal segEndX   = (r == 1) ? sysLeftX  : endX;
+            qreal segStartX = (r == MAIN_ROW) ? sysRightX : startX;
+            qreal segEndX   = (r == MAIN_ROW) ? sysLeftX  : endX;
             auto* seg = new QGraphicsPathItem();
             QPainterPath path;
             path.moveTo(segStartX, cy);
             path.lineTo(segEndX, cy);
             seg->setPath(path);
-            QColor color = (r == 1 || row.enabled) ? QColor(0, 176, 255, 160) : QColor(70, 70, 80, 70);
-            seg->setPen(QPen(color, 2, row.enabled || r == 1 ? Qt::SolidLine : Qt::DashLine, Qt::RoundCap));
+            QColor color = (r == MAIN_ROW || row.enabled) ? QColor(0, 176, 255, 160) : QColor(70, 70, 80, 70);
+            seg->setPen(QPen(color, 2, row.enabled || r == MAIN_ROW ? Qt::SolidLine : Qt::DashLine, Qt::RoundCap));
             seg->setZValue(-2);
             m_scene->addItem(seg);
             m_dynamicItems.push_back(seg);
         }
 
-        // Draw branch connectors (vertical split/merge lines) for side rows
-        if (r != 1) {
-            // Split connector (vertical line down from cy to sysMidY)
+        // Draw branch connectors (vertical/curved split/merge lines) for side rows
+        if (r != MAIN_ROW) {
+            // Split connector
             auto* branch = new QGraphicsPathItem();
             QPainterPath bpath;
-            if (row.splitCol < 0) {
-                bpath.moveTo(startX - 8, sysMidY);
-                bpath.lineTo(startX - 8, cy);
-                bpath.lineTo(startX, cy);
-            } else {
-                bpath.moveTo(startX, sysMidY);
-                bpath.lineTo(startX, cy);
-            }
+            bpath.moveTo(startX, cy);
+            bpath.cubicTo(startX, (cy + sysMidY)/2.0, parentSplitX, (cy + sysMidY)/2.0, parentSplitX, sysMidY);
             branch->setPath(bpath);
-            branch->setPen(QPen(QColor(0, 176, 255, 100), 1.5, Qt::DashLine, Qt::RoundCap));
+            branch->setPen(QPen(row.enabled ? QColor(53, 199, 255, 150) : QColor(70, 70, 80, 70),
+                                1.8, row.enabled ? Qt::SolidLine : Qt::DashLine, Qt::RoundCap));
             branch->setZValue(-3);
             branch->setToolTip("Branch Split point. Drag the handle on the vertical line to change routing.");
             m_scene->addItem(branch);
@@ -568,24 +1052,19 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
             // Add Split point draggable handle
             auto* splitHandle = new RoutingHandleItem(this, r, true);
             qreal splitY = (sysMidY + cy) / 2.0;
-            splitHandle->setPos(startX, splitY);
-            splitHandle->setToolTip(r == 0 ? "Drag the handle on the vertical line to change top branch split point" : "Drag the handle on the vertical line to change bottom branch split point");
+            splitHandle->setPos((startX + parentSplitX)/2.0, splitY);
+            splitHandle->setToolTip(QString("Drag the handle on the vertical line to change split point for %1").arg(getBranchName(r)));
             m_scene->addItem(splitHandle);
             m_dynamicItems.push_back(splitHandle);
 
             // Merge connector
             auto* branchR = new QGraphicsPathItem();
             QPainterPath bpathR;
-            if (row.mergeCol < 0) {
-                bpathR.moveTo(endX, cy);
-                bpathR.lineTo(endX + 8, cy);
-                bpathR.lineTo(endX + 8, sysMidY);
-            } else {
-                bpathR.moveTo(endX, cy);
-                bpathR.lineTo(endX, sysMidY);
-            }
+            bpathR.moveTo(endX, cy);
+            bpathR.cubicTo(endX, (cy + sysMidY)/2.0, parentMergeX, (cy + sysMidY)/2.0, parentMergeX, sysMidY);
             branchR->setPath(bpathR);
-            branchR->setPen(QPen(QColor(0, 176, 255, 100), 1.5, Qt::DashLine, Qt::RoundCap));
+            branchR->setPen(QPen(row.enabled ? QColor(53, 199, 255, 150) : QColor(70, 70, 80, 70),
+                                 1.8, row.enabled ? Qt::SolidLine : Qt::DashLine, Qt::RoundCap));
             branchR->setZValue(-3);
             branchR->setToolTip("Branch Merge point. Drag the handle on the vertical line to change routing.");
             m_scene->addItem(branchR);
@@ -594,8 +1073,8 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
             // Add Merge point draggable handle
             auto* mergeHandle = new RoutingHandleItem(this, r, false);
             qreal mergeY = (sysMidY + cy) / 2.0;
-            mergeHandle->setPos(endX, mergeY);
-            mergeHandle->setToolTip(r == 0 ? "Drag the handle on the vertical line to change top branch merge point" : "Drag the handle on the vertical line to change bottom branch merge point");
+            mergeHandle->setPos((endX + parentMergeX)/2.0, mergeY);
+            mergeHandle->setToolTip(QString("Drag the handle on the vertical line to change merge point for %1").arg(getBranchName(r)));
             m_scene->addItem(mergeHandle);
             m_dynamicItems.push_back(mergeHandle);
         }
@@ -612,23 +1091,95 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         // Place nodes and insert-buttons interleaved:
         // Pattern: [spacing] [BTN 0] [spacing] [NODE 0] [spacing] [BTN 1] ... [BTN n]
         qreal contentW = totalNodeW + totalInsertW + numSpaces * spacing;
-        qreal xCursor = startX + std::max(0.0, (rowTrackW - contentW) / 2.0);
+        qreal xCursor = startX + std::max(0.0, (rowTrackW - contentW - totalGapW) / 2.0);
+
         for (int i = 0; i <= n; ++i) {
-            // 1. Spacing before plus button
-            xCursor += spacing;
+            bool hasSplitGap = false;
+            std::vector<int> splitChildren;
+            bool hasMergeGap = false;
+            std::vector<int> mergeChildren;
 
-            // 2. Place plus button
-            auto* plus = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
-            plus->setPos(snapToGrid(xCursor + INSERT_BTN_W / 2.0), cy);
-            m_scene->addItem(plus);
-            m_dynamicItems.push_back(plus);
-            xCursor += INSERT_BTN_W;
+            for (int child : {0, 1, 3, 4}) {
+                if (child != r && m_rows[child].hasSplitSection && m_rows[child].parentRow == r) {
+                    int splitCol = getSplitCol(child);
+                    int splitIdx = (splitCol < 0) ? 0 : splitCol + 1;
+                    if (splitIdx == i) {
+                        hasSplitGap = true;
+                        splitChildren.push_back(child);
+                    }
 
-            if (i < n) {
-                // 3. Spacing before node
+                    int mergeCol = getMergeCol(child);
+                    int mergeIdx = (mergeCol < 0) ? n : mergeCol;
+                    if (mergeIdx == i) {
+                        hasMergeGap = true;
+                        mergeChildren.push_back(child);
+                    }
+                }
+            }
+
+            int numGapsAtI = (hasSplitGap ? 1 : 0) + (hasMergeGap ? 1 : 0);
+
+            if (numGapsAtI > 0) {
+                // Spacing before plus button (left)
                 xCursor += spacing;
 
-                // 4. Place node
+                // Place plus button (left)
+                auto* plus0 = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
+                plus0->setPos(snapToGrid(xCursor + INSERT_BTN_W / 2.0), cy);
+                m_scene->addItem(plus0);
+                m_dynamicItems.push_back(plus0);
+
+                qreal currentGapOffset = 56.0;
+
+                if (hasSplitGap) {
+                    qreal splitX = xCursor + INSERT_BTN_W / 2.0 + 28.0;
+                    for (int child : splitChildren) {
+                        m_rows[child].parentSplitX = splitX;
+                    }
+                    
+                    // Place intermediate plus button if there is also a merge gap
+                    if (hasMergeGap) {
+                        auto* plus1 = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
+                        plus1->setPos(snapToGrid(xCursor + INSERT_BTN_W / 2.0 + 56.0), cy);
+                        plus1->setIsSecondOfCol(true);
+                        m_scene->addItem(plus1);
+                        m_dynamicItems.push_back(plus1);
+                        currentGapOffset += 56.0;
+                    }
+                }
+
+                if (hasMergeGap) {
+                    qreal mergeX = xCursor + INSERT_BTN_W / 2.0 + (hasSplitGap ? 84.0 : 28.0);
+                    for (int child : mergeChildren) {
+                        m_rows[child].parentMergeX = mergeX;
+                    }
+                }
+
+                // Place the final plus button
+                auto* plusLast = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
+                plusLast->setPos(snapToGrid(xCursor + INSERT_BTN_W / 2.0 + currentGapOffset), cy);
+                plusLast->setIsSecondOfCol(true);
+                m_scene->addItem(plusLast);
+                m_dynamicItems.push_back(plusLast);
+
+                xCursor += INSERT_BTN_W + currentGapOffset;
+            } else {
+                // Spacing before plus button
+                xCursor += spacing;
+
+                // Place plus button
+                auto* plus = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
+                plus->setPos(snapToGrid(xCursor + INSERT_BTN_W / 2.0), cy);
+                m_scene->addItem(plus);
+                m_dynamicItems.push_back(plus);
+                xCursor += INSERT_BTN_W;
+            }
+
+            if (i < n) {
+                // Spacing before node
+                xCursor += spacing;
+
+                // Place node
                 int c = occupied[i];
                 NodeWidget* nw = m_nodeWidgets[r][c];
                 nw->setPos(xCursor, cy - nw->height() / 2.0);
@@ -640,30 +1191,25 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
 }
 
 void NodeCanvas::rebuildAudioConnections() {
-    m_engine->clearGraph();
+    m_engine->suspendProcessing();
+    // Routing edits only replace connections. Re-adding every processor would
+    // call prepare(), destroying live LV2 instances while JACK may be using them.
+    m_engine->clearConnections();
     
     // Connect dry bypass for the primary middle row (r == 1) if it contains no active blocks
     bool middleRowEmpty = true;
     for (int c = 0; c < NUM_COLS; ++c) {
-        if (m_rows[1].plugins[c]) {
+        if (m_rows[MAIN_ROW].plugins[c]) {
             middleRowEmpty = false;
             break;
         }
     }
-    if (middleRowEmpty) {
-        m_engine->connectPorts("system_input", 0, "system_output", 0);
-        m_engine->connectPorts("system_input", 1, "system_output", 1);
+    if (middleRowEmpty && m_mainOutputEnabled) {
+        const float gain = pathSplitGainAfter(MAIN_ROW, {}) * pathMixerGainBefore(MAIN_ROW, {});
+        m_engine->connectPorts("system_input", 0, "system_output", 0, gain);
+        m_engine->connectPorts("system_input", 1, "system_output", 1, gain);
     }
     
-    // Re-add all active nodes to the audio engine first
-    for (int r = 0; r < NUM_ROWS; ++r) {
-        for (int c = 0; c < NUM_COLS; ++c) {
-            if (m_rows[r].plugins[c]) {
-                m_engine->addNode(m_rows[r].plugins[c]);
-            }
-        }
-    }
-
     auto connect = [&](const std::string& srcId, int si, const std::string& dstId, int di,
                        float gain = 1.0f, std::shared_ptr<std::atomic<float>> liveGain = nullptr) {
         m_engine->connectPorts(srcId, si, dstId, di, gain, std::move(liveGain));
@@ -685,122 +1231,136 @@ void NodeCanvas::rebuildAudioConnections() {
         }
     };
 
-    // ─── Connect Main Row (Row 1) ───
+    // ─── Connect Main Row (MAIN_ROW) ───
     std::vector<std::shared_ptr<AudioNode>> mainChain;
     for (int c = 0; c < NUM_COLS; ++c) {
-        if (m_rows[1].plugins[c]) mainChain.push_back(m_rows[1].plugins[c]);
+        if (m_rows[MAIN_ROW].plugins[c]) mainChain.push_back(m_rows[MAIN_ROW].plugins[c]);
     }
 
     if (!mainChain.empty()) {
-        connect("system_input", 0, mainChain[0]->uniqueId, 0);
+        const float inputGain = pathSplitGainAfter(MAIN_ROW, {}) * pathMixerGainBefore(MAIN_ROW, mainChain[0]->uniqueId);
+        connect("system_input", 0, mainChain[0]->uniqueId, 0, inputGain);
         if (mainChain[0]->getAudioInputCount() > 1)
-            connect("system_input", 1, mainChain[0]->uniqueId, 1);
+            connect("system_input", 1, mainChain[0]->uniqueId, 1, inputGain);
 
         for (size_t i = 0; i + 1 < mainChain.size(); ++i) {
-            connectNodes(mainChain[i], mainChain[i+1]);
+            const float gain = pathSplitGainAfter(MAIN_ROW, mainChain[i]->uniqueId) *
+                               pathMixerGainBefore(MAIN_ROW, mainChain[i + 1]->uniqueId);
+            connectNodes(mainChain[i], mainChain[i+1], gain);
         }
 
-        auto& last = mainChain.back();
-        int outs = last->getAudioOutputCount();
-        connect(last->uniqueId, 0, "system_output", 0);
-        if (outs >= 2)
-            connect(last->uniqueId, 1, "system_output", 1);
-        else
-            connect(last->uniqueId, 0, "system_output", 1);
+        if (m_mainOutputEnabled) {
+            auto& last = mainChain.back();
+            int outs = last->getAudioOutputCount();
+            const float outputGain = pathSplitGainAfter(MAIN_ROW, last->uniqueId) * pathMixerGainBefore(MAIN_ROW, {});
+            connect(last->uniqueId, 0, "system_output", 0, outputGain);
+            if (outs >= 2)
+                connect(last->uniqueId, 1, "system_output", 1, outputGain);
+            else
+                connect(last->uniqueId, 0, "system_output", 1, outputGain);
+        }
     }
-
-    // Helpers to find routing source / destination nodes in Row 1
-    auto findSplitSourceNode = [&](int splitCol) -> std::shared_ptr<AudioNode> {
-        if (splitCol >= 0) {
-            for (int c = splitCol; c >= 0; --c) {
-                if (m_rows[1].plugins[c]) return m_rows[1].plugins[c];
-            }
-        }
-        return nullptr;
-    };
-
-    auto findMergeDestNode = [&](int mergeCol) -> std::shared_ptr<AudioNode> {
-        if (mergeCol >= 0) {
-            for (int c = mergeCol; c < NUM_COLS; ++c) {
-                if (m_rows[1].plugins[c]) return m_rows[1].plugins[c];
-            }
-        }
-        return nullptr;
-    };
 
     struct RouteEndpoint {
         std::string id;
         int channels;
     };
-    auto connectBalanced = [&](const RouteEndpoint& src, const RouteEndpoint& dst, const BranchGainControls& gains) {
+    std::function<RouteEndpoint(int)> pathInput;
+    std::function<RouteEndpoint(int)> pathOutput;
+    pathInput = [&](int row) -> RouteEndpoint {
+        if (row == MAIN_ROW) return {"system_input", 2};
+        const GridRow& path = m_rows[row];
+        const int splitCol = getSplitCol(row);
+        if (splitCol >= 0 && m_rows[path.parentRow].plugins[splitCol]) {
+            const auto& node = m_rows[path.parentRow].plugins[splitCol];
+            return {node->uniqueId, node->getAudioOutputCount()};
+        }
+        return pathInput(path.parentRow);
+    };
+    pathOutput = [&](int row) -> RouteEndpoint {
+        if (row == MAIN_ROW) return {"system_output", 2};
+        const GridRow& path = m_rows[row];
+        const int mergeCol = getMergeCol(row);
+        if (mergeCol >= 0 && m_rows[path.parentRow].plugins[mergeCol]) {
+            const auto& node = m_rows[path.parentRow].plugins[mergeCol];
+            return {node->uniqueId, node->getAudioInputCount()};
+        }
+        return pathOutput(path.parentRow);
+    };
+    auto connectBalanced = [&](const RouteEndpoint& src, const RouteEndpoint& dst,
+                               const BranchGainControls& gains, float fixedGain = 1.0f) {
         if (src.channels >= 2 && dst.channels >= 2) {
-            connect(src.id, 0, dst.id, 0, 1.0f, gains.left);
-            connect(src.id, 1, dst.id, 1, 1.0f, gains.right);
+            connect(src.id, 0, dst.id, 0, fixedGain, gains.left);
+            connect(src.id, 1, dst.id, 1, fixedGain, gains.right);
         } else if (src.channels >= 2 && dst.channels == 1) {
-            connect(src.id, 0, dst.id, 0, 1.0f, gains.monoHalf);
-            connect(src.id, 1, dst.id, 0, 1.0f, gains.monoHalf);
+            connect(src.id, 0, dst.id, 0, fixedGain, gains.monoHalf);
+            connect(src.id, 1, dst.id, 0, fixedGain, gains.monoHalf);
         } else if (dst.channels >= 2) {
-            connect(src.id, 0, dst.id, 0, 1.0f, gains.left);
-            connect(src.id, 0, dst.id, 1, 1.0f, gains.right);
+            connect(src.id, 0, dst.id, 0, fixedGain, gains.left);
+            connect(src.id, 0, dst.id, 1, fixedGain, gains.right);
         } else {
-            connect(src.id, 0, dst.id, 0, 1.0f, gains.mono);
+            connect(src.id, 0, dst.id, 0, fixedGain, gains.mono);
+        }
+    };
+    auto connectFixed = [&](const RouteEndpoint& src, const std::shared_ptr<AudioNode>& dst, float gain) {
+        const int inputs = dst->getAudioInputCount();
+        if (src.channels >= 2 && inputs >= 2) {
+            connect(src.id, 0, dst->uniqueId, 0, gain);
+            connect(src.id, 1, dst->uniqueId, 1, gain);
+        } else if (src.channels >= 2) {
+            connect(src.id, 0, dst->uniqueId, 0, gain * 0.5f);
+            connect(src.id, 1, dst->uniqueId, 0, gain * 0.5f);
+        } else {
+            connect(src.id, 0, dst->uniqueId, 0, gain);
+            if (inputs >= 2) connect(src.id, 0, dst->uniqueId, 1, gain);
         }
     };
 
     // ─── Connect Side Rows (Row 0 and Row 2) ───
-    for (int r : {0, 2}) {
+    for (int r : {0, 1, 3, 4}) {
         const GridRow& row = m_rows[r];
-        if (!row.enabled) continue;
+        if (!row.hasSplitSection || !row.enabled) continue;
         updateBranchGains(r);
         std::vector<std::shared_ptr<AudioNode>> chain;
         for (int c = 0; c < NUM_COLS; ++c) {
             if (row.plugins[c]) chain.push_back(row.plugins[c]);
         }
 
-        auto splitSrc = findSplitSourceNode(row.splitCol);
-        auto mergeDst = findMergeDestNode(row.mergeCol);
+        const int splitCol = getSplitCol(r);
+        const int mergeCol = getMergeCol(r);
 
-        // A branch must move forward through the main chain to avoid feedback.
-        if (splitSrc && mergeDst) {
-            const auto splitPosition = findNode(splitSrc);
-            const auto mergePosition = findNode(mergeDst);
-            if (splitPosition.second >= mergePosition.second) continue;
-        }
+        if (splitCol >= 0 && mergeCol >= 0 && splitCol >= mergeCol) continue;
 
-        const RouteEndpoint source{
-            splitSrc ? splitSrc->uniqueId : "system_input",
-            splitSrc ? splitSrc->getAudioOutputCount() : 2
-        };
-        const RouteEndpoint destination{
-            mergeDst ? mergeDst->uniqueId : "system_output",
-            mergeDst ? mergeDst->getAudioInputCount() : 2
-        };
+        const RouteEndpoint source = pathInput(r);
+        const RouteEndpoint destination = pathOutput(r);
 
         if (chain.empty()) {
-            connectBalanced(source, destination, m_branchGains[r]);
-            continue;
+            const float pathGain = branchSplitGain(r) * pathSplitGainAfter(r, {}) * pathMixerGainBefore(r, {});
+            connectBalanced(source, destination, m_branchGains[r], pathGain);
         }
+
+        if (chain.empty()) continue;
 
         // Connect chain internal links
         for (size_t i = 0; i + 1 < chain.size(); ++i) {
-            connectNodes(chain[i], chain[i+1]);
+            const float gain = pathSplitGainAfter(r, chain[i]->uniqueId) *
+                               pathMixerGainBefore(r, chain[i + 1]->uniqueId);
+            connectNodes(chain[i], chain[i+1], gain);
         }
 
         // Connect first node input (Split point)
-        if (splitSrc) {
-            connectNodes(splitSrc, chain[0]);
-        } else {
-            connect("system_input", 0, chain[0]->uniqueId, 0);
-            if (chain[0]->getAudioInputCount() > 1)
-                connect("system_input", 1, chain[0]->uniqueId, 1);
-        }
+        const float inputGain = branchSplitGain(r) * pathSplitGainAfter(r, {}) *
+                                pathMixerGainBefore(r, chain[0]->uniqueId);
+        connectFixed(source, chain[0], inputGain);
 
         // Connect last node output (Merge point) with return mix gain
         const auto& last = chain.back();
-        connectBalanced({last->uniqueId, last->getAudioOutputCount()}, destination, m_branchGains[r]);
+        const float outputGain = pathSplitGainAfter(r, last->uniqueId) * pathMixerGainBefore(r, {});
+        connectBalanced({last->uniqueId, last->getAudioOutputCount()}, destination, m_branchGains[r], outputGain);
     }
 
     m_engine->rebuildGraph();
+    m_engine->resumeProcessing();
 }
 
 // ─── Scene item lifecycle ─────────────────────────────────────────────────────
@@ -859,39 +1419,184 @@ void NodeCanvas::keyPressEvent(QKeyEvent* event) {
 }
 
 void NodeCanvas::setSplitCol(int row, int col) {
-    if (row == 0 || row == 2) {
-        m_rows[row].splitCol = col;
-        rebuildAudioConnections();
-        QTimer::singleShot(0, [this]() {
-            updateLayout();
-            emit routingChanged();
-        });
-    }
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    const int parentRow = m_rows[row].parentRow;
+    setSplitAnchor(row, col >= 0 && col < NUM_COLS && m_rows[parentRow].plugins[col]
+        ? m_rows[parentRow].plugins[col]->uniqueId : std::string{});
 }
 
 void NodeCanvas::setMergeCol(int row, int col) {
-    if (row == 0 || row == 2) {
-        m_rows[row].mergeCol = col;
-        rebuildAudioConnections();
-        QTimer::singleShot(0, [this]() {
-            updateLayout();
-            emit routingChanged();
-        });
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    const int parentRow = m_rows[row].parentRow;
+    setMergeAnchor(row, col >= 0 && col < NUM_COLS && m_rows[parentRow].plugins[col]
+        ? m_rows[parentRow].plugins[col]->uniqueId : std::string{});
+}
+
+void NodeCanvas::setSplitAnchor(int row, const std::string& nodeId) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    const int parentRow = m_rows[row].parentRow;
+    if (!nodeId.empty() && findNodeColumn(parentRow, nodeId) < 0) return;
+    const int splitCol = findNodeColumn(parentRow, nodeId);
+    const int mergeCol = findNodeColumn(parentRow, m_rows[row].mergeBeforeNodeId);
+    if (splitCol >= 0 && mergeCol >= 0 && splitCol >= mergeCol) {
+        updateLayout();
+        return;
     }
+    m_rows[row].splitAfterNodeId = nodeId;
+    applyRoutingChange();
+}
+
+void NodeCanvas::setMergeAnchor(int row, const std::string& nodeId) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    const int parentRow = m_rows[row].parentRow;
+    if (!nodeId.empty() && findNodeColumn(parentRow, nodeId) < 0) return;
+    const int splitCol = findNodeColumn(parentRow, m_rows[row].splitAfterNodeId);
+    const int mergeCol = findNodeColumn(parentRow, nodeId);
+    if (splitCol >= 0 && mergeCol >= 0 && splitCol >= mergeCol) {
+        updateLayout();
+        return;
+    }
+    m_rows[row].mergeBeforeNodeId = nodeId;
+    applyRoutingChange();
+}
+
+bool NodeCanvas::isPolarityInverted(int row) const {
+    return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) && m_rows[row].polarityInverted;
+}
+
+void NodeCanvas::setPolarityInverted(int row, bool inverted) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    m_rows[row].polarityInverted = inverted;
+    updateBranchGains(row);
+    emit routingChanged();
+}
+
+QString NodeCanvas::getBranchName(int row) const {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return {};
+
+    const bool b1Active = m_rows[1].hasSplitSection;
+    const bool b2Active = m_rows[0].hasSplitSection;
+    const bool c1Active = m_rows[3].hasSplitSection;
+    const bool c2Active = m_rows[4].hasSplitSection;
+
+    if (row == 1 || row == 0) {
+        if (b1Active && b2Active) {
+            return row == 1 ? "Path B1" : "Path B2";
+        }
+        return "Path B";
+    } else if (row == 3 || row == 4) {
+        if (b1Active) {
+            if (c1Active && c2Active) {
+                return row == 3 ? "Path C1" : "Path C2";
+            }
+            return "Path C";
+        } else {
+            if (c1Active && c2Active) {
+                return row == 3 ? "Path B1" : "Path B2";
+            }
+            return "Path B";
+        }
+    }
+    return "Path B";
+}
+
+void NodeCanvas::setBranchName(int row, const QString& name) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    const QString trimmed = name.trimmed();
+    m_rows[row].name = (trimmed.isEmpty() ? (QString("Branch %1").arg(row)).toStdString() : trimmed.toStdString());
+    if (m_routingUpdateDepth > 0) {
+        m_routingUpdatePending = true;
+        return;
+    }
+    updateLayout();
+    emit routingChanged();
+}
+
+void NodeCanvas::setMainOutputEnabled(bool enabled) {
+    if (m_mainOutputEnabled == enabled) return;
+    m_mainOutputEnabled = enabled;
+    applyRoutingChange();
 }
 
 void NodeCanvas::updateBranchGains(int row) {
-    if (row != 0 && row != 2) return;
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     const float level = std::clamp(m_rows[row].mix, 0.0f, 1.0f);
     const float pan = std::clamp(m_rows[row].pan, -1.0f, 1.0f);
-    m_branchGains[row].left->store(level * (pan > 0.0f ? 1.0f - pan : 1.0f), std::memory_order_relaxed);
-    m_branchGains[row].right->store(level * (pan < 0.0f ? 1.0f + pan : 1.0f), std::memory_order_relaxed);
-    m_branchGains[row].mono->store(level, std::memory_order_relaxed);
-    m_branchGains[row].monoHalf->store(level * 0.5f, std::memory_order_relaxed);
+    const float polarity = m_rows[row].polarityInverted ? -1.0f : 1.0f;
+    m_branchGains[row].left->store(polarity * level * (pan > 0.0f ? 1.0f - pan : 1.0f), std::memory_order_relaxed);
+    m_branchGains[row].right->store(polarity * level * (pan < 0.0f ? 1.0f + pan : 1.0f), std::memory_order_relaxed);
+    m_branchGains[row].mono->store(polarity * level, std::memory_order_relaxed);
+    m_branchGains[row].monoHalf->store(polarity * level * 0.5f, std::memory_order_relaxed);
+}
+
+float NodeCanvas::branchSplitGain(int row) const {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return 1.0f;
+    if (m_rows[row].splitMode == GridRow::SplitMode::Copy) return 1.0f;
+    constexpr float halfPi = 1.57079632679f;
+    const float p = (std::clamp(m_rows[row].splitPosition, -1.0f, 1.0f) + 1.0f) * 0.5f;
+    return std::sin(p * halfPi);
+}
+
+float NodeCanvas::pathSplitGainAfter(int parentRow, const std::string& sourceNodeId) const {
+    constexpr float halfPi = 1.57079632679f;
+    float gain = 1.0f;
+    for (int row : {0, 1, 3, 4}) {
+        if (!m_rows[row].hasSplitSection || !m_rows[row].enabled || m_rows[row].parentRow != parentRow ||
+            m_rows[row].splitAfterNodeId != sourceNodeId) continue;
+        if (!m_rows[row].mainInputEnabled) {
+            gain = 0.0f;
+            continue;
+        }
+        if (m_rows[row].splitMode == GridRow::SplitMode::Copy) continue;
+        const float p = (std::clamp(m_rows[row].splitPosition, -1.0f, 1.0f) + 1.0f) * 0.5f;
+        gain *= std::cos(p * halfPi);
+    }
+    return gain;
+}
+
+float NodeCanvas::pathMixerGainBefore(int parentRow, const std::string& destinationNodeId) const {
+    float gain = 1.0f;
+    for (int row : {0, 1, 3, 4}) {
+        if (!m_rows[row].hasSplitSection || m_rows[row].parentRow != parentRow ||
+            m_rows[row].mergeBeforeNodeId != destinationNodeId) continue;
+        gain *= m_rows[row].mainInputEnabled ? std::clamp(m_rows[row].mainMix, 0.0f, 1.0f) : 0.0f;
+    }
+    return gain;
+}
+
+void NodeCanvas::setBranchDefaults(int row, float level) {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
+    m_rows[row].mix = level;
+    m_rows[row].levelConfigured = true;
+    updateBranchGains(row);
+}
+
+void NodeCanvas::beginRoutingUpdate() {
+    ++m_routingUpdateDepth;
+}
+
+void NodeCanvas::endRoutingUpdate() {
+    if (m_routingUpdateDepth == 0) return;
+    if (--m_routingUpdateDepth == 0 && m_routingUpdatePending) {
+        m_routingUpdatePending = false;
+        rebuildAudioConnections();
+        updateLayout();
+        emit routingChanged();
+    }
+}
+
+void NodeCanvas::applyRoutingChange(bool rebuildAudio) {
+    if (m_routingUpdateDepth > 0) {
+        m_routingUpdatePending = m_routingUpdatePending || rebuildAudio;
+        return;
+    }
+    if (rebuildAudio) rebuildAudioConnections();
+    updateLayout();
+    emit routingChanged();
 }
 
 void NodeCanvas::setMix(int row, float val) {
-    if (row != 0 && row != 2) return;
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].mix = std::clamp(val, 0.0f, 1.0f);
     m_rows[row].levelConfigured = true;
     updateBranchGains(row);
@@ -899,42 +1604,44 @@ void NodeCanvas::setMix(int row, float val) {
 }
 
 void NodeCanvas::setPan(int row, float val) {
-    if (row != 0 && row != 2) return;
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].pan = std::clamp(val, -1.0f, 1.0f);
     updateBranchGains(row);
     emit routingChanged();
 }
 
 void NodeCanvas::setBranchEnabled(int row, bool enabled) {
-    if (row != 0 && row != 2) return;
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     if (enabled && !m_rows[row].enabled && m_rows[row].isEmpty() && !m_rows[row].levelConfigured) {
         m_rows[row].mix = 0.0f;
         m_rows[row].levelConfigured = true;
         updateBranchGains(row);
     }
     m_rows[row].enabled = enabled;
-    updateLayout();
-    emit routingChanged();
+    if (enabled) m_rows[row].hasSplitSection = true;
+    applyRoutingChange();
 }
 
 int NodeCanvas::getBranchOutputChannels(int row) const {
-    if (row != 0 && row != 2) return 0;
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return 0;
     for (int c = NUM_COLS - 1; c >= 0; --c) {
         if (m_rows[row].plugins[c]) return m_rows[row].plugins[c]->getAudioOutputCount();
     }
-    if (m_rows[row].splitCol >= 0) {
-        for (int c = m_rows[row].splitCol; c >= 0; --c) {
-            if (m_rows[1].plugins[c]) return m_rows[1].plugins[c]->getAudioOutputCount();
+    const int splitCol = getSplitCol(row);
+    if (splitCol >= 0) {
+        for (int c = splitCol; c >= 0; --c) {
+            if (m_rows[m_rows[row].parentRow].plugins[c]) return m_rows[m_rows[row].parentRow].plugins[c]->getAudioOutputCount();
         }
     }
     return 2;
 }
 
 int NodeCanvas::getBranchDestinationChannels(int row) const {
-    if (row != 0 && row != 2) return 0;
-    if (m_rows[row].mergeCol >= 0) {
-        for (int c = m_rows[row].mergeCol; c < NUM_COLS; ++c) {
-            if (m_rows[1].plugins[c]) return m_rows[1].plugins[c]->getAudioInputCount();
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return 0;
+    const int mergeCol = getMergeCol(row);
+    if (mergeCol >= 0) {
+        for (int c = mergeCol; c < NUM_COLS; ++c) {
+            if (m_rows[m_rows[row].parentRow].plugins[c]) return m_rows[m_rows[row].parentRow].plugins[c]->getAudioInputCount();
         }
     }
     return 2;
@@ -951,7 +1658,7 @@ PlusButtonWidget* NodeCanvas::findPlusButton(int row, int col) const {
     return nullptr;
 }
 
-void NodeCanvas::setDragGap(int row, int plusIdx) {
+void NodeCanvas::setDragGap(int row, int plusIdx, bool isSecondOfCol) {
     // Find currently dragged node widget
     NodeWidget* draggedNode = nullptr;
     for (auto* item : m_scene->items()) {
@@ -965,16 +1672,54 @@ void NodeCanvas::setDragGap(int row, int plusIdx) {
 
     if (draggedNode) {
         auto [fromRow, fromCol] = findNode(draggedNode->getAudioNode());
-        if (fromRow == row && (plusIdx == fromCol || plusIdx == fromCol + 1)) {
-            // Current position in the chain - do not open a gap!
-            clearDragGap();
-            return;
+        if (fromRow == row) {
+            bool isSameSlot = false;
+            if (plusIdx == fromCol) {
+                // Left side of plugin
+                bool hasGap = false;
+                for (int child : {0, 1, 3, 4}) {
+                    if (child != row && m_rows[child].hasSplitSection && m_rows[child].parentRow == row) {
+                        int splitCol = getSplitCol(child);
+                        int splitIdx = (splitCol < 0) ? 0 : splitCol + 1;
+                        int mergeCol = getMergeCol(child);
+                        int mergeIdx = (mergeCol < 0) ? (int)m_rows[row].plugins.size() : mergeCol;
+                        if (splitIdx == fromCol || mergeIdx == fromCol) hasGap = true;
+                    }
+                }
+                if (hasGap) {
+                    if (isSecondOfCol) isSameSlot = true;
+                } else {
+                    isSameSlot = true;
+                }
+            } else if (plusIdx == fromCol + 1) {
+                // Right side of plugin
+                bool hasGap = false;
+                for (int child : {0, 1, 3, 4}) {
+                    if (child != row && m_rows[child].hasSplitSection && m_rows[child].parentRow == row) {
+                        int splitCol = getSplitCol(child);
+                        int splitIdx = (splitCol < 0) ? 0 : splitCol + 1;
+                        int mergeCol = getMergeCol(child);
+                        int mergeIdx = (mergeCol < 0) ? (int)m_rows[row].plugins.size() : mergeCol;
+                        if (splitIdx == fromCol + 1 || mergeIdx == fromCol + 1) hasGap = true;
+                    }
+                }
+                if (hasGap) {
+                    if (!isSecondOfCol) isSameSlot = true;
+                } else {
+                    isSameSlot = true;
+                }
+            }
+            if (isSameSlot) {
+                clearDragGap();
+                return;
+            }
         }
     }
 
-    if (m_dragGapRow != row || m_dragGapCol != plusIdx) {
+    if (m_dragGapRow != row || m_dragGapCol != plusIdx || m_dragGapIsSecondOfCol != isSecondOfCol) {
         m_dragGapRow = row;
         m_dragGapCol = plusIdx;
+        m_dragGapIsSecondOfCol = isSecondOfCol;
         reflowLayoutWithDragGap();
     }
 }
@@ -983,6 +1728,7 @@ void NodeCanvas::clearDragGap() {
     if (m_dragGapRow != -1 || m_dragGapCol != -1) {
         m_dragGapRow = -1;
         m_dragGapCol = -1;
+        m_dragGapIsSecondOfCol = false;
         if (m_dragPlaceholderItem) m_dragPlaceholderItem->hide();
         reflowLayoutWithDragGap();
     }
@@ -995,14 +1741,31 @@ void NodeCanvas::reflowLayoutWithDragGap() {
     qreal minimumChainW = longestChain * PLUG_NODE_W + (longestChain + 1) * (INSERT_BTN_W + 2 * MIN_SPACING);
     W = std::max(W, 2 * MARGIN_X + 2 * SYS_NODE_W + 32.0 + minimumChainW);
     qreal H = std::max(200.0, (qreal)viewport()->height());
+    constexpr qreal LANE_HEIGHT = 140.0;
+    qreal offset[NUM_ROWS] = {0.0};
+    if (m_rows[1].hasSplitSection) {
+        offset[1] = -LANE_HEIGHT;
+        offset[0] = m_rows[0].hasSplitSection ? -2 * LANE_HEIGHT : -LANE_HEIGHT;
+    }
+    if (m_rows[3].hasSplitSection) {
+        offset[3] = LANE_HEIGHT;
+        offset[4] = m_rows[4].hasSplitSection ? 2 * LANE_HEIGHT : LANE_HEIGHT;
+    }
+    qreal minY = 0.0;
+    qreal maxY = 0.0;
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        if (r == MAIN_ROW || m_rows[r].hasSplitSection) {
+            minY = std::min(minY, offset[r]);
+            maxY = std::max(maxY, offset[r]);
+        }
+    }
+    qreal activeSpan = maxY - minY;
+    H = std::max(H, activeSpan + 2 * MARGIN_Y + 40.0);
 
-    // Row centres (evenly divide vertical space)
-    qreal rowH = (H - 2 * MARGIN_Y) / (qreal)NUM_ROWS;
     qreal rowCenters[NUM_ROWS];
-    for (int r = 0; r < NUM_ROWS; ++r)
-        rowCenters[r] = snapToGrid(MARGIN_Y + (r + 0.5) * rowH);
+    calculateRowCenters(rowCenters, H);
 
-    qreal sysCY = rowCenters[1];
+    qreal sysCY = rowCenters[MAIN_ROW];
     qreal inputW = m_sysInputWidget ? m_sysInputWidget->width() : 160.0;
     qreal outputW = m_sysOutputWidget ? m_sysOutputWidget->width() : 160.0;
     qreal trackLeft  = MARGIN_X + inputW + 16.0;
@@ -1011,9 +1774,16 @@ void NodeCanvas::reflowLayoutWithDragGap() {
 
     if (m_dragPlaceholderItem) m_dragPlaceholderItem->hide();
 
-    for (int r = 0; r < NUM_ROWS; ++r) {
-        reflowRow(r, rowCenters[r], trackLeft, trackRight, trackW);
-    }
+    // 1. Reflow main row (r == MAIN_ROW) first
+    reflowRow(MAIN_ROW, rowCenters[MAIN_ROW], trackLeft, trackRight, trackW);
+
+    // 2. Reflow level 1 side rows (r == 1 and r == 3)
+    reflowRow(1, rowCenters[1], trackLeft, trackRight, trackW);
+    reflowRow(3, rowCenters[3], trackLeft, trackRight, trackW);
+
+    // 3. Reflow level 2 side rows (r == 0 and r == 4)
+    reflowRow(0, rowCenters[0], trackLeft, trackRight, trackW);
+    reflowRow(4, rowCenters[4], trackLeft, trackRight, trackW);
 }
 
 void NodeCanvas::reflowRow(int r, qreal cy, qreal trackLeft, qreal trackRight, qreal trackW) {
@@ -1025,43 +1795,43 @@ void NodeCanvas::reflowRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
     int n = (int)occupied.size();
     if (occupied.empty()) return;
 
+    // Calculate child split/merge gaps on this row
+    int numGaps = 0;
+    for (int i = 0; i <= n; ++i) {
+        bool hasSplitGap = false;
+        bool hasMergeGap = false;
+        for (int child : {0, 1, 3, 4}) {
+            if (child != r && m_rows[child].hasSplitSection && m_rows[child].parentRow == r) {
+                int splitCol = getSplitCol(child);
+                int splitIdx = (splitCol < 0) ? 0 : splitCol + 1;
+                if (splitIdx == i) hasSplitGap = true;
+
+                int mergeCol = getMergeCol(child);
+                int mergeIdx = (mergeCol < 0) ? n : mergeCol;
+                if (mergeIdx == i) hasMergeGap = true;
+            }
+        }
+        if (hasSplitGap) numGaps++;
+        if (hasMergeGap) numGaps++;
+    }
+    qreal totalGapW = numGaps * 56.0;
+
     qreal startX = trackLeft;
     qreal endX = trackRight;
 
-    if (r == 0 || r == 2) {
-        auto getPlusButtonX = [&](int plusIdx) -> qreal {
-            if (auto* plus = findPlusButton(1, plusIdx)) {
-                return plus->scenePos().x();
-            }
-            if (plusIdx == 0) return snapToGrid(trackLeft);
-            return snapToGrid(trackRight);
-        };
-
-        std::vector<int> occupied1;
-        for (int c = 0; c < NUM_COLS; ++c) {
-            if (m_rows[1].plugins[c]) occupied1.push_back(c);
+    if (r != MAIN_ROW) {
+        startX = row.parentSplitX;
+        qreal requiredW = 0.0;
+        qreal totalNodeW1 = 0.0;
+        for (int c : occupied) {
+            qreal w = m_nodeWidgets[r][c] ? m_nodeWidgets[r][c]->width() : PLUG_NODE_W;
+            totalNodeW1 += w;
         }
-        int n1 = (int)occupied1.size();
-
-        int splitPlusIdx = 0;
-        if (row.splitCol >= 0) {
-            auto it = std::find(occupied1.begin(), occupied1.end(), row.splitCol);
-            if (it != occupied1.end()) {
-                int idx = std::distance(occupied1.begin(), it);
-                splitPlusIdx = idx + 1;
-            }
-        }
-        startX = getPlusButtonX(splitPlusIdx);
-
-        int mergePlusIdx = n1;
-        if (row.mergeCol >= 0) {
-            auto it = std::find(occupied1.begin(), occupied1.end(), row.mergeCol);
-            if (it != occupied1.end()) {
-                int idx = std::distance(occupied1.begin(), it);
-                mergePlusIdx = idx;
-            }
-        }
-        endX = getPlusButtonX(mergePlusIdx);
+        qreal totalInsertW1 = (n + 1) * INSERT_BTN_W;
+        int numSpaces1 = 2 * n + 2;
+        requiredW = totalNodeW1 + totalInsertW1 + numSpaces1 * MIN_SPACING + totalGapW;
+        requiredW = std::max(requiredW, 168.0);
+        endX = std::max(row.parentMergeX, startX + requiredW);
     }
 
     qreal rowTrackW = std::max(50.0, endX - startX);
@@ -1079,31 +1849,110 @@ void NodeCanvas::reflowRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
     qreal gapW = hasGap ? 160.0 : 0.0;
 
     int numSpaces = 2 * n + 2 + (hasGap ? 2 : 0);
-    qreal availableSpacing = (rowTrackW - totalNodeW - totalInsertW - gapW) / (qreal)numSpaces;
+    qreal availableSpacing = (rowTrackW - totalNodeW - totalInsertW - gapW - totalGapW) / (qreal)numSpaces;
     qreal spacing = std::clamp(availableSpacing, MIN_SPACING, MAX_SPACING);
 
     qreal contentW = totalNodeW + totalInsertW + gapW + numSpaces * spacing;
-    qreal xCursor = startX + std::max(0.0, (rowTrackW - contentW) / 2.0);
+    qreal xCursor = startX + std::max(0.0, (rowTrackW - contentW - totalGapW) / 2.0);
+
     for (int i = 0; i <= n; ++i) {
-        xCursor += spacing;
+        bool hasSplitGap = false;
+        bool hasMergeGap = false;
+        for (int child : {0, 1, 3, 4}) {
+            if (child != r && m_rows[child].hasSplitSection && m_rows[child].parentRow == r) {
+                int splitCol = getSplitCol(child);
+                int splitIdx = (splitCol < 0) ? 0 : splitCol + 1;
+                if (splitIdx == i) hasSplitGap = true;
 
-        if (hasGap && i == m_dragGapCol) {
-            if (m_dragPlaceholderItem) {
-                m_dragPlaceholderItem->setRect(0, 0, 160, 80);
-                m_dragPlaceholderItem->setPos(xCursor, cy - 40);
-                m_dragPlaceholderItem->show();
+                int mergeCol = getMergeCol(child);
+                int mergeIdx = (mergeCol < 0) ? n : mergeCol;
+                if (mergeIdx == i) hasMergeGap = true;
             }
-            xCursor += 160.0;
-            xCursor += spacing;
         }
 
-        if (auto* pb = findPlusButton(r, i)) {
-            setItemTargetPos(pb, QPointF(snapToGrid(xCursor + INSERT_BTN_W / 2.0), cy), true);
+        int numGapsAtI = (hasSplitGap ? 1 : 0) + (hasMergeGap ? 1 : 0);
+
+        if (numGapsAtI > 0) {
+            // Spacing before plus button (left)
+            xCursor += spacing;
+
+            if (hasGap && i == m_dragGapCol) {
+                if (m_dragPlaceholderItem) {
+                    m_dragPlaceholderItem->setRect(0, 0, 160, 80);
+                    m_dragPlaceholderItem->setPos(xCursor, cy - 40);
+                    m_dragPlaceholderItem->show();
+                }
+                xCursor += 160.0;
+                xCursor += spacing;
+            }
+
+            // Find all plus buttons at row r, index i
+            std::vector<PlusButtonWidget*> buttons;
+            for (auto* item : m_scene->items()) {
+                if (auto* pb = dynamic_cast<PlusButtonWidget*>(item)) {
+                    if (pb->getRow() == r && pb->getCol() == i) {
+                        buttons.push_back(pb);
+                    }
+                }
+            }
+            std::sort(buttons.begin(), buttons.end(), [](PlusButtonWidget* a, PlusButtonWidget* b) {
+                return a->scenePos().x() < b->scenePos().x();
+            });
+
+            qreal currentGapOffset = 56.0;
+
+            if (buttons.size() > 0) {
+                setItemTargetPos(buttons[0], QPointF(snapToGrid(xCursor + INSERT_BTN_W / 2.0), cy), true);
+            }
+
+            if (numGapsAtI > 1) {
+                if (buttons.size() > 1) {
+                    setItemTargetPos(buttons[1], QPointF(snapToGrid(xCursor + INSERT_BTN_W / 2.0 + 56.0), cy), true);
+                }
+                if (buttons.size() > 2) {
+                    setItemTargetPos(buttons[2], QPointF(snapToGrid(xCursor + INSERT_BTN_W / 2.0 + 112.0), cy), true);
+                }
+                currentGapOffset = 112.0;
+            } else {
+                if (buttons.size() > 1) {
+                    setItemTargetPos(buttons[1], QPointF(snapToGrid(xCursor + INSERT_BTN_W / 2.0 + 56.0), cy), true);
+                }
+            }
+
+            xCursor += INSERT_BTN_W + currentGapOffset;
+
+        } else {
+            // Spacing before plus button
+            xCursor += spacing;
+
+            if (hasGap && i == m_dragGapCol) {
+                if (m_dragPlaceholderItem) {
+                    m_dragPlaceholderItem->setRect(0, 0, 160, 80);
+                    m_dragPlaceholderItem->setPos(xCursor, cy - 40);
+                    m_dragPlaceholderItem->show();
+                }
+                xCursor += 160.0;
+                xCursor += spacing;
+            }
+
+            std::vector<PlusButtonWidget*> buttons;
+            for (auto* item : m_scene->items()) {
+                if (auto* pb = dynamic_cast<PlusButtonWidget*>(item)) {
+                    if (pb->getRow() == r && pb->getCol() == i) {
+                        buttons.push_back(pb);
+                    }
+                }
+            }
+            if (buttons.size() > 0) {
+                setItemTargetPos(buttons[0], QPointF(snapToGrid(xCursor + INSERT_BTN_W / 2.0), cy), true);
+            }
+            xCursor += INSERT_BTN_W;
         }
-        xCursor += INSERT_BTN_W;
 
         if (i < n) {
+            // Spacing before node
             xCursor += spacing;
+
             int c = occupied[i];
             if (auto* nw = m_nodeWidgets[r][c]) {
                 setItemTargetPos(nw, QPointF(xCursor, cy - nw->height() / 2.0), true);
@@ -1113,7 +1962,7 @@ void NodeCanvas::reflowRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
     }
 }
 
-void NodeCanvas::movePluginToGap(int fromRow, int fromCol, int toRow, int toColGap) {
+void NodeCanvas::movePluginToGap(int fromRow, int fromCol, int toRow, int toColGap, bool isSecondOfCol) {
     if (fromRow < 0 || fromRow >= NUM_ROWS || fromCol < 0 || fromCol >= NUM_COLS) return;
     if (toRow < 0 || toRow >= NUM_ROWS) return;
 
@@ -1121,6 +1970,16 @@ void NodeCanvas::movePluginToGap(int fromRow, int fromCol, int toRow, int toColG
     if (!plugin) return;
 
     m_engine->suspendProcessing();
+
+    // Record current split/merge locations of child rows before shift
+    std::vector<std::pair<int, int>> childSplits;
+    std::vector<std::pair<int, int>> childMerges;
+    for (int child : {0, 1, 3, 4}) {
+        if (child != toRow && m_rows[child].hasSplitSection && m_rows[child].parentRow == toRow) {
+            childSplits.push_back({child, getSplitCol(child)});
+            childMerges.push_back({child, getMergeCol(child)});
+        }
+    }
 
     m_rows[fromRow].plugins[fromCol] = nullptr;
     std::vector<std::shared_ptr<AudioNode>> fromChain;
@@ -1153,17 +2012,37 @@ void NodeCanvas::movePluginToGap(int fromRow, int fromCol, int toRow, int toColG
     for (int c = 0; c < NUM_COLS; ++c) {
         m_rows[toRow].plugins[c] = (c < (int)toChain.size()) ? toChain[c] : nullptr;
     }
+
+    // Adjust child routing anchors if dropped specifically before/after the connection point
+    for (const auto& pair : childSplits) {
+        int child = pair.first;
+        int oldSplitCol = pair.second;
+        if (oldSplitCol == toColGap - 1) {
+            if (!isSecondOfCol) {
+                m_rows[child].splitAfterNodeId = plugin->uniqueId;
+            }
+        }
+    }
+    for (const auto& pair : childMerges) {
+        int child = pair.first;
+        int oldMergeCol = pair.second;
+        if (oldMergeCol == toColGap) {
+            if (isSecondOfCol) {
+                m_rows[child].mergeBeforeNodeId = plugin->uniqueId;
+            }
+        }
+    }
+
     if (toRow == 0 || toRow == 2) {
-        if (!m_rows[toRow].levelConfigured) m_rows[toRow].mix = 1.0f;
+        m_rows[toRow].hasSplitSection = true;
+        if (!m_rows[toRow].levelConfigured) setBranchDefaults(toRow, 0.25118864f);
         m_rows[toRow].enabled = true;
         updateBranchGains(toRow);
     }
 
     m_engine->resumeProcessing();
 
-    rebuildAudioConnections();
-    updateLayout();
-    emit routingChanged();
+    applyRoutingChange();
 }
 
 void NodeCanvas::setItemTargetPos(QGraphicsItem* item, QPointF targetPos, bool animate) {

@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <string>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace {
 std::unordered_map<std::string, LV2_URID> urids;
@@ -29,6 +31,51 @@ LV2_URID mapUri(LV2_URID_Map_Handle, const char* uri) {
 const char* unmapUri(LV2_URID_Unmap_Handle, LV2_URID urid) {
     for (const auto& [uri, id] : urids) if (id == urid) return uri.c_str();
     return nullptr;
+}
+
+static std::vector<uint8_t> buildPatchSet(const std::string& propertyUri, const std::string& path) {
+    LV2_URID patchSetUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/patch#Set");
+    LV2_URID patchPropertyUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/patch#property");
+    LV2_URID patchValueUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/patch#value");
+    LV2_URID propertyUrid = mapUri(nullptr, propertyUri.c_str());
+    LV2_URID pathUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/atom#Path");
+    LV2_URID uridUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/atom#URID");
+    LV2_URID objectUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/atom#Object");
+
+    auto align8 = [](size_t size) { return (size + 7) & ~7; };
+    size_t pathLenAligned = align8(path.size() + 1);
+    size_t objBodySize = 8  // otype + context
+                       + 8  // Property 1 key + context
+                       + 8  // Property 1 value size + type
+                       + 8  // Property 1 value (aligned)
+                       + 8  // Property 2 key + context
+                       + 8  // Property 2 value size + type
+                       + pathLenAligned; // Property 2 value (aligned)
+
+    std::vector<uint8_t> buffer(8 + objBodySize, 0);
+    uint32_t* p = reinterpret_cast<uint32_t*>(buffer.data());
+    
+    p[0] = objBodySize;
+    p[1] = objectUrid;
+    p[2] = patchSetUrid;
+    p[3] = 0; // context
+
+    p[4] = patchPropertyUrid;
+    p[5] = 0; // context
+    p[6] = 4; // size
+    p[7] = uridUrid;
+    p[8] = propertyUrid;
+    p[9] = 0; // padding
+
+    p[10] = patchValueUrid;
+    p[11] = 0; // context
+    p[12] = path.size() + 1; // size
+    p[13] = pathUrid;
+
+    uint8_t* pathPtr = buffer.data() + 56;
+    std::memcpy(pathPtr, path.c_str(), path.size() + 1);
+
+    return buffer;
 }
 
 struct Helper {
@@ -50,6 +97,7 @@ struct Helper {
     QString titlePrefix;
     QLocalSocket socket;
     LilvWorld* world = nullptr;
+    const LilvPlugin* plugin = nullptr;
     SuilHost* host = nullptr;
     SuilInstance* instance = nullptr;
     void* window = nullptr;
@@ -68,10 +116,14 @@ struct Helper {
     static void portWrite(SuilController controller, uint32_t index, uint32_t size,
                           uint32_t protocol, const void* buffer) {
         auto* self = static_cast<Helper*>(controller);
-        if (!self || protocol != 0 || size != sizeof(float)) return;
+        if (!self) return;
         QByteArray message;
         QDataStream stream(&message, QIODevice::WriteOnly);
-        stream << quint8('P') << quint32(index) << *static_cast<const float*>(buffer);
+        if (protocol == 0 && size == sizeof(float)) {
+            stream << quint8('P') << quint32(index) << *static_cast<const float*>(buffer);
+        } else {
+            stream << quint8('A') << quint32(index) << quint32(protocol) << QByteArray(static_cast<const char*>(buffer), static_cast<int>(size));
+        }
         self->socket.write(message);
         self->socket.flush();
     }
@@ -106,7 +158,7 @@ struct Helper {
         world = lilv_world_new();
         lilv_world_load_all(world);
         LilvNode* pluginNode = lilv_new_uri(world, pluginUri.toUtf8().constData());
-        const LilvPlugin* plugin = lilv_plugins_get_by_uri(lilv_world_get_all_plugins(world), pluginNode);
+        plugin = lilv_plugins_get_by_uri(lilv_world_get_all_plugins(world), pluginNode);
         lilv_node_free(pluginNode);
         if (!plugin) return false;
 
@@ -184,12 +236,41 @@ struct Helper {
             while (true) {
                 stream.startTransaction();
                 quint8 command = 0;
-                quint32 index = 0;
-                float value = 0.0f;
-                stream >> command >> index >> value;
-                if (!stream.commitTransaction()) break;
+                stream >> command;
                 if (command == 'P') {
+                    quint32 index = 0;
+                    float value = 0.0f;
+                    stream >> index >> value;
+                    if (!stream.commitTransaction()) break;
                     suil_instance_port_event(instance, index, sizeof(float), 0, &value);
+                } else if (command == 'S') {
+                    QString uri;
+                    QString filePath;
+                    stream >> uri >> filePath;
+                    if (!stream.commitTransaction()) break;
+
+                    int atomInputPortIndex = -1;
+                    LilvNode* atomPortClass = lilv_new_uri(world, "http://lv2plug.in/ns/ext/atom#AtomPort");
+                    LilvNode* inputPortClass = lilv_new_uri(world, "http://lv2plug.in/ns/lv2core#InputPort");
+                    uint32_t numPorts = lilv_plugin_get_num_ports(plugin);
+                    for (uint32_t i = 0; i < numPorts; ++i) {
+                        const LilvPort* port = lilv_plugin_get_port_by_index(plugin, i);
+                        if (lilv_port_is_a(plugin, port, atomPortClass) && lilv_port_is_a(plugin, port, inputPortClass)) {
+                            atomInputPortIndex = i;
+                            break;
+                        }
+                    }
+                    lilv_node_free(atomPortClass);
+                    lilv_node_free(inputPortClass);
+
+                    if (atomInputPortIndex != -1) {
+                        std::vector<uint8_t> patchBuffer = buildPatchSet(uri.toStdString(), filePath.toStdString());
+                        LV2_URID seqUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/atom#Sequence");
+                        suil_instance_port_event(instance, atomInputPortIndex, patchBuffer.size(), seqUrid, patchBuffer.data());
+                    }
+                } else {
+                    stream.rollbackTransaction();
+                    break;
                 }
             }
             incoming.remove(0, static_cast<int>(stream.device()->pos()));
@@ -210,6 +291,7 @@ struct Helper {
 struct X11Helper {
     QLocalSocket socket;
     LilvWorld* world = nullptr;
+    const LilvPlugin* plugin = nullptr;
     SuilHost* host = nullptr;
     SuilInstance* instance = nullptr;
     Display* display = nullptr;
@@ -252,10 +334,14 @@ struct X11Helper {
     static void portWrite(SuilController controller, uint32_t index, uint32_t size,
                           uint32_t protocol, const void* buffer) {
         auto* self = static_cast<X11Helper*>(controller);
-        if (!self || protocol != 0 || size != sizeof(float)) return;
+        if (!self) return;
         QByteArray message;
         QDataStream stream(&message, QIODevice::WriteOnly);
-        stream << quint8('P') << quint32(index) << *static_cast<const float*>(buffer);
+        if (protocol == 0 && size == sizeof(float)) {
+            stream << quint8('P') << quint32(index) << *static_cast<const float*>(buffer);
+        } else {
+            stream << quint8('A') << quint32(index) << quint32(protocol) << QByteArray(static_cast<const char*>(buffer), static_cast<int>(size));
+        }
         self->socket.write(message);
         self->socket.flush();
     }
@@ -281,7 +367,7 @@ struct X11Helper {
         world = lilv_world_new();
         lilv_world_load_all(world);
         LilvNode* pluginNode = lilv_new_uri(world, pluginUri.toUtf8().constData());
-        const LilvPlugin* plugin = lilv_plugins_get_by_uri(lilv_world_get_all_plugins(world), pluginNode);
+        plugin = lilv_plugins_get_by_uri(lilv_world_get_all_plugins(world), pluginNode);
         lilv_node_free(pluginNode);
         if (!plugin) return false;
 
@@ -347,11 +433,42 @@ struct X11Helper {
             while (true) {
                 stream.startTransaction();
                 quint8 command = 0;
-                quint32 index = 0;
-                float value = 0.0f;
-                stream >> command >> index >> value;
-                if (!stream.commitTransaction()) break;
-                if (command == 'P') suil_instance_port_event(instance, index, sizeof(float), 0, &value);
+                stream >> command;
+                if (command == 'P') {
+                    quint32 index = 0;
+                    float value = 0.0f;
+                    stream >> index >> value;
+                    if (!stream.commitTransaction()) break;
+                    suil_instance_port_event(instance, index, sizeof(float), 0, &value);
+                } else if (command == 'S') {
+                    QString uri;
+                    QString filePath;
+                    stream >> uri >> filePath;
+                    if (!stream.commitTransaction()) break;
+
+                    int atomInputPortIndex = -1;
+                    LilvNode* atomPortClass = lilv_new_uri(world, "http://lv2plug.in/ns/ext/atom#AtomPort");
+                    LilvNode* inputPortClass = lilv_new_uri(world, "http://lv2plug.in/ns/lv2core#InputPort");
+                    uint32_t numPorts = lilv_plugin_get_num_ports(plugin);
+                    for (uint32_t i = 0; i < numPorts; ++i) {
+                        const LilvPort* port = lilv_plugin_get_port_by_index(plugin, i);
+                        if (lilv_port_is_a(plugin, port, atomPortClass) && lilv_port_is_a(plugin, port, inputPortClass)) {
+                            atomInputPortIndex = i;
+                            break;
+                        }
+                    }
+                    lilv_node_free(atomPortClass);
+                    lilv_node_free(inputPortClass);
+
+                    if (atomInputPortIndex != -1) {
+                        std::vector<uint8_t> patchBuffer = buildPatchSet(uri.toStdString(), filePath.toStdString());
+                        LV2_URID seqUrid = mapUri(nullptr, "http://lv2plug.in/ns/ext/atom#Sequence");
+                        suil_instance_port_event(instance, atomInputPortIndex, patchBuffer.size(), seqUrid, patchBuffer.data());
+                    }
+                } else {
+                    stream.rollbackTransaction();
+                    break;
+                }
             }
             incoming.remove(0, static_cast<int>(stream.device()->pos()));
         });

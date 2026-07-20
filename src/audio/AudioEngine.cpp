@@ -6,8 +6,6 @@
 #include <set>
 #include <map>
 #include <cstring>
-#include <thread>
-#include <chrono>
 
 SystemAudioNode::SystemAudioNode(const std::string& name, bool isInput, int numChannels)
     : m_name(name), m_isInput(isInput) {
@@ -44,8 +42,6 @@ AudioEngine::~AudioEngine() {
     if (m_jackClient) {
         jack_client_close(m_jackClient);
     }
-    delete m_activeGraphData;
-    delete m_pendingGraphData;
 }
 
 bool AudioEngine::init(const std::string& clientName) {
@@ -264,17 +260,14 @@ void AudioEngine::disconnectPorts(const std::string& srcId, int srcPort, const s
     );
 }
 
+void AudioEngine::clearConnections() {
+    std::lock_guard<std::mutex> lock(m_graphMutex);
+    m_connections.clear();
+}
+
 void AudioEngine::clearGraph() {
     std::lock_guard<std::mutex> lock(m_graphMutex);
-    
-    // Swap RTGraphData with nullptr to stop audio processing immediately
-    RTGraphData* oldData = m_rtGraphData.exchange(nullptr);
-    if (oldData) {
-        // Sleep for 2 milliseconds to let any active JACK callback finish processing
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        delete oldData;
-    }
-    
+
     m_connections.clear();
     m_nodes.erase(
         std::remove_if(m_nodes.begin(), m_nodes.end(),
@@ -359,9 +352,12 @@ void AudioEngine::topologicalSort(std::vector<AudioNode*>& sorted) {
 void AudioEngine::rebuildGraph() {
     std::lock_guard<std::mutex> lock(m_graphMutex);
     
-    // 1. Prepare all nodes
-    for (auto& n : m_nodes) {
-        n->prepare(m_sampleRate, m_bufferSize);
+    // Nodes are prepared on creation. Re-preparing every routing edit can
+    // restart hosted plugins and is unnecessary while their buffers are stable.
+    if (m_needsNodePrepare.exchange(false, std::memory_order_acq_rel)) {
+        for (auto& n : m_nodes) {
+            n->prepare(m_sampleRate, m_bufferSize);
+        }
     }
     
     // 2. Compute topological sort
@@ -369,7 +365,8 @@ void AudioEngine::rebuildGraph() {
     topologicalSort(sorted);
     
     // 3. Build new RT graph data
-    auto* pending = new RTGraphData();
+    auto pending = std::make_shared<RTGraphData>();
+    pending->nodeRefs = m_nodes;
     pending->executionOrder = sorted;
     
     for (const auto& conn : m_connections) {
@@ -411,7 +408,7 @@ void AudioEngine::rebuildGraph() {
                 rtConn.gain = conn.gain;
                 rtConn.liveGain = conn.liveGain;
                 rtConn.currentGain = conn.liveGain
-                    ? conn.liveGain->load(std::memory_order_relaxed)
+                    ? conn.liveGain->load(std::memory_order_relaxed) * conn.gain
                     : conn.gain;
                 pending->rtConnections.push_back(rtConn);
             }
@@ -419,15 +416,10 @@ void AudioEngine::rebuildGraph() {
     }
     
     // 4. Atomically swap graph structure
-    RTGraphData* oldData = m_rtGraphData.exchange(pending);
-    
-    // Delete old data safely (in the main thread)
-    if (oldData) {
-        // We delete it directly, but in a real-world scenario, we might want to defer deletion 
-        // until we are sure the audio thread has finished using it. In this Qt app, we can just delete it
-        // since the exchange guarantees the RT thread will use the new pointer on the next cycle.
-        // For security we can sleep a tiny bit or let it be.
-        delete oldData;
+    if (m_suspendedGraphData) {
+        m_suspendedGraphData = std::move(pending);
+    } else {
+        m_rtGraphData.store(std::move(pending), std::memory_order_release);
     }
 }
 
@@ -435,18 +427,13 @@ void AudioEngine::suspendProcessing() {
     std::lock_guard<std::mutex> lock(m_graphMutex);
     if (m_suspendedGraphData) return;
     
-    RTGraphData* oldData = m_rtGraphData.exchange(nullptr);
-    if (oldData) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        m_suspendedGraphData = oldData;
-    }
+    m_suspendedGraphData = m_rtGraphData.exchange(nullptr, std::memory_order_acq_rel);
 }
 
 void AudioEngine::resumeProcessing() {
     std::lock_guard<std::mutex> lock(m_graphMutex);
     if (m_suspendedGraphData) {
-        m_rtGraphData.store(m_suspendedGraphData, std::memory_order_release);
-        m_suspendedGraphData = nullptr;
+        m_rtGraphData.store(std::move(m_suspendedGraphData), std::memory_order_release);
     }
 }
 
@@ -459,6 +446,7 @@ int AudioEngine::processCallback(jack_nframes_t nframes, void* arg) {
 int AudioEngine::bufferSizeCallback(jack_nframes_t nframes, void* arg) {
     auto* engine = static_cast<AudioEngine*>(arg);
     engine->m_bufferSize = nframes;
+    engine->m_needsNodePrepare = true;
     engine->rebuildGraph();
     return 0;
 }
@@ -484,7 +472,7 @@ void AudioEngine::processAudio(int numFrames) {
         }
     }
 
-    RTGraphData* graph = m_rtGraphData.load(std::memory_order_acquire);
+    const auto graph = m_rtGraphData.load(std::memory_order_acquire);
     if (!graph) return;
     
     // 1. Copy physical JACK input buffers to SystemInput, apply input gain & measure input peak
@@ -536,7 +524,7 @@ void AudioEngine::processAudio(int numFrames) {
             }
             if (isSrcOfNode) {
                 const float targetGain = conn.liveGain
-                    ? conn.liveGain->load(std::memory_order_relaxed)
+                    ? conn.liveGain->load(std::memory_order_relaxed) * conn.gain
                     : conn.gain;
                 const float gainStep = (targetGain - conn.currentGain) / std::max(1, numFrames);
                 float gain = conn.currentGain;
