@@ -4,6 +4,8 @@
 #include "../audio/BypassNode.h"
 #include "NodeWidget.h"
 #include "Tone3000Dialog.h"
+#include <filesystem>
+#include <iostream>
 #include "PortWidget.h"
 #include <QSplitter>
 #include <QHBoxLayout>
@@ -1043,12 +1045,45 @@ void MainWindow::scanPlugins() {
     lilv_node_free(brandProperty);
     lilv_node_free(thumbnailProperty);
     
-    // Add VST3 stubs if needed, or standard paths scan
-    PluginInfo vst3Info1 = { "GxGuitarix", "/usr/lib64/vst3/Guitarix.vst3", "VST3 Plugins", "", "", false };
-    PluginInfo vst3Info2 = { "Multi Tap Delay", "/usr/lib64/vst3/Multi_Tap_Delay.vst3", "VST3 Plugins", "", "", false };
+    // Scan standard VST3 paths dynamically
+    std::vector<std::string> vst3Dirs = {
+        "/usr/lib/vst3",
+        "/usr/lib64/vst3",
+        "/usr/local/lib/vst3",
+        (QDir::homePath() + "/.vst3").toStdString()
+    };
+    
+    QSet<QString> scannedPaths;
+    for (const auto& dirPath : vst3Dirs) {
+        if (!std::filesystem::exists(dirPath)) continue;
+        try {
+            for (const auto& entry : std::filesystem::directory_iterator(dirPath)) {
+                if (entry.path().extension() == ".vst3") {
+                    QString fullPath = QString::fromStdString(entry.path().string());
+                    if (scannedPaths.contains(fullPath)) continue;
+                    scannedPaths.insert(fullPath);
+                    
+                    std::string name = entry.path().stem().string();
+                    PluginInfo vstInfo = { name, entry.path().string(), "VST3 Plugins", "", "", false };
+                    m_availablePlugins.push_back(vstInfo);
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error scanning VST3 directory " << dirPath << ": " << e.what() << std::endl;
+        }
+    }
+    
+    // Add VST3 stubs if not found on disk
+    if (!scannedPaths.contains("/usr/lib64/vst3/Guitarix.vst3")) {
+        PluginInfo vst3Info1 = { "GxGuitarix", "/usr/lib64/vst3/Guitarix.vst3", "VST3 Plugins", "", "", false };
+        m_availablePlugins.push_back(vst3Info1);
+    }
+    if (!scannedPaths.contains("/usr/lib64/vst3/Multi_Tap_Delay.vst3")) {
+        PluginInfo vst3Info2 = { "Multi Tap Delay", "/usr/lib64/vst3/Multi_Tap_Delay.vst3", "VST3 Plugins", "", "", false };
+        m_availablePlugins.push_back(vst3Info2);
+    }
+    
     PluginInfo bypassInfo = { "Bypass / Pass-through", "builtin:bypass", "Utilities", "", "", false };
-    m_availablePlugins.push_back(vst3Info1);
-    m_availablePlugins.push_back(vst3Info2);
     m_availablePlugins.push_back(bypassInfo);
 }
 
