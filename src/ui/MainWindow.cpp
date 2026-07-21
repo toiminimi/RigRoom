@@ -1344,6 +1344,7 @@ void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, bool is
         // col here is the chain insertion index (from PlusButtonWidget), not a fixed grid column.
         // Use insertPluginBefore to shift the chain correctly.
         m_canvas->insertPluginBefore(row, col, newNode, isSecondOfCol);
+        showPluginControls(newNode);
     }
 }
 
@@ -1376,6 +1377,7 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
         m_canvas->updateLayout();
     } else if (selected == removeAct) {
         m_canvas->removePluginAt(row, col);
+        showPluginControls(nullptr);
     } else if (selected == replaceAct) {
         std::vector<PickerPluginInfo> plugins;
         plugins.reserve(m_availablePlugins.size());
@@ -1436,6 +1438,7 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
             if (newNode) {
                 newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
                 m_canvas->replacePluginAt(row, col, newNode);
+                showPluginControls(newNode);
             }
         }
     }
@@ -2563,8 +2566,19 @@ public:
         
         uint32_t width = 800;
         uint32_t height = 600;
-        m_nativeWidth = width;
-        m_nativeHeight = height;
+        if (extGui && plugin) {
+            if (extGui->is_api_supported && extGui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false)) {
+                if (extGui->create) {
+                    extGui->create(plugin, CLAP_WINDOW_API_X11, false);
+                }
+                if (extGui->get_size) {
+                    extGui->get_size(plugin, &width, &height);
+                }
+            }
+        }
+
+        m_nativeWidth = (width > 0) ? width : 800;
+        m_nativeHeight = (height > 0) ? height : 600;
 
         double ratio = devicePixelRatioF();
         if (ratio <= 0.0) ratio = 1.0;
@@ -2651,35 +2665,23 @@ protected:
     void showEvent(QShowEvent* event) override {
         QDialog::showEvent(event);
         if (!m_attached && m_dpy) {
-            QTimer::singleShot(50, this, [this]() {
-                const clap_plugin_t* plugin = m_node->getClapPlugin();
-                const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
-                if (extGui && plugin && !m_attached) {
-                    if (extGui->is_api_supported && extGui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false)) {
-                        if (extGui->create) {
-                            extGui->create(plugin, CLAP_WINDOW_API_X11, false);
-                        }
-                        uint32_t w = 0, h = 0;
-                        if (extGui->get_size && extGui->get_size(plugin, &w, &h) && w > 0 && h > 0) {
-                            m_nativeWidth = w;
-                            m_nativeHeight = h;
-                        }
-                    }
-                    clap_window_t window{ CLAP_WINDOW_API_X11, { (void*)m_x11Container } };
-                    if (extGui->set_parent(plugin, &window)) {
-                        extGui->show(plugin);
-                        m_attached = true;
+            const clap_plugin_t* plugin = m_node->getClapPlugin();
+            const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
+            if (extGui && plugin && !m_attached) {
+                clap_window_t window{ CLAP_WINDOW_API_X11, { (void*)m_x11Container } };
+                if (extGui->set_parent(plugin, &window)) {
+                    extGui->show(plugin);
+                    m_attached = true;
 
-                        double ratio = devicePixelRatioF();
-                        if (ratio <= 0.0) ratio = 1.0;
-                        int logicalW = std::round(m_nativeWidth / ratio);
-                        int logicalH = std::round(m_nativeHeight / ratio);
-                        setMinimumSize(300, 200);
-                        resize(logicalW, logicalH);
-                        updateChildWindows(m_nativeWidth, m_nativeHeight);
-                    }
+                    double ratio = devicePixelRatioF();
+                    if (ratio <= 0.0) ratio = 1.0;
+                    int logicalW = std::round(m_nativeWidth / ratio);
+                    int logicalH = std::round(m_nativeHeight / ratio);
+                    setMinimumSize(300, 200);
+                    resize(logicalW, logicalH);
+                    updateChildWindows(m_nativeWidth, m_nativeHeight);
                 }
-            });
+            }
         }
     }
 
@@ -3033,21 +3035,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         return;
     }
 
-    auto [row, col] = m_canvas->findNode(node);
-    bool isSideRow = (row != NodeCanvas::MAIN_ROW && row >= 0 && row < NodeCanvas::NUM_ROWS);
+    m_noParamLabel->hide();
 
-    if (node->getControlPorts().empty()) {
-        if (!isSideRow) {
-            m_noParamLabel->show();
-            return;
-        }
-        m_noParamLabel->hide();
-    } else {
-        m_noParamLabel->hide();
-    }
-
-    if (!node->getControlPorts().empty()) {
-        auto* presetRow = new QWidget(m_paramContainer);
+    // Preset management bar
+    auto* presetRow = new QWidget(m_paramContainer);
         auto* presetLayout = new QHBoxLayout(presetRow);
         presetLayout->setContentsMargins(0, 0, 0, 4);
         presetLayout->setSpacing(4);
@@ -3127,7 +3118,6 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         presetSeparator->setFrameShape(QFrame::HLine);
         presetSeparator->setStyleSheet("background-color: #333333; margin-bottom: 4px;");
         m_paramLayout->addWidget(presetSeparator);
-    }
     
     // Add "Open Graphical UI..." button if plugin has UIs
     auto* lv2Node = dynamic_cast<LV2PluginNode*>(node.get());
@@ -3619,8 +3609,6 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             }
         });
     }
-
-    Q_UNUSED(row);
 }
 
 void MainWindow::showBranchControls(int row) {
