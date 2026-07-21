@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 #include "../audio/LV2Host.h"
 #include "../audio/VST3Host.h"
+#include "pluginterfaces/gui/iplugview.h"
+#include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "../audio/BypassNode.h"
 #include "NodeWidget.h"
 #include "Tone3000Dialog.h"
@@ -2291,6 +2293,220 @@ private:
     WId m_parentWindow = 0;
 };
 
+class VST3ContainerWidget : public QWidget {
+public:
+    VST3ContainerWidget(Steinberg::IPlugView* plugView, QWidget* parent = nullptr)
+        : QWidget(parent), m_plugView(plugView), m_attached(false), m_resizable(false) {
+        setAttribute(Qt::WA_NativeWindow, true);
+        setAttribute(Qt::WA_DontCreateNativeAncestors, true);
+        setAttribute(Qt::WA_OpaquePaintEvent, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+    }
+    
+    void setAttached(bool attached, int nativeW, int nativeH, bool resizable) {
+        m_attached = attached;
+        m_nativeWidth = nativeW;
+        m_nativeHeight = nativeH;
+        m_resizable = resizable;
+    }
+    
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        (void)event;
+    }
+    
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        if (m_plugView && m_attached) {
+            double ratio = devicePixelRatioF();
+            if (ratio <= 0.0) ratio = 1.0;
+            
+            Steinberg::ViewRect rect;
+            rect.left = 0;
+            rect.top = 0;
+            if (m_resizable) {
+                rect.right = std::round(width() * ratio);
+                rect.bottom = std::round(height() * ratio);
+            } else {
+                rect.right = m_nativeWidth;
+                rect.bottom = m_nativeHeight;
+            }
+            
+            m_plugView->onSize(&rect);
+            std::cout << "VST3Host: Container resizeEvent. Called onSize with: " 
+                      << rect.right << "x" << rect.bottom << std::endl;
+        }
+    }
+private:
+    Steinberg::IPlugView* m_plugView;
+    bool m_attached;
+    bool m_resizable;
+    int m_nativeWidth = 0;
+    int m_nativeHeight = 0;
+};
+
+class VST3PluginUIWindow : public QDialog {
+public:
+    VST3PluginUIWindow(VST3PluginNode* node, QWidget* parent = nullptr)
+        : QDialog(parent), m_node(node), m_plugView(node->getPlugView()), m_attached(false), m_resizable(false) {
+        
+        setWindowTitle(QString::fromStdString(node->getName()) + " - GUI");
+        setAttribute(Qt::WA_DeleteOnClose);
+        setWindowFlag(Qt::Tool, true);
+        setWindowFlag(Qt::WindowStaysOnTopHint, true);
+        setWindowModality(Qt::NonModal);
+        
+        QVBoxLayout* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        
+        m_container = new VST3ContainerWidget(m_plugView, this);
+        layout->addWidget(m_container);
+        
+        Steinberg::ViewRect size;
+        if (m_plugView && m_plugView->getSize(&size) == Steinberg::kResultOk) {
+            m_nativeWidth = size.right - size.left;
+            m_nativeHeight = size.bottom - size.top;
+            
+            double ratio = devicePixelRatioF();
+            if (ratio <= 0.0) ratio = 1.0;
+            
+            int logicalW = std::round(m_nativeWidth / ratio);
+            int logicalH = std::round(m_nativeHeight / ratio);
+            
+            m_resizable = (m_plugView->canResize() == Steinberg::kResultOk);
+            std::cout << "VST3Host: Native physical size: " << m_nativeWidth << "x" << m_nativeHeight 
+                      << ", Ratio: " << ratio << ", Resizable: " << (m_resizable ? "true" : "false") << std::endl;
+            
+            if (m_resizable) {
+                resize(logicalW, logicalH);
+            } else {
+                setFixedSize(logicalW, logicalH);
+            }
+        } else {
+            m_nativeWidth = 800;
+            m_nativeHeight = 600;
+            std::cout << "VST3Host: getSize failed, using default 800x600." << std::endl;
+            setFixedSize(800, 600);
+        }
+    }
+    
+    ~VST3PluginUIWindow() override {
+        if (m_plugView) {
+            if (m_attached) {
+                m_plugView->removed();
+            }
+            m_node->releasePlugView();
+        }
+    }
+    
+protected:
+    void showEvent(QShowEvent* event) override {
+        QDialog::showEvent(event);
+        if (m_plugView && !m_attached) {
+            // Defer attachment by 100ms to ensure the window is mapped and realized by XWayland
+            QTimer::singleShot(100, this, [this]() {
+                if (m_plugView && !m_attached) {
+                    bool x11Supported = (m_plugView->isPlatformTypeSupported(Steinberg::kPlatformTypeX11EmbedWindowID) == Steinberg::kResultOk);
+                    std::cout << "VST3Host: isPlatformTypeSupported(X11Embed) = " << (x11Supported ? "true" : "false") << std::endl;
+                    
+                    if (x11Supported) {
+                        WId cid = m_container->winId();
+                        std::cout << "VST3Host: Attaching to container winId: 0x" << std::hex << cid << std::dec << std::endl;
+                        Steinberg::tresult attachRes = m_plugView->attached((void*)cid, Steinberg::kPlatformTypeX11EmbedWindowID);
+                        std::cout << "VST3Host: attached returned: " << attachRes << std::endl;
+                        if (attachRes == Steinberg::kResultOk) {
+                            m_attached = true;
+                            m_container->setAttached(true, m_nativeWidth, m_nativeHeight, m_resizable);
+                            
+                            // Map parent container and send XEMBED_EMBEDDED_NOTIFY message to child X11 window
+                            sendXEmbedEmbeddedNotify(cid);
+                            
+                            // Trigger the initial onSize using the exact physical pixels
+                            Steinberg::ViewRect rect;
+                            rect.left = 0;
+                            rect.top = 0;
+                            rect.right = m_nativeWidth;
+                            rect.bottom = m_nativeHeight;
+                            m_plugView->onSize(&rect);
+                            std::cout << "VST3Host: Called initial onSize after attachment (" 
+                                      << rect.right << "x" << rect.bottom << ")" << std::endl;
+                        }
+                    }
+                }
+            });
+        }
+    }
+    
+private:
+    void sendXEmbedEmbeddedNotify(WId parentId) {
+        Display* dpy = XOpenDisplay(nullptr);
+        if (!dpy) return;
+        
+        Window root;
+        Window parent;
+        Window* children = nullptr;
+        unsigned int numChildren = 0;
+        
+        // Explicitly map parent container window in X11 display
+        XMapWindow(dpy, (Window)parentId);
+        XMapRaised(dpy, (Window)parentId);
+        
+        if (XQueryTree(dpy, (Window)parentId, &root, &parent, &children, &numChildren) && children) {
+            for (unsigned int i = 0; i < numChildren; ++i) {
+                Window child = children[i];
+                
+                // 1. Send XEMBED_EMBEDDED_NOTIFY (message = 0)
+                XEvent ev;
+                std::memset(&ev, 0, sizeof(ev));
+                ev.xclient.type = ClientMessage;
+                ev.xclient.window = child;
+                ev.xclient.message_type = XInternAtom(dpy, "_XEMBED", False);
+                ev.xclient.format = 32;
+                ev.xclient.data.l[0] = CurrentTime;
+                ev.xclient.data.l[1] = 0; // XEMBED_EMBEDDED_NOTIFY = 0
+                ev.xclient.data.l[2] = 0; // detail = 0
+                ev.xclient.data.l[3] = (long)parentId; // parent window ID
+                ev.xclient.data.l[4] = 0; // version = 0
+                XSendEvent(dpy, child, False, NoEventMask, &ev);
+                
+                // 2. Send XEMBED_WINDOW_ACTIVATE (message = 1)
+                ev.xclient.data.l[1] = 1; // XEMBED_WINDOW_ACTIVATE = 1
+                ev.xclient.data.l[2] = 0;
+                ev.xclient.data.l[3] = 0;
+                ev.xclient.data.l[4] = 0;
+                XSendEvent(dpy, child, False, NoEventMask, &ev);
+                
+                // 3. Send XEMBED_FOCUS_IN (message = 4)
+                ev.xclient.data.l[1] = 4; // XEMBED_FOCUS_IN = 4
+                ev.xclient.data.l[2] = 0; // XEMBED_FOCUS_CURRENT = 0
+                ev.xclient.data.l[3] = 0;
+                ev.xclient.data.l[4] = 0;
+                XSendEvent(dpy, child, False, NoEventMask, &ev);
+                
+                // Explicitly map the child window
+                XMapWindow(dpy, child);
+                
+                std::cout << "VST3Host: Sent XEmbed notify/activate/focus and mapped child window 0x" 
+                          << std::hex << child << std::dec << std::endl;
+            }
+            XFree(children);
+        }
+        
+        XFlush(dpy);
+        XCloseDisplay(dpy);
+    }
+    
+private:
+    VST3PluginNode* m_node;
+    Steinberg::IPlugView* m_plugView;
+    VST3ContainerWidget* m_container;
+    bool m_attached;
+    bool m_resizable;
+    int m_nativeWidth;
+    int m_nativeHeight;
+};
+
 class PluginUIWindow : public QDialog {
 public:
     PluginUIWindow(LV2PluginNode* node, const LilvUI* ui, QWidget* parent = nullptr)
@@ -2541,6 +2757,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     m_parameterControlBindings.clear();
     m_parameterControlNode = node;
     clearLayoutContents(m_paramLayout);
+    bool hasCustomUI = false;
     
     if (!node) {
         m_noParamLabel->show();
@@ -2713,6 +2930,32 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             uiSeparator->setStyleSheet("background-color: #333333; margin-top: 6px; margin-bottom: 6px;");
             m_paramLayout->addWidget(uiSeparator);
         }
+    }
+    
+    auto* vst3Node = dynamic_cast<VST3PluginNode*>(node.get());
+    if (vst3Node && vst3Node->getPlugView()) {
+        hasCustomUI = true;
+        QPushButton* uiBtn = new QPushButton("Open Graphical UI...", m_paramContainer);
+        uiBtn->setStyleSheet(
+            "QPushButton { background-color: #00E676; color: black; font-weight: bold; border-radius: 4px; padding: 8px; border: none; }"
+            "QPushButton:hover { background-color: #69F0AE; }"
+            "QPushButton:pressed { background-color: #00C853; }"
+        );
+        m_paramLayout->addWidget(uiBtn);
+        
+        connect(uiBtn, &QPushButton::clicked, this, [this, vst3Node]() {
+            auto* uiWin = new VST3PluginUIWindow(vst3Node, this);
+            uiWin->show();
+        });
+        
+        QFrame* uiSeparator = new QFrame(m_paramContainer);
+        uiSeparator->setFrameShape(QFrame::HLine);
+        uiSeparator->setStyleSheet("background-color: #333333; margin-top: 6px; margin-bottom: 6px;");
+        m_paramLayout->addWidget(uiSeparator);
+    }
+    
+    if (hasCustomUI) {
+        return;
     }
     
     // Create controls for parameters

@@ -48,7 +48,7 @@ add_executable(PedalBoard
     src/ui/RoutingHandleItem.h
 )
 
-target_include_directories(PedalBoard PRIVATE src)
+target_include_directories(PedalBoard PRIVATE src src/audio)
 target_compile_options(PedalBoard PRIVATE -g -rdynamic)
 target_link_options(PedalBoard PRIVATE -rdynamic)
 target_link_libraries(PedalBoard PRIVATE

@@ -1,5 +1,8 @@
 #include <QApplication>
 #include <QDir>
+#include <QLibrary>
+#include <QTimer>
+extern "C" int XInitThreads(void);
 #include "ui/MainWindow.h"
 #include "ui/GtkUIHelper.h"
 #include <suil/suil.h>
@@ -30,6 +33,7 @@ static void crash_handler(int sig) {
 }
 
 int main(int argc, char* argv[]) {
+    XInitThreads();
     if (argc > 1 && std::string(argv[1]) == "--gtk-ui-helper") {
         return runGtkUIHelper(argc, argv);
     }
@@ -43,11 +47,12 @@ int main(int argc, char* argv[]) {
 
     // Suil's available Qt6 adapter embeds X11 LV2 UIs.  On a Wayland session,
     // use XWayland so QWidget::winId() is a real X11 window ID for the plugin.
-    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") && !qEnvironmentVariableIsEmpty("DISPLAY")) {
-        qputenv("QT_QPA_PLATFORM", "xcb");
-        if (qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
-            qputenv("QT_SCALE_FACTOR", "1");
-        }
+    qputenv("QT_QPA_PLATFORM", "xcb");
+    qputenv("GDK_BACKEND", "x11");
+    qputenv("QT_QPA_PLATFORMTHEME", "fusion");
+    qputenv("QT_STYLE_OVERRIDE", "Fusion");
+    if (qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
+        qputenv("QT_SCALE_FACTOR", "1");
     }
 
     // Fedora installs Suil's Qt adapters outside the default linker paths.
