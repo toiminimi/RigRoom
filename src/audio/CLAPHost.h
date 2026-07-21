@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <functional>
 #include "clap/clap.h"
 
 struct CLAPPluginDescriptor {
@@ -35,6 +36,9 @@ public:
     bool hasGUI() const;
     const clap_plugin_t* getClapPlugin() const { return m_plugin; }
     const clap_plugin_gui_t* getClapGuiExtension() const { return m_extGui; }
+
+    void setResizeCallback(std::function<void(uint32_t, uint32_t)> cb) { m_resizeCallback = cb; }
+    void requestResize(uint32_t width, uint32_t height) { if (m_resizeCallback) m_resizeCallback(width, height); }
 
     static std::vector<CLAPPluginDescriptor> scanLibrary(const std::string& path);
     static std::vector<CLAPPluginDescriptor> scanStandardPaths();
@@ -75,4 +79,5 @@ private:
     };
     std::mutex m_eventMutex;
     std::vector<QueuedParamEvent> m_queuedParamEvents;
+    std::function<void(uint32_t, uint32_t)> m_resizeCallback;
 };

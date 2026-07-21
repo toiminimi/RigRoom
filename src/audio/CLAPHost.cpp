@@ -159,7 +159,12 @@ static const void* host_get_extension(const clap_host_t* host, const char* exten
     if (std::strcmp(extension_id, CLAP_EXT_GUI) == 0) {
         static const clap_host_gui_t host_gui = {
             [](const clap_host_t* host) {},
-            [](const clap_host_t* host, uint32_t width, uint32_t height) -> bool { return true; },
+            [](const clap_host_t* host, uint32_t width, uint32_t height) -> bool {
+                if (!host || !host->host_data) return false;
+                CLAPPluginNode* node = static_cast<CLAPPluginNode*>(host->host_data);
+                node->requestResize(width, height);
+                return true;
+            },
             [](const clap_host_t* host) -> bool { return true; },
             [](const clap_host_t* host) -> bool { return true; },
             [](const clap_host_t* host, bool was_destroyed) {}
@@ -280,25 +285,27 @@ void CLAPPluginNode::setupPortsAndParams() {
     m_paramValues.clear();
     m_paramIds.clear();
 
-    int inChannels = 2;
-    int outChannels = 2;
+    int inChannels = 0;
+    int outChannels = 0;
 
     if (m_extAudioPorts) {
         uint32_t numInputs = m_extAudioPorts->count(m_plugin, true);
-        if (numInputs > 0) {
+        for (uint32_t p = 0; p < numInputs; ++p) {
             clap_audio_port_info_t info{};
-            if (m_extAudioPorts->get(m_plugin, 0, true, &info)) {
-                inChannels = info.channel_count;
+            if (m_extAudioPorts->get(m_plugin, p, true, &info)) {
+                inChannels += info.channel_count;
             }
         }
         uint32_t numOutputs = m_extAudioPorts->count(m_plugin, false);
-        if (numOutputs > 0) {
+        for (uint32_t p = 0; p < numOutputs; ++p) {
             clap_audio_port_info_t info{};
-            if (m_extAudioPorts->get(m_plugin, 0, false, &info)) {
-                outChannels = info.channel_count;
+            if (m_extAudioPorts->get(m_plugin, p, false, &info)) {
+                outChannels += info.channel_count;
             }
         }
     }
+    if (inChannels == 0) inChannels = 2;
+    if (outChannels == 0) outChannels = 2;
 
     for (int i = 0; i < inChannels; ++i) {
         AudioPort p;
@@ -353,6 +360,27 @@ void CLAPPluginNode::prepare(double sampleRate, int maxBlockSize) {
     for (size_t i = 0; i < m_ports.size(); ++i) {
         m_audioBuffers[i].assign(maxBlockSize, 0.0f);
         m_ports[i].buffer = m_audioBuffers[i].data();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_eventMutex);
+        m_queuedParamEvents.clear();
+        for (size_t i = 0; i < m_controlPorts.size() && i < m_paramIds.size(); ++i) {
+            QueuedParamEvent qe{};
+            qe.event.header.size = sizeof(clap_event_param_value_t);
+            qe.event.header.time = 0;
+            qe.event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            qe.event.header.type = CLAP_EVENT_PARAM_VALUE;
+            qe.event.header.flags = 0;
+            qe.event.param_id = m_paramIds[i];
+            qe.event.cookie = nullptr;
+            qe.event.note_id = -1;
+            qe.event.port_index = -1;
+            qe.event.channel = -1;
+            qe.event.key = -1;
+            qe.event.value = m_controlPorts[i].value;
+            m_queuedParamEvents.push_back(qe);
+        }
     }
 
     if (m_plugin) {
@@ -474,26 +502,66 @@ void CLAPPluginNode::process(int numFrames) {
         return true;
     };
 
-    clap_audio_buffer_t inBuffer{};
-    inBuffer.data32 = inPtrs.data();
-    inBuffer.channel_count = numInputs;
-    inBuffer.latency = 0;
-    inBuffer.constant_mask = 0;
+    std::vector<clap_audio_buffer_t> inBuffers;
+    int currentInChan = 0;
+    if (m_extAudioPorts) {
+        uint32_t numInPorts = m_extAudioPorts->count(m_plugin, true);
+        for (uint32_t p = 0; p < numInPorts; ++p) {
+            clap_audio_port_info_t info{};
+            if (m_extAudioPorts->get(m_plugin, p, true, &info)) {
+                clap_audio_buffer_t buf{};
+                buf.data32 = inPtrs.data() + currentInChan;
+                buf.channel_count = info.channel_count;
+                buf.latency = 0;
+                buf.constant_mask = 0;
+                inBuffers.push_back(buf);
+                currentInChan += info.channel_count;
+            }
+        }
+    }
+    if (inBuffers.empty() && numInputs > 0) {
+        clap_audio_buffer_t buf{};
+        buf.data32 = inPtrs.data();
+        buf.channel_count = numInputs;
+        buf.latency = 0;
+        buf.constant_mask = 0;
+        inBuffers.push_back(buf);
+    }
 
-    clap_audio_buffer_t outBuffer{};
-    outBuffer.data32 = outPtrs.data();
-    outBuffer.channel_count = numOutputs;
-    outBuffer.latency = 0;
-    outBuffer.constant_mask = 0;
+    std::vector<clap_audio_buffer_t> outBuffers;
+    int currentOutChan = 0;
+    if (m_extAudioPorts) {
+        uint32_t numOutPorts = m_extAudioPorts->count(m_plugin, false);
+        for (uint32_t p = 0; p < numOutPorts; ++p) {
+            clap_audio_port_info_t info{};
+            if (m_extAudioPorts->get(m_plugin, p, false, &info)) {
+                clap_audio_buffer_t buf{};
+                buf.data32 = outPtrs.data() + currentOutChan;
+                buf.channel_count = info.channel_count;
+                buf.latency = 0;
+                buf.constant_mask = 0;
+                outBuffers.push_back(buf);
+                currentOutChan += info.channel_count;
+            }
+        }
+    }
+    if (outBuffers.empty() && numOutputs > 0) {
+        clap_audio_buffer_t buf{};
+        buf.data32 = outPtrs.data();
+        buf.channel_count = numOutputs;
+        buf.latency = 0;
+        buf.constant_mask = 0;
+        outBuffers.push_back(buf);
+    }
 
     clap_process_t processStruct{};
     processStruct.steady_time = m_sampleCount;
     processStruct.frames_count = numFrames;
     processStruct.transport = nullptr;
-    processStruct.audio_inputs = &inBuffer;
-    processStruct.audio_inputs_count = numInputs > 0 ? 1 : 0;
-    processStruct.audio_outputs = &outBuffer;
-    processStruct.audio_outputs_count = numOutputs > 0 ? 1 : 0;
+    processStruct.audio_inputs = inBuffers.data();
+    processStruct.audio_inputs_count = static_cast<uint32_t>(inBuffers.size());
+    processStruct.audio_outputs = outBuffers.data();
+    processStruct.audio_outputs_count = static_cast<uint32_t>(outBuffers.size());
     processStruct.in_events = &inEvents;
     processStruct.out_events = &outEvents;
 

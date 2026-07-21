@@ -2563,13 +2563,6 @@ public:
         
         uint32_t width = 800;
         uint32_t height = 600;
-        if (extGui && plugin) {
-            if (extGui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false)) {
-                extGui->create(plugin, CLAP_WINDOW_API_X11, false);
-                extGui->get_size(plugin, &width, &height);
-            }
-        }
-
         m_nativeWidth = width;
         m_nativeHeight = height;
 
@@ -2599,9 +2592,26 @@ public:
         QWindow* foreignWin = QWindow::fromWinId(m_x11Container);
         m_containerWidget = QWidget::createWindowContainer(foreignWin, this);
         layout->addWidget(m_containerWidget);
+
+        m_node->setResizeCallback([this](uint32_t w, uint32_t h) {
+            QMetaObject::invokeMethod(this, [this, w, h]() {
+                if (w == 0 || h == 0) return;
+                m_nativeWidth = w;
+                m_nativeHeight = h;
+                double ratio = devicePixelRatioF();
+                if (ratio <= 0.0) ratio = 1.0;
+                int logicalW = std::round(m_nativeWidth / ratio);
+                int logicalH = std::round(m_nativeHeight / ratio);
+                setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+                setMinimumSize(300, 200);
+                resize(logicalW, logicalH);
+                updateChildWindows(m_nativeWidth, m_nativeHeight);
+            }, Qt::QueuedConnection);
+        });
     }
 
     ~CLAPPluginUIWindow() override {
+        m_node->setResizeCallback(nullptr);
         const clap_plugin_t* plugin = m_node->getClapPlugin();
         const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
         if (extGui && plugin && m_attached) {
@@ -2618,6 +2628,25 @@ public:
         m_dpy = nullptr;
     }
 
+    void updateChildWindows(uint32_t width, uint32_t height) {
+        if (!m_dpy || !m_x11Container) return;
+        XMoveResizeWindow(m_dpy, m_x11Container, 0, 0, width, height);
+
+        Window root;
+        Window parent;
+        Window* children = nullptr;
+        unsigned int numChildren = 0;
+        if (XQueryTree(m_dpy, m_x11Container, &root, &parent, &children, &numChildren) && children) {
+            for (unsigned int i = 0; i < numChildren; ++i) {
+                Window child = children[i];
+                XMoveResizeWindow(m_dpy, child, 0, 0, width, height);
+                XMapWindow(m_dpy, child);
+            }
+            XFree(children);
+        }
+        XFlush(m_dpy);
+    }
+
 protected:
     void showEvent(QShowEvent* event) override {
         QDialog::showEvent(event);
@@ -2626,31 +2655,28 @@ protected:
                 const clap_plugin_t* plugin = m_node->getClapPlugin();
                 const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
                 if (extGui && plugin && !m_attached) {
+                    if (extGui->is_api_supported && extGui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false)) {
+                        if (extGui->create) {
+                            extGui->create(plugin, CLAP_WINDOW_API_X11, false);
+                        }
+                        uint32_t w = 0, h = 0;
+                        if (extGui->get_size && extGui->get_size(plugin, &w, &h) && w > 0 && h > 0) {
+                            m_nativeWidth = w;
+                            m_nativeHeight = h;
+                        }
+                    }
                     clap_window_t window{ CLAP_WINDOW_API_X11, { (void*)m_x11Container } };
                     if (extGui->set_parent(plugin, &window)) {
                         extGui->show(plugin);
                         m_attached = true;
 
-                        uint32_t w = 0, h = 0;
-                        if (extGui->get_size && extGui->get_size(plugin, &w, &h) && w > 0 && h > 0) {
-                            m_nativeWidth = w;
-                            m_nativeHeight = h;
-                            double ratio = devicePixelRatioF();
-                            if (ratio <= 0.0) ratio = 1.0;
-                            int logicalW = std::round(m_nativeWidth / ratio);
-                            int logicalH = std::round(m_nativeHeight / ratio);
-                            XResizeWindow(m_dpy, m_x11Container, m_nativeWidth, m_nativeHeight);
-
-                            bool canResize = false;
-                            if (extGui->can_resize) {
-                                canResize = extGui->can_resize(plugin);
-                            }
-                            if (!canResize) {
-                                setFixedSize(logicalW, logicalH);
-                            } else {
-                                resize(logicalW, logicalH);
-                            }
-                        }
+                        double ratio = devicePixelRatioF();
+                        if (ratio <= 0.0) ratio = 1.0;
+                        int logicalW = std::round(m_nativeWidth / ratio);
+                        int logicalH = std::round(m_nativeHeight / ratio);
+                        setMinimumSize(300, 200);
+                        resize(logicalW, logicalH);
+                        updateChildWindows(m_nativeWidth, m_nativeHeight);
                     }
                 }
             });
@@ -2668,28 +2694,26 @@ protected:
             const clap_plugin_t* plugin = m_node->getClapPlugin();
             const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
             if (extGui && plugin && m_attached) {
-                if (extGui->can_resize && extGui->can_resize(plugin)) {
-                    if (extGui->adjust_size) {
-                        extGui->adjust_size(plugin, &physW, &physH);
-                    }
-                    if (extGui->set_size) {
-                        extGui->set_size(plugin, physW, physH);
-                    }
+                if (extGui->adjust_size) {
+                    extGui->adjust_size(plugin, &physW, &physH);
+                }
+                if (extGui->set_size) {
+                    extGui->set_size(plugin, physW, physH);
                 }
             }
-            XResizeWindow(m_dpy, m_x11Container, physW, physH);
+            updateChildWindows(physW, physH);
         }
     }
 
 private:
-    CLAPPluginNode* m_node;
-    bool m_attached;
-    int m_nativeWidth;
-    int m_nativeHeight;
-    Window m_x11Container;
+    CLAPPluginNode* m_node = nullptr;
+    Display* m_dpy = nullptr;
+    Window m_x11Container = 0;
     QWidget* m_containerWidget = nullptr;
-    Display* m_dpy;
-    bool m_ownsDisplay;
+    bool m_ownsDisplay = false;
+    bool m_attached = false;
+    uint32_t m_nativeWidth = 800;
+    uint32_t m_nativeHeight = 600;
 };
 
 class PluginUIWindow : public QDialog {
@@ -2749,9 +2773,18 @@ public:
         
         // UI instances may retain feature pointers, so these must outlive construction.
         m_uridMap = { nullptr, ui_map_uri };
-        m_uridUnmap = { nullptr, ui_unmap_uri };
-        m_mapFeature = { "http://lv2plug.in/ns/ext/urid#map", &m_uridMap };
-        m_unmapFeature = { "http://lv2plug.in/ns/ext/urid#unmap", &m_uridUnmap };
+        m_uiResize = {
+            this,
+            [](LV2UI_Feature_Handle handle, int width, int height) -> int {
+                auto* self = static_cast<PluginUIWindow*>(handle);
+                if (self) {
+                    self->resizeUi(width, height);
+                }
+                return 0;
+            }
+        };
+        m_resizeFeature.URI = LV2_UI__resize;
+        m_resizeFeature.data = &m_uiResize;
         m_sampleRate = static_cast<float>(m_node->getSampleRate());
         m_blockLength = m_node->getMaxBlockSize();
         m_uiScaleFactor = uiType == LV2_UI__X11UI && supportsResize
@@ -2768,15 +2801,15 @@ public:
         m_options[1] = {
             LV2_OPTIONS_INSTANCE,
             0,
-            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"),
-            sizeof(int32_t),
-            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Int"),
-            &m_blockLength
+            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/core#sampleRate"),
+            sizeof(float),
+            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Float"),
+            &m_sampleRate
         };
         m_options[2] = {
             LV2_OPTIONS_INSTANCE,
             0,
-            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/buf-size#maxBlockLength"),
+            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"),
             sizeof(int32_t),
             ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Int"),
             &m_blockLength
@@ -2784,17 +2817,32 @@ public:
         m_options[3] = {
             LV2_OPTIONS_INSTANCE,
             0,
+            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/buf-size#maxBlockLength"),
+            sizeof(int32_t),
+            ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Int"),
+            &m_blockLength
+        };
+        m_options[4] = {
+            LV2_OPTIONS_INSTANCE,
+            0,
             ui_map_uri(nullptr, LV2_UI__scaleFactor),
             sizeof(float),
             ui_map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Float"),
             &m_uiScaleFactor
         };
-        m_options[4] = { LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, nullptr };
-        m_optionsFeature = { LV2_OPTIONS__options, m_options };
+        m_options[5] = { LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, nullptr };
+        m_optionsFeature.URI = LV2_OPTIONS__options;
+        m_optionsFeature.data = m_options;
+        m_mapFeature.URI = "http://lv2plug.in/ns/ext/urid#map";
+        m_mapFeature.data = &m_uridMap;
+        m_unmapFeature.URI = "http://lv2plug.in/ns/ext/urid#unmap";
+        m_unmapFeature.data = &m_uridUnmap;
+
         m_features[0] = &m_mapFeature;
         m_features[1] = &m_unmapFeature;
         m_features[2] = &m_optionsFeature;
-        m_features[3] = nullptr;
+        m_features[3] = &m_resizeFeature;
+        m_features[4] = nullptr;
         
         const std::string pluginUri = node->getPluginURI();
         
@@ -2816,8 +2864,6 @@ public:
         if (m_suilInstance) {
             QWidget* widget = (QWidget*)suil_instance_get_widget(m_suilInstance);
             if (widget) {
-                // Capture the native X11 dimensions before Qt's layout stretches
-                // the wrapper. Later size hints describe the already-resized window.
                 QSize nativeSize = widget->baseSize();
                 if (!nativeSize.isValid() || nativeSize.isEmpty()) {
                     nativeSize = widget->minimumSizeHint();
@@ -2836,7 +2882,7 @@ public:
                     widget->setMinimumSize(1, 1);
                     widget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
                     widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-                    setMinimumSize(200, 100);
+                    setMinimumSize(100, 100);
                     setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
                     resize(nativeSize);
                 });
@@ -2890,6 +2936,42 @@ public:
             suil_host_free(m_suilHost);
         }
     }
+
+    void resizeUi(int width, int height) {
+        QMetaObject::invokeMethod(this, [this, width, height]() {
+            if (width <= 0 || height <= 0) return;
+            double ratio = devicePixelRatioF();
+            if (ratio <= 0.0) ratio = 1.0;
+            int logicalW = std::round(width / ratio);
+            int logicalH = std::round(height / ratio);
+            setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+            setMinimumSize(100, 100);
+            resize(logicalW, logicalH);
+            if (m_uiWidget) {
+                m_uiWidget->resize(logicalW, logicalH);
+            }
+        }, Qt::QueuedConnection);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QDialog::resizeEvent(event);
+        if (m_uiWidget) {
+            m_uiWidget->resize(width(), height());
+        }
+        if (m_suilInstance) {
+            const LV2UI_Resize* resizeExt = static_cast<const LV2UI_Resize*>(
+                suil_instance_extension_data(m_suilInstance, LV2_UI__resize));
+            if (resizeExt && resizeExt->ui_resize) {
+                double ratio = devicePixelRatioF();
+                if (ratio <= 0.0) ratio = 1.0;
+                int physW = std::round(width() * ratio);
+                int physH = std::round(height() * ratio);
+                resizeExt->ui_resize(suil_instance_get_handle(m_suilInstance), physW, physH);
+            }
+        }
+    }
+
 private:
     static void suil_port_write(
         SuilController controller,
@@ -2911,7 +2993,9 @@ private:
     LV2_URID_Unmap m_uridUnmap{};
     LV2_Feature m_mapFeature{};
     LV2_Feature m_unmapFeature{};
-    LV2_Options_Option m_options[5] = {};
+    LV2UI_Resize m_uiResize{};
+    LV2_Feature m_resizeFeature{};
+    LV2_Options_Option m_options[6] = {};
     LV2_Feature m_optionsFeature{};
     float m_sampleRate = 48000.0f;
     float m_uiScaleFactor = 1.0f;
@@ -3161,10 +3245,27 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         m_paramLayout->addWidget(uiSeparator);
     }
     
-    if (hasCustomUI) {
-        return;
+    bool hasControlPorts = false;
+    for (const auto& param : node->getControlPorts()) {
+        if (!param.isOutput) {
+            hasControlPorts = true;
+            break;
+        }
     }
-    
+
+    if (!hasControlPorts) {
+        if (hasCustomUI) {
+            QLabel* infoLabel = new QLabel("All controls are managed directly in the graphical interface.", m_paramContainer);
+            infoLabel->setStyleSheet("color: #888888; font-size: 11px; font-style: italic; margin: 4px;");
+            infoLabel->setWordWrap(true);
+            m_paramLayout->addWidget(infoLabel);
+        } else {
+            QLabel* noParamLabel = new QLabel("No parameters available for this plugin.", m_paramContainer);
+            noParamLabel->setStyleSheet("color: #888888; font-size: 11px; font-style: italic; margin: 4px;");
+            m_paramLayout->addWidget(noParamLabel);
+        }
+    }
+
     // Create controls for parameters
     for (auto& param : node->getControlPorts()) {
         if (param.isOutput) continue; // Skip meter outputs
