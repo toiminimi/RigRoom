@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QLibrary>
 #include <QTimer>
+#include <QFile>
 extern "C" int XInitThreads(void);
 #include "ui/MainWindow.h"
 #include "ui/GtkUIHelper.h"
@@ -33,6 +34,20 @@ static void crash_handler(int sig) {
 }
 
 int main(int argc, char* argv[]) {
+    {
+        std::ifstream maps("/proc/self/maps");
+        if (maps.is_open()) {
+            std::string line;
+            std::cout << "--- ABSOLUTE ENTRY PROC MAPS GTK/GDK DEBUG ---" << std::endl;
+            while (std::getline(maps, line)) {
+                if (line.find("libgtk") != std::string::npos || line.find("libgdk") != std::string::npos) {
+                    std::cout << "Maps Entry: " << line << std::endl;
+                }
+            }
+            std::cout << "--- END ABSOLUTE ENTRY PROC MAPS GTK/GDK DEBUG ---" << std::endl;
+            maps.close();
+        }
+    }
     XInitThreads();
     if (argc > 1 && std::string(argv[1]) == "--gtk-ui-helper") {
         return runGtkUIHelper(argc, argv);
@@ -49,8 +64,6 @@ int main(int argc, char* argv[]) {
     // use XWayland so QWidget::winId() is a real X11 window ID for the plugin.
     qputenv("QT_QPA_PLATFORM", "xcb");
     qputenv("GDK_BACKEND", "x11");
-    qputenv("QT_QPA_PLATFORMTHEME", "fusion");
-    qputenv("QT_STYLE_OVERRIDE", "Fusion");
     if (qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
         qputenv("QT_SCALE_FACTOR", "1");
     }

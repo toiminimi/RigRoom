@@ -133,6 +133,7 @@ public:
     }
 
     void registerTimer(Steinberg::Linux::ITimerHandler* handler, Steinberg::Linux::TimerInterval ms) {
+        std::cout << "VST3Host: IRunLoop registerTimer called for handler " << handler << ", ms: " << ms << std::endl;
         unregisterTimer(handler);
         QTimer* timer = new QTimer(this);
         Steinberg::Linux::TimerInterval clampedMs = ms;
@@ -155,16 +156,21 @@ public:
     }
 
     void registerEventHandler(Steinberg::Linux::IEventHandler* handler, Steinberg::Linux::FileDescriptor fd) {
-        unregisterEventHandler(handler);
+        std::cout << "VST3Host: IRunLoop registerEventHandler called for handler " << handler << ", fd: " << fd << std::endl;
+        auto key = std::make_pair(handler, fd);
+        unregisterEventHandlerFd(handler, fd);
+        
         QSocketNotifier* notifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
-        QObject::connect(notifier, &QSocketNotifier::activated, [handler, fd]() {
+        QObject::connect(notifier, &QSocketNotifier::activated, [handler, fd](int activatedFd) {
+            (void)activatedFd;
             handler->onFDIsSet(fd);
         });
-        m_notifiers[handler] = notifier;
+        m_notifiers[key] = notifier;
     }
 
-    void unregisterEventHandler(Steinberg::Linux::IEventHandler* handler) {
-        auto it = m_notifiers.find(handler);
+    void unregisterEventHandlerFd(Steinberg::Linux::IEventHandler* handler, Steinberg::Linux::FileDescriptor fd) {
+        auto key = std::make_pair(handler, fd);
+        auto it = m_notifiers.find(key);
         if (it != m_notifiers.end()) {
             it->second->setEnabled(false);
             delete it->second;
@@ -172,9 +178,31 @@ public:
         }
     }
 
+    void unregisterEventHandler(Steinberg::Linux::IEventHandler* handler) {
+        std::cout << "VST3Host: IRunLoop unregisterEventHandler called for handler " << handler << std::endl;
+        for (auto it = m_notifiers.begin(); it != m_notifiers.end(); ) {
+            if (it->first.first == handler) {
+                it->second->setEnabled(false);
+                delete it->second;
+                it = m_notifiers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
 private:
+    struct PairHash {
+        template <class T1, class T2>
+        std::size_t operator () (const std::pair<T1, T2>& p) const {
+            auto h1 = std::hash<T1>{}(p.first);
+            auto h2 = std::hash<T2>{}(p.second);
+            return h1 ^ (h2 << 1);
+        }
+    };
+
     std::unordered_map<Steinberg::Linux::ITimerHandler*, QTimer*> m_timers;
-    std::unordered_map<Steinberg::Linux::IEventHandler*, QSocketNotifier*> m_notifiers;
+    std::unordered_map<std::pair<Steinberg::Linux::IEventHandler*, Steinberg::Linux::FileDescriptor>, QSocketNotifier*, PairHash> m_notifiers;
 };
 
 class ComponentHandler : public Steinberg::Vst::IComponentHandler,
@@ -471,81 +499,6 @@ private:
     std::vector<ParamValueQueue*> m_queues;
 };
 
-static void initializePluginGtkVersion(const std::string& soPath) {
-    std::ifstream file(soPath, std::ios::binary);
-    if (!file.is_open()) return;
-    
-    enum GtkVersion {
-        GTK_NONE,
-        GTK_2,
-        GTK_3
-    } version = GTK_NONE;
-    
-    char buffer[8192];
-    std::string content;
-    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
-        content.append(buffer, file.gcount());
-        if (content.find("libgtk-3.so") != std::string::npos) {
-            version = GTK_3;
-            break;
-        }
-        if (content.find("libgtk-x11-2.0.so") != std::string::npos ||
-            content.find("libglibmm-2.4.so") != std::string::npos) {
-            version = GTK_2;
-            break;
-        }
-        if (content.size() > 16384) {
-            content = content.substr(content.size() - 1024);
-        }
-    }
-    file.close();
-    
-    static bool gtk2Initialized = false;
-    static bool gtk3Initialized = false;
-    
-    if (version == GTK_2) {
-        if (gtk3Initialized) {
-            std::cerr << "VST3Host: WARNING: GTK 3 is already initialized in-process. Loading GTK 2 might cause a crash." << std::endl;
-        }
-        if (!gtk2Initialized) {
-            QLibrary gtk2("libgtk-x11-2.0.so.0");
-            if (gtk2.load()) {
-                using GtkInitCheck = int (*)(int*, char***);
-                auto initCheck = reinterpret_cast<GtkInitCheck>(gtk2.resolve("gtk_init_check"));
-                if (initCheck) {
-                    int argc = 0;
-                    char** argv = nullptr;
-                    if (initCheck(&argc, &argv)) {
-                        std::cout << "VST3Host: Successfully initialized GTK 2 in-process for " << soPath << std::endl;
-                        gtk2Initialized = true;
-                    }
-                }
-            }
-        }
-    } else if (version == GTK_3) {
-        if (gtk2Initialized) {
-            std::cerr << "VST3Host: WARNING: GTK 2 is already initialized in-process. Loading GTK 3 might cause a crash." << std::endl;
-        }
-        if (!gtk3Initialized) {
-            QLibrary gtk3("libgtk-3.so.0");
-            if (gtk3.load()) {
-                using GtkInitCheck = int (*)(int*, char***);
-                auto initCheck = reinterpret_cast<GtkInitCheck>(gtk3.resolve("gtk_init_check"));
-                if (initCheck) {
-                    int argc = 0;
-                    char** argv = nullptr;
-                    if (initCheck(&argc, &argv)) {
-                        std::cout << "VST3Host: Successfully initialized GTK 3 in-process for " << soPath << std::endl;
-                        gtk3Initialized = true;
-                    }
-                }
-            }
-        }
-    } else {
-        std::cout << "VST3Host: No GTK dependency detected for " << soPath << std::endl;
-    }
-}
-
 VST3PluginNode::VST3PluginNode(const std::string& path) : m_path(path) {
     std::filesystem::path p(path);
     m_name = p.stem().string();
@@ -572,9 +525,6 @@ VST3PluginNode::VST3PluginNode(const std::string& path) : m_path(path) {
     }
 
     std::cout << "VST3Host: Resolved library path: " << soPath << std::endl;
-    
-    // Dynamically initialize the matching GTK library version
-    initializePluginGtkVersion(soPath);
     
     // Load the library
     m_libHandle = dlopen(soPath.c_str(), RTLD_LAZY | RTLD_GLOBAL);
@@ -1272,4 +1222,8 @@ void VST3PluginNode::releasePlugView() {
         m_plugView = nullptr;
         std::cout << "VST3Host: Released cached plugView pointer." << std::endl;
     }
+}
+
+bool VST3PluginNode::hasEditor() const {
+    return m_controller != nullptr;
 }

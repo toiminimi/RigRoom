@@ -23,6 +23,7 @@ public:
     
     Steinberg::IPlugView* getPlugView();
     void releasePlugView();
+    bool hasEditor() const;
     void* getHostAppUnknown() const { return m_hostApp; }
     
 private:
