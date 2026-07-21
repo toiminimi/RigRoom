@@ -7,7 +7,8 @@ enum class NodeType {
     SystemInput,
     SystemOutput,
     LV2Plugin,
-    VST3Plugin
+    VST3Plugin,
+    CLAPPlugin
 };
 
 struct AudioPort {

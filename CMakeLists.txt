@@ -27,6 +27,8 @@ add_executable(PedalBoard
     src/audio/LV2Host.h
     src/audio/VST3Host.cpp
     src/audio/VST3Host.h
+    src/audio/CLAPHost.cpp
+    src/audio/CLAPHost.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
     src/ui/NodeCanvas.cpp

@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "../audio/LV2Host.h"
 #include "../audio/VST3Host.h"
+#include "../audio/CLAPHost.h"
 #include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "../audio/BypassNode.h"
@@ -1086,6 +1087,22 @@ void MainWindow::scanPlugins() {
         m_availablePlugins.push_back(vst3Info2);
     }
     
+    // Scan CLAP plugins
+    auto clapPlugins = CLAPPluginNode::scanStandardPaths();
+    for (const auto& clapDesc : clapPlugins) {
+        std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
+        std::string category = "CLAP Plugins";
+        if (!clapDesc.features.empty()) {
+            std::string feat = clapDesc.features[0];
+            if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
+            else if (feat.find("delay") != std::string::npos || feat.find("reverb") != std::string::npos) category = "Delays & Reverbs";
+            else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
+            else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
+        }
+        PluginInfo clapInfo = { clapDesc.name, uri, category, clapDesc.vendor, "", false };
+        m_availablePlugins.push_back(clapInfo);
+    }
+
     PluginInfo bypassInfo = { "Bypass / Pass-through", "builtin:bypass", "Utilities", "", "", false };
     m_availablePlugins.push_back(bypassInfo);
 }
@@ -1282,7 +1299,7 @@ void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, bool is
             category,
             brand,
             info.thumbnailPath,
-            info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : "VST3"),
+            info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3")),
             searchable
         });
     }
@@ -1306,6 +1323,15 @@ void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, bool is
                         break;
                     }
                 }
+            } else if (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos) {
+                std::string path = info.uri;
+                uint32_t idx = 0;
+                auto colonPos = path.rfind(':');
+                if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
+                    idx = std::stoul(path.substr(colonPos + 1));
+                    path = path.substr(0, colonPos);
+                }
+                newNode = std::make_shared<CLAPPluginNode>(path, idx);
             } else {
                 newNode = std::make_shared<VST3PluginNode>(info.uri);
             }
@@ -1365,7 +1391,7 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
                 category,
                 brand,
                 info.thumbnailPath,
-                info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : "VST3"),
+                info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3")),
                 searchable
             });
         }
@@ -1390,6 +1416,15 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
                                     break;
                                 }
                             }
+                        } else if (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos) {
+                            std::string path = info.uri;
+                            uint32_t idx = 0;
+                            auto colonPos = path.rfind(':');
+                            if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
+                                idx = std::stoul(path.substr(colonPos + 1));
+                                path = path.substr(0, colonPos);
+                            }
+                            newNode = std::make_shared<CLAPPluginNode>(path, idx);
                         } else {
                             newNode = std::make_shared<VST3PluginNode>(info.uri);
                         }
@@ -1894,7 +1929,7 @@ void MainWindow::savePresetToFile(const QString& path) {
                 nodeObj["id"] = QString::fromStdString(node->uniqueId);
                 nodeObj["name"] = QString::fromStdString(node->getName());
                 nodeObj["uri"] = QString::fromStdString(node->getPluginURI());
-                nodeObj["type"] = node->getType() == NodeType::LV2Plugin ? "LV2Plugin" : "VST3Plugin";
+                nodeObj["type"] = node->getType() == NodeType::LV2Plugin ? "LV2Plugin" : (node->getType() == NodeType::CLAPPlugin ? "CLAPPlugin" : "VST3Plugin");
                 nodeObj["row"] = r;
                 nodeObj["col"] = c;
                 nodeObj["bypassed"] = node->isBypassed();
@@ -2016,9 +2051,27 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                     break;
                 }
             }
+        } else if (typeStr == "CLAPPlugin") {
+            std::string path = uri;
+            uint32_t idx = 0;
+            auto colonPos = path.rfind(':');
+            if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
+                idx = std::stoul(path.substr(colonPos + 1));
+                path = path.substr(0, colonPos);
+            }
+            node = std::make_shared<CLAPPluginNode>(path, idx);
         } else if (typeStr == "VST3Plugin") {
             if (uri == "builtin:bypass") {
                 node = std::make_shared<BypassNode>();
+            } else if (uri.find(".clap") != std::string::npos) {
+                std::string path = uri;
+                uint32_t idx = 0;
+                auto colonPos = path.rfind(':');
+                if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
+                    idx = std::stoul(path.substr(colonPos + 1));
+                    path = path.substr(0, colonPos);
+                }
+                node = std::make_shared<CLAPPluginNode>(path, idx);
             } else {
                 node = std::make_shared<VST3PluginNode>(uri);
             }
@@ -2481,6 +2534,164 @@ private:
     bool m_ownsDisplay;
 };
 
+class CLAPPluginUIWindow : public QDialog {
+public:
+    CLAPPluginUIWindow(CLAPPluginNode* node, QWidget* parent = nullptr)
+        : QDialog(parent), m_node(node), m_attached(false), m_x11Container(0), m_dpy(nullptr), m_ownsDisplay(false) {
+        
+        setWindowTitle(QString::fromStdString(node->getName()) + " - GUI");
+        setAttribute(Qt::WA_DeleteOnClose, true);
+        setWindowFlag(Qt::Tool, true);
+        setWindowFlag(Qt::WindowStaysOnTopHint, true);
+        setWindowModality(Qt::NonModal);
+        
+        QVBoxLayout* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+
+        m_dpy = nullptr;
+        auto* x11App = qApp->nativeInterface<QNativeInterface::QX11Application>();
+        if (x11App) {
+            m_dpy = x11App->display();
+        }
+        if (!m_dpy) {
+            m_dpy = XOpenDisplay(nullptr);
+            m_ownsDisplay = true;
+        }
+
+        const clap_plugin_t* plugin = node->getClapPlugin();
+        const clap_plugin_gui_t* extGui = node->getClapGuiExtension();
+        
+        uint32_t width = 800;
+        uint32_t height = 600;
+        if (extGui && plugin) {
+            if (extGui->is_api_supported(plugin, CLAP_WINDOW_API_X11, false)) {
+                extGui->create(plugin, CLAP_WINDOW_API_X11, false);
+                extGui->get_size(plugin, &width, &height);
+            }
+        }
+
+        m_nativeWidth = width;
+        m_nativeHeight = height;
+
+        double ratio = devicePixelRatioF();
+        if (ratio <= 0.0) ratio = 1.0;
+        int logicalW = std::round(m_nativeWidth / ratio);
+        int logicalH = std::round(m_nativeHeight / ratio);
+        
+        resize(logicalW, logicalH);
+
+        WId dialogWinId = this->winId();
+        int screen = DefaultScreen(m_dpy);
+        m_x11Container = XCreateSimpleWindow(
+            m_dpy,
+            (Window)dialogWinId,
+            0, 0,
+            m_nativeWidth, m_nativeHeight,
+            0,
+            BlackPixel(m_dpy, screen),
+            BlackPixel(m_dpy, screen)
+        );
+
+        XSelectInput(m_dpy, m_x11Container, SubstructureNotifyMask | StructureNotifyMask);
+        XMapWindow(m_dpy, m_x11Container);
+        XFlush(m_dpy);
+
+        QWindow* foreignWin = QWindow::fromWinId(m_x11Container);
+        m_containerWidget = QWidget::createWindowContainer(foreignWin, this);
+        layout->addWidget(m_containerWidget);
+    }
+
+    ~CLAPPluginUIWindow() override {
+        const clap_plugin_t* plugin = m_node->getClapPlugin();
+        const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
+        if (extGui && plugin && m_attached) {
+            extGui->hide(plugin);
+            extGui->destroy(plugin);
+        }
+        if (m_dpy && m_x11Container) {
+            XDestroyWindow(m_dpy, m_x11Container);
+            XFlush(m_dpy);
+        }
+        if (m_ownsDisplay && m_dpy) {
+            XCloseDisplay(m_dpy);
+        }
+        m_dpy = nullptr;
+    }
+
+protected:
+    void showEvent(QShowEvent* event) override {
+        QDialog::showEvent(event);
+        if (!m_attached && m_dpy) {
+            QTimer::singleShot(50, this, [this]() {
+                const clap_plugin_t* plugin = m_node->getClapPlugin();
+                const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
+                if (extGui && plugin && !m_attached) {
+                    clap_window_t window{ CLAP_WINDOW_API_X11, { (void*)m_x11Container } };
+                    if (extGui->set_parent(plugin, &window)) {
+                        extGui->show(plugin);
+                        m_attached = true;
+
+                        uint32_t w = 0, h = 0;
+                        if (extGui->get_size && extGui->get_size(plugin, &w, &h) && w > 0 && h > 0) {
+                            m_nativeWidth = w;
+                            m_nativeHeight = h;
+                            double ratio = devicePixelRatioF();
+                            if (ratio <= 0.0) ratio = 1.0;
+                            int logicalW = std::round(m_nativeWidth / ratio);
+                            int logicalH = std::round(m_nativeHeight / ratio);
+                            XResizeWindow(m_dpy, m_x11Container, m_nativeWidth, m_nativeHeight);
+
+                            bool canResize = false;
+                            if (extGui->can_resize) {
+                                canResize = extGui->can_resize(plugin);
+                            }
+                            if (!canResize) {
+                                setFixedSize(logicalW, logicalH);
+                            } else {
+                                resize(logicalW, logicalH);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    void resizeEvent(QResizeEvent* event) override {
+        QDialog::resizeEvent(event);
+        if (m_containerWidget && m_dpy && m_x11Container) {
+            double ratio = devicePixelRatioF();
+            if (ratio <= 0.0) ratio = 1.0;
+            uint32_t physW = std::round(width() * ratio);
+            uint32_t physH = std::round(height() * ratio);
+
+            const clap_plugin_t* plugin = m_node->getClapPlugin();
+            const clap_plugin_gui_t* extGui = m_node->getClapGuiExtension();
+            if (extGui && plugin && m_attached) {
+                if (extGui->can_resize && extGui->can_resize(plugin)) {
+                    if (extGui->adjust_size) {
+                        extGui->adjust_size(plugin, &physW, &physH);
+                    }
+                    if (extGui->set_size) {
+                        extGui->set_size(plugin, physW, physH);
+                    }
+                }
+            }
+            XResizeWindow(m_dpy, m_x11Container, physW, physH);
+        }
+    }
+
+private:
+    CLAPPluginNode* m_node;
+    bool m_attached;
+    int m_nativeWidth;
+    int m_nativeHeight;
+    Window m_x11Container;
+    QWidget* m_containerWidget = nullptr;
+    Display* m_dpy;
+    bool m_ownsDisplay;
+};
+
 class PluginUIWindow : public QDialog {
 public:
     PluginUIWindow(LV2PluginNode* node, const LilvUI* ui, QWidget* parent = nullptr)
@@ -2919,6 +3130,28 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         
         connect(uiBtn, &QPushButton::clicked, this, [this, vst3Node]() {
             auto* uiWin = new VST3PluginUIWindow(vst3Node, this);
+            uiWin->show();
+        });
+        
+        QFrame* uiSeparator = new QFrame(m_paramContainer);
+        uiSeparator->setFrameShape(QFrame::HLine);
+        uiSeparator->setStyleSheet("background-color: #333333; margin-top: 6px; margin-bottom: 6px;");
+        m_paramLayout->addWidget(uiSeparator);
+    }
+
+    auto* clapNode = dynamic_cast<CLAPPluginNode*>(node.get());
+    if (clapNode && clapNode->hasGUI()) {
+        hasCustomUI = true;
+        QPushButton* uiBtn = new QPushButton("Open Graphical UI...", m_paramContainer);
+        uiBtn->setStyleSheet(
+            "QPushButton { background-color: #00E676; color: black; font-weight: bold; border-radius: 4px; padding: 8px; border: none; }"
+            "QPushButton:hover { background-color: #69F0AE; }"
+            "QPushButton:pressed { background-color: #00C853; }"
+        );
+        m_paramLayout->addWidget(uiBtn);
+        
+        connect(uiBtn, &QPushButton::clicked, this, [this, clapNode]() {
+            auto* uiWin = new CLAPPluginUIWindow(clapNode, this);
             uiWin->show();
         });
         
