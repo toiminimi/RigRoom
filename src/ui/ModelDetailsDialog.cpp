@@ -1,12 +1,13 @@
 #include "ModelDetailsDialog.h"
 #include "Tone3000Dialog.h"
 #include <QDir>
+#include <QScrollArea>
 
 ModelDetailsDialog::ModelDetailsDialog(std::shared_ptr<AudioNode> node, AudioEngine* engine, QWidget* parent)
     : QDialog(parent), m_node(node), m_engine(engine) {
     setWindowTitle("Model Details - TONE3000");
-    resize(520, 480);
-    setStyleSheet("QDialog { background-color: #1E1E1E; color: #E0E0E0; }");
+    resize(560, 560);
+    setStyleSheet("QDialog { background-color: #1A1A1D; color: #E0E0E0; }");
 
     if (m_node) {
         m_filePath = QString::fromStdString(m_node->getModelFilePath());
@@ -18,16 +19,27 @@ ModelDetailsDialog::ModelDetailsDialog(std::shared_ptr<AudioNode> node, AudioEng
 }
 
 void ModelDetailsDialog::setupUI() {
-    auto* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(18, 18, 18, 18);
+    auto* rootLayout = new QVBoxLayout(this);
+    rootLayout->setContentsMargins(16, 16, 16, 16);
+    rootLayout->setSpacing(12);
+
+    // Scrollable area for content
+    auto* scrollArea = new QScrollArea(this);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setStyleSheet("QScrollArea { background: transparent; border: none; } QWidget { background: transparent; }");
+
+    auto* scrollContent = new QWidget(scrollArea);
+    auto* mainLayout = new QVBoxLayout(scrollContent);
+    mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(12);
 
     // --- HERO BANNER ---
-    QFrame* headerCard = new QFrame(this);
-    headerCard->setStyleSheet("QFrame { background-color: #252528; border-radius: 8px; border: 1px solid #333336; padding: 12px; }");
+    QFrame* headerCard = new QFrame(scrollContent);
+    headerCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
     auto* headerLayout = new QVBoxLayout(headerCard);
     headerLayout->setContentsMargins(0, 0, 0, 0);
-    headerLayout->setSpacing(4);
+    headerLayout->setSpacing(6);
 
     size_t slash = m_filePath.toStdString().find_last_of("/\\");
     std::string filename = (slash != std::string::npos) ? m_filePath.toStdString().substr(slash + 1) : m_filePath.toStdString();
@@ -36,26 +48,72 @@ void ModelDetailsDialog::setupUI() {
 
     QLabel* titleLabel = new QLabel(titleStr, headerCard);
     titleLabel->setWordWrap(true);
-    titleLabel->setStyleSheet("font-size: 16px; font-weight: bold; color: #00B0FF; background: transparent; border: none;");
+    titleLabel->setStyleSheet("font-size: 17px; font-weight: bold; color: #FFFFFF; background: transparent; border: none;");
     headerLayout->addWidget(titleLabel);
+
+    // Badges Row
+    QHBoxLayout* badgeLayout = new QHBoxLayout();
+    badgeLayout->setSpacing(6);
+
+    QLabel* namBadge = new QLabel("NAM", headerCard);
+    namBadge->setStyleSheet("background-color: #00B0FF; color: #000000; font-weight: bold; font-size: 10px; border-radius: 3px; padding: 2px 6px;");
+    badgeLayout->addWidget(namBadge);
+
+    QString verStr = QString::fromStdString(m_meta.version);
+    if (verStr.isEmpty()) verStr = "v0.5.x";
+    QLabel* verBadge = new QLabel(verStr, headerCard);
+    verBadge->setStyleSheet("background-color: #37474F; color: #80DEEA; font-weight: bold; font-size: 10px; border-radius: 3px; padding: 2px 6px;");
+    badgeLayout->addWidget(verBadge);
+
+    QString gearTypeStr = QString::fromStdString(m_meta.gearType);
+    if (!gearTypeStr.isEmpty()) {
+        QLabel* typeBadge = new QLabel(gearTypeStr, headerCard);
+        typeBadge->setStyleSheet("background-color: #2E7D32; color: #FFFFFF; font-weight: bold; font-size: 10px; border-radius: 3px; padding: 2px 6px;");
+        badgeLayout->addWidget(typeBadge);
+    }
+    badgeLayout->addStretch();
+    headerLayout->addLayout(badgeLayout);
 
     QString authorStr = QString::fromStdString(m_meta.author.empty() ? m_meta.modeledBy : m_meta.author);
     if (authorStr.isEmpty()) authorStr = "Unknown Creator";
     QLabel* authorLabel = new QLabel(QString("Created by <b>%1</b>").arg(authorStr.toHtmlEscaped()), headerCard);
-    authorLabel->setStyleSheet("font-size: 12px; color: #B0BEC5; background: transparent; border: none;");
+    authorLabel->setStyleSheet("font-size: 12px; color: #B0BEC5; background: transparent; border: none; margin-top: 4px;");
     headerLayout->addWidget(authorLabel);
 
     mainLayout->addWidget(headerCard);
 
+    // --- DESCRIPTION SECTION ---
+    QString descStr = QString::fromStdString(m_meta.description).trimmed();
+    if (!descStr.isEmpty()) {
+        QFrame* descCard = new QFrame(scrollContent);
+        descCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
+        auto* descLayout = new QVBoxLayout(descCard);
+        descLayout->setContentsMargins(0, 0, 0, 0);
+        descLayout->setSpacing(6);
+
+        QLabel* descHeader = new QLabel("📝 DESCRIPTION / CAPTURE NOTES", descCard);
+        descHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
+        descLayout->addWidget(descHeader);
+
+        QString formattedDesc = descStr.toHtmlEscaped().replace("\n", "<br>");
+        QLabel* descText = new QLabel(formattedDesc, descCard);
+        descText->setWordWrap(true);
+        descText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        descText->setStyleSheet("font-size: 11px; color: #D1D5DB; line-height: 1.4; background: transparent; border: none;");
+        descLayout->addWidget(descText);
+
+        mainLayout->addWidget(descCard);
+    }
+
     // --- GEAR SPECIFICATIONS ---
-    QFrame* gearCard = new QFrame(this);
-    gearCard->setStyleSheet("QFrame { background-color: #252528; border-radius: 8px; border: 1px solid #333336; padding: 12px; }");
+    QFrame* gearCard = new QFrame(scrollContent);
+    gearCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
     auto* gearLayout = new QVBoxLayout(gearCard);
     gearLayout->setContentsMargins(0, 0, 0, 0);
     gearLayout->setSpacing(6);
 
-    QLabel* gearHeader = new QLabel("🎸 GEAR SPECIFICATIONS", gearCard);
-    gearHeader->setStyleSheet("font-weight: bold; font-size: 12px; color: #80DEEA; background: transparent; border: none;");
+    QLabel* gearHeader = new QLabel("🎸 GEAR & CAPTURE DETAILS", gearCard);
+    gearHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
     gearLayout->addWidget(gearHeader);
 
     QString gearMakeStr = QString::fromStdString(m_meta.gearMake).trimmed();
@@ -71,34 +129,40 @@ void ModelDetailsDialog::setupUI() {
     makeModelLabel->setWordWrap(true);
     gearLayout->addWidget(makeModelLabel);
 
-    QString gearTypeStr = QString::fromStdString(m_meta.gearType);
-    if (!gearTypeStr.isEmpty()) {
-        QLabel* typeLabel = new QLabel(QString("<b>Gear Type:</b> %1").arg(gearTypeStr.toHtmlEscaped()), gearCard);
-        typeLabel->setStyleSheet("font-size: 11px; color: #CFD8DC; background: transparent; border: none;");
-        gearLayout->addWidget(typeLabel);
-    }
-
     if (!m_meta.tags.empty()) {
-        QLabel* tagsLabel = new QLabel(QString("<b>Tags:</b> %1").arg(QString::fromStdString(m_meta.tags).toHtmlEscaped()), gearCard);
-        tagsLabel->setWordWrap(true);
-        tagsLabel->setStyleSheet("font-size: 11px; color: #B0BEC5; background: transparent; border: none;");
-        gearLayout->addWidget(tagsLabel);
+        QLabel* tagsHeader = new QLabel("<b>Tags:</b>", gearCard);
+        tagsHeader->setStyleSheet("font-size: 11px; color: #CFD8DC; background: transparent; border: none;");
+        gearLayout->addWidget(tagsHeader);
+
+        QHBoxLayout* tagsPillLayout = new QHBoxLayout();
+        tagsPillLayout->setSpacing(4);
+
+        QStringList tagItems = QString::fromStdString(m_meta.tags).split(",", Qt::SkipEmptyParts);
+        for (QString tag : tagItems) {
+            tag = tag.trimmed();
+            if (tag.isEmpty()) continue;
+            QLabel* tagPill = new QLabel(tag, gearCard);
+            tagPill->setStyleSheet("background-color: #1A232A; color: #80DEEA; font-size: 10px; border-radius: 10px; padding: 2px 8px; border: 1px solid #2B3D4F;");
+            tagsPillLayout->addWidget(tagPill);
+        }
+        tagsPillLayout->addStretch();
+        gearLayout->addLayout(tagsPillLayout);
     }
 
     mainLayout->addWidget(gearCard);
 
     // --- TECHNICAL SPECIFICATIONS ---
-    QFrame* techCard = new QFrame(this);
-    techCard->setStyleSheet("QFrame { background-color: #252528; border-radius: 8px; border: 1px solid #333336; padding: 12px; }");
+    QFrame* techCard = new QFrame(scrollContent);
+    techCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
     auto* techLayout = new QVBoxLayout(techCard);
     techLayout->setContentsMargins(0, 0, 0, 0);
     techLayout->setSpacing(6);
 
     QLabel* techHeader = new QLabel("⚙ TECHNICAL SPECIFICATIONS", techCard);
-    techHeader->setStyleSheet("font-weight: bold; font-size: 12px; color: #80DEEA; background: transparent; border: none;");
+    techHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
     techLayout->addWidget(techHeader);
 
-    QString archStr = QString::fromStdString(m_meta.architecture.empty() ? "NAM Core Engine" : m_meta.architecture);
+    QString archStr = QString::fromStdString(m_meta.architecture.empty() ? "NAM Neural Engine" : m_meta.architecture);
     QLabel* archLabel = new QLabel(QString("<b>Architecture:</b> %1").arg(archStr.toHtmlEscaped()), techCard);
     archLabel->setStyleSheet("font-size: 11px; color: #CFD8DC; background: transparent; border: none;");
     techLayout->addWidget(archLabel);
@@ -116,14 +180,14 @@ void ModelDetailsDialog::setupUI() {
     mainLayout->addWidget(techCard);
 
     // --- FILE LOCATION ---
-    QFrame* pathCard = new QFrame(this);
-    pathCard->setStyleSheet("QFrame { background-color: #252528; border-radius: 8px; border: 1px solid #333336; padding: 12px; }");
+    QFrame* pathCard = new QFrame(scrollContent);
+    pathCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
     auto* pathLayout = new QVBoxLayout(pathCard);
     pathLayout->setContentsMargins(0, 0, 0, 0);
     pathLayout->setSpacing(4);
 
     QLabel* pathHeader = new QLabel("📁 FILE LOCATION", pathCard);
-    pathHeader->setStyleSheet("font-weight: bold; font-size: 12px; color: #80DEEA; background: transparent; border: none;");
+    pathHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
     pathLayout->addWidget(pathHeader);
 
     QString pathDisplay = m_filePath;
@@ -149,13 +213,14 @@ void ModelDetailsDialog::setupUI() {
     pathLayout->addLayout(pathRow);
     mainLayout->addWidget(pathCard);
 
-    mainLayout->addStretch();
+    scrollArea->setWidget(scrollContent);
+    rootLayout->addWidget(scrollArea, 1);
 
     // --- ACTION BUTTONS TOOLBAR ---
     QFrame* actionCard = new QFrame(this);
     actionCard->setStyleSheet("QFrame { background-color: transparent; border: none; }");
     auto* actionLayout = new QHBoxLayout(actionCard);
-    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setContentsMargins(0, 4, 0, 0);
     actionLayout->setSpacing(6);
 
     QPushButton* browserBtn = new QPushButton("⚡ Open in TONE3000 Browser", actionCard);
@@ -180,7 +245,7 @@ void ModelDetailsDialog::setupUI() {
     actionLayout->addWidget(closeBtn);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
 
-    mainLayout->addWidget(actionCard);
+    rootLayout->addWidget(actionCard);
 }
 
 void ModelDetailsDialog::onOpenTone3000Browser() {

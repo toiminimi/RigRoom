@@ -108,6 +108,7 @@ public:
         std::string gearType;
         std::string tags;
         std::string description;
+        std::string version;
         std::string architecture;
         std::string modeledBy;
         std::string gearMake;

@@ -3036,43 +3036,72 @@ static void parseNamFileMetadata(const QString& filePath, AudioNode::ModelMetada
     if (!doc.isObject()) return;
     
     QJsonObject obj = doc.object();
-    if (obj.contains("name") && meta.toneTitle.empty()) {
-        meta.toneTitle = obj["name"].toString().toStdString();
+    QJsonObject metaObj = obj;
+    if (obj.contains("metadata") && obj["metadata"].isObject()) {
+        metaObj = obj["metadata"].toObject();
     }
-    if (obj.contains("modeled_by") && meta.modeledBy.empty()) {
-        meta.modeledBy = obj["modeled_by"].toString().toStdString();
+
+    auto getString = [&](const QString& key) -> QString {
+        if (metaObj.contains(key) && !metaObj[key].toString().isEmpty()) return metaObj[key].toString();
+        if (obj.contains(key) && !obj[key].toString().isEmpty()) return obj[key].toString();
+        return QString();
+    };
+
+    if (meta.version.empty()) {
+        QString v = getString("version");
+        if (!v.isEmpty()) meta.version = v.toStdString();
     }
-    if (obj.contains("author") && meta.author.empty()) {
-        meta.author = obj["author"].toString().toStdString();
+    if (meta.description.empty()) {
+        QString d = getString("description");
+        if (!d.isEmpty()) meta.description = d.toStdString();
     }
-    if (obj.contains("gear_make") && meta.gearMake.empty()) {
-        meta.gearMake = obj["gear_make"].toString().toStdString();
+    if (meta.toneTitle.empty()) {
+        QString n = getString("name");
+        if (!n.isEmpty()) meta.toneTitle = n.toStdString();
     }
-    if (obj.contains("gear_model") && meta.gearModel.empty()) {
-        meta.gearModel = obj["gear_model"].toString().toStdString();
+    if (meta.modeledBy.empty()) {
+        QString mb = getString("modeled_by");
+        if (!mb.isEmpty()) meta.modeledBy = mb.toStdString();
     }
-    if (obj.contains("gear_type") && meta.gearType.empty()) {
-        meta.gearType = obj["gear_type"].toString().toStdString();
+    if (meta.author.empty()) {
+        QString a = getString("author");
+        if (!a.isEmpty()) meta.author = a.toStdString();
     }
-    if (obj.contains("tags") && meta.tags.empty()) {
-        if (obj["tags"].isArray()) {
+    if (meta.gearMake.empty()) {
+        QString gm = getString("gear_make");
+        if (!gm.isEmpty()) meta.gearMake = gm.toStdString();
+    }
+    if (meta.gearModel.empty()) {
+        QString gmod = getString("gear_model");
+        if (!gmod.isEmpty()) meta.gearModel = gmod.toStdString();
+    }
+    if (meta.gearType.empty()) {
+        QString gt = getString("gear_type");
+        if (!gt.isEmpty()) meta.gearType = gt.toStdString();
+    }
+    if (meta.tags.empty()) {
+        QJsonValue tagsVal = metaObj.contains("tags") ? metaObj["tags"] : obj["tags"];
+        if (tagsVal.isArray()) {
             QStringList tagList;
-            for (const auto& tagVal : obj["tags"].toArray()) {
+            for (const auto& tagVal : tagsVal.toArray()) {
                 tagList << tagVal.toString();
             }
             meta.tags = tagList.join(", ").toStdString();
-        } else {
-            meta.tags = obj["tags"].toString().toStdString();
+        } else if (tagsVal.isString()) {
+            meta.tags = tagsVal.toString().toStdString();
         }
     }
-    if (obj.contains("architecture")) {
-        meta.architecture = obj["architecture"].toString().toStdString();
+    if (meta.architecture.empty()) {
+        QString arch = getString("architecture");
+        if (!arch.isEmpty()) meta.architecture = arch.toStdString();
     }
-    if (obj.contains("loudness")) {
-        meta.loudness = obj["loudness"].toDouble();
+    if (meta.loudness == 0.0) {
+        if (metaObj.contains("loudness")) meta.loudness = metaObj["loudness"].toDouble();
+        else if (obj.contains("loudness")) meta.loudness = obj["loudness"].toDouble();
     }
-    if (obj.contains("sample_rate")) {
-        meta.sampleRate = obj["sample_rate"].toDouble();
+    if (meta.sampleRate == 0.0) {
+        if (metaObj.contains("sample_rate")) meta.sampleRate = metaObj["sample_rate"].toDouble();
+        else if (obj.contains("sample_rate")) meta.sampleRate = obj["sample_rate"].toDouble();
     }
 }
 
