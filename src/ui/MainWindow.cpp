@@ -560,7 +560,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_canvas->applyRoutingChange(true);
     
     // Connect canvas signals
-    connect(m_canvas, &NodeCanvas::editPluginUI, this, &MainWindow::showPluginControls);
+    connect(m_canvas, &NodeCanvas::editPluginUI, this, &MainWindow::onPluginDoubleClicked);
     connect(m_canvas, &NodeCanvas::nodeSelected, this, &MainWindow::onNodeSelected);
     connect(m_canvas, &NodeCanvas::plusButtonClicked, this, &MainWindow::onPlusButtonClicked);
     connect(m_canvas, &NodeCanvas::nodeContextMenuRequested, this, &MainWindow::onNodeContextMenuRequested);
@@ -955,11 +955,6 @@ void MainWindow::setupUI() {
     
     QVBoxLayout* rightLayout = new QVBoxLayout(m_paramContainer);
     rightLayout->setContentsMargins(12, 12, 12, 12);
-    
-    // --- PARAMETER CONTROL PANEL HEADER ---
-    QLabel* paramHeader = new QLabel("Inspector", this);
-    paramHeader->setStyleSheet("font-weight: bold; font-size: 14px; color: #00B0FF;");
-    rightLayout->addWidget(paramHeader);
     
     m_noParamLabel = new QLabel("Select an effect node\nto show parameters", this);
     m_noParamLabel->setAlignment(Qt::AlignCenter);
@@ -3307,11 +3302,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 }
             }
             
-            QPushButton* uiBtn = new QPushButton("Open Graphical UI...", m_paramContainer);
+            QPushButton* uiBtn = new QPushButton("🎛️ Open GUI", m_paramContainer);
             uiBtn->setStyleSheet(
-                "QPushButton { background-color: #00E676; color: black; font-weight: bold; border-radius: 4px; padding: 8px; border: none; }"
-                "QPushButton:hover { background-color: #69F0AE; }"
-                "QPushButton:pressed { background-color: #00C853; }"
+                "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
+                "QPushButton:hover { background-color: #009688; }"
             );
             m_paramLayout->addWidget(uiBtn);
             
@@ -3339,11 +3333,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     auto* vst3Node = dynamic_cast<VST3PluginNode*>(node.get());
     if (vst3Node && vst3Node->hasEditor()) {
         hasCustomUI = true;
-        QPushButton* uiBtn = new QPushButton("Open Graphical UI...", m_paramContainer);
+        QPushButton* uiBtn = new QPushButton("🎛️ Open GUI", m_paramContainer);
         uiBtn->setStyleSheet(
-            "QPushButton { background-color: #00E676; color: black; font-weight: bold; border-radius: 4px; padding: 8px; border: none; }"
-            "QPushButton:hover { background-color: #69F0AE; }"
-            "QPushButton:pressed { background-color: #00C853; }"
+            "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
+            "QPushButton:hover { background-color: #009688; }"
         );
         m_paramLayout->addWidget(uiBtn);
         
@@ -3361,11 +3354,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     auto* clapNode = dynamic_cast<CLAPPluginNode*>(node.get());
     if (clapNode && clapNode->hasGUI()) {
         hasCustomUI = true;
-        QPushButton* uiBtn = new QPushButton("Open Graphical UI...", m_paramContainer);
+        QPushButton* uiBtn = new QPushButton("🎛️ Open GUI", m_paramContainer);
         uiBtn->setStyleSheet(
-            "QPushButton { background-color: #00E676; color: black; font-weight: bold; border-radius: 4px; padding: 8px; border: none; }"
-            "QPushButton:hover { background-color: #69F0AE; }"
-            "QPushButton:pressed { background-color: #00C853; }"
+            "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
+            "QPushButton:hover { background-color: #009688; }"
         );
         m_paramLayout->addWidget(uiBtn);
         
@@ -3775,6 +3767,83 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 }
             }
         });
+    }
+}
+
+void MainWindow::onPluginDoubleClicked(std::shared_ptr<AudioNode> node) {
+    if (!node) return;
+    showPluginControls(node);
+
+    if (auto* lv2Node = dynamic_cast<LV2PluginNode*>(node.get())) {
+        if (lv2Node->getLilvPlugin()) {
+            LilvUIs* uis = (LilvUIs*)lilv_plugin_get_uis(lv2Node->getLilvPlugin());
+            if (uis && lilv_uis_size(uis) > 0) {
+                const LilvUI* uiToOpen = nullptr;
+                bool isGtkUi = false;
+                bool isX11Ui = false;
+
+                const LilvNode* gtkUri = lilv_new_uri(m_lilvWorld, LV2_UI__GtkUI);
+                const LilvNode* x11Uri = lilv_new_uri(m_lilvWorld, LV2_UI__X11UI);
+                const LilvNode* gtk3Uri = lilv_new_uri(m_lilvWorld, "http://lv2plug.in/ns/extensions/ui#Gtk3UI");
+                const LilvNode* qt5Uri = lilv_new_uri(m_lilvWorld, "http://lv2plug.in/ns/extensions/ui#Qt5UI");
+
+                LILV_FOREACH(uis, i, uis) {
+                    const LilvUI* ui = lilv_uis_get(uis, i);
+                    if (lilv_ui_is_supported(ui, suil_ui_supported, gtkUri, nullptr) ||
+                        lilv_ui_is_supported(ui, suil_ui_supported, x11Uri, nullptr) ||
+                        lilv_ui_is_supported(ui, suil_ui_supported, gtk3Uri, nullptr) ||
+                        lilv_ui_is_supported(ui, suil_ui_supported, qt5Uri, nullptr)) {
+                        uiToOpen = ui;
+                        break;
+                    }
+                }
+
+                if (uiToOpen) {
+                    const LilvNodes* selectedClasses = lilv_ui_get_classes(uiToOpen);
+                    LILV_FOREACH(nodes, i, selectedClasses) {
+                        const LilvNode* type = lilv_nodes_get(selectedClasses, i);
+                        const QString typeUri = QString::fromUtf8(lilv_node_as_uri(type));
+                        if (typeUri == LV2_UI__GtkUI) isGtkUi = true;
+                        else if (typeUri == LV2_UI__X11UI) isX11Ui = true;
+                    }
+
+                    if (isGtkUi || isX11Ui) {
+                        auto* uiWin = new ExternalPluginUIWindow(lv2Node, uiToOpen, isX11Ui, winId(), this);
+                        if (!uiWin->isValid()) {
+                            uiWin->deleteLater();
+                        }
+                    } else {
+                        auto* uiWin = new PluginUIWindow(lv2Node, uiToOpen, this);
+                        uiWin->show();
+                    }
+                    lilv_node_free((LilvNode*)gtkUri);
+                    lilv_node_free((LilvNode*)x11Uri);
+                    lilv_node_free((LilvNode*)gtk3Uri);
+                    lilv_node_free((LilvNode*)qt5Uri);
+                    return;
+                }
+                lilv_node_free((LilvNode*)gtkUri);
+                lilv_node_free((LilvNode*)x11Uri);
+                lilv_node_free((LilvNode*)gtk3Uri);
+                lilv_node_free((LilvNode*)qt5Uri);
+            }
+        }
+    }
+
+    if (auto* vst3Node = dynamic_cast<VST3PluginNode*>(node.get())) {
+        if (vst3Node->hasEditor()) {
+            auto* uiWin = new VST3PluginUIWindow(vst3Node, this);
+            uiWin->show();
+            return;
+        }
+    }
+
+    if (auto* clapNode = dynamic_cast<CLAPPluginNode*>(node.get())) {
+        if (clapNode->hasGUI()) {
+            auto* uiWin = new CLAPPluginUIWindow(clapNode, this);
+            uiWin->show();
+            return;
+        }
     }
 }
 
