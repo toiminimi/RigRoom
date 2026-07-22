@@ -1217,6 +1217,25 @@ bool MainWindow::savePluginPreset(const std::shared_ptr<AudioNode>& node, const 
         modelVariants.append(value);
     }
     preset["modelVariants"] = modelVariants;
+
+    const auto& meta = node->getModelMetadata();
+    preset["modelMetadata"] = QJsonObject{
+        {"toneId", QString::fromStdString(meta.toneId)},
+        {"toneTitle", QString::fromStdString(meta.toneTitle)},
+        {"toneSlug", QString::fromStdString(meta.toneSlug)},
+        {"author", QString::fromStdString(meta.author)},
+        {"modeledBy", QString::fromStdString(meta.modeledBy)},
+        {"gearType", QString::fromStdString(meta.gearType)},
+        {"gearMake", QString::fromStdString(meta.gearMake)},
+        {"gearModel", QString::fromStdString(meta.gearModel)},
+        {"tags", QString::fromStdString(meta.tags)},
+        {"description", QString::fromStdString(meta.description)},
+        {"version", QString::fromStdString(meta.version)},
+        {"architecture", QString::fromStdString(meta.architecture)},
+        {"loudness", meta.loudness},
+        {"sampleRate", meta.sampleRate}
+    };
+
     QFile file(QDir(directoryPath).filePath(name.trimmed() + ".json"));
     if (!file.open(QFile::WriteOnly | QFile::Truncate)) return false;
     file.write(QJsonDocument(preset).toJson());
@@ -1266,6 +1285,25 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
             modelVariants.push_back(std::move(variant));
         }
         node->setModelVariants(modelVariants);
+    }
+    if (preset.contains("modelMetadata") && preset.value("modelMetadata").isObject()) {
+        const QJsonObject metaObj = preset.value("modelMetadata").toObject();
+        AudioNode::ModelMetadata meta;
+        meta.toneId = metaObj.value("toneId").toString().toStdString();
+        meta.toneTitle = metaObj.value("toneTitle").toString().toStdString();
+        meta.toneSlug = metaObj.value("toneSlug").toString().toStdString();
+        meta.author = metaObj.value("author").toString().toStdString();
+        meta.modeledBy = metaObj.value("modeledBy").toString().toStdString();
+        meta.gearType = metaObj.value("gearType").toString().toStdString();
+        meta.gearMake = metaObj.value("gearMake").toString().toStdString();
+        meta.gearModel = metaObj.value("gearModel").toString().toStdString();
+        meta.tags = metaObj.value("tags").toString().toStdString();
+        meta.description = metaObj.value("description").toString().toStdString();
+        meta.version = metaObj.value("version").toString().toStdString();
+        meta.architecture = metaObj.value("architecture").toString().toStdString();
+        meta.loudness = metaObj.value("loudness").toDouble();
+        meta.sampleRate = metaObj.value("sampleRate").toDouble();
+        node->setModelMetadata(meta);
     }
     if (!loadedModelPath.isEmpty()) {
         if (displayName.isEmpty()) displayName = preset.value("modelName").toString();
@@ -3122,11 +3160,16 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     // Preset management bar
     auto* presetRow = new QWidget(m_paramContainer);
     auto* presetLayout = new QVBoxLayout(presetRow);
-    presetLayout->setContentsMargins(0, 0, 0, 4);
+    presetLayout->setContentsMargins(0, 0, 0, 8);
     presetLayout->setSpacing(4);
 
+    auto* presetTitleLabel = new QLabel("Plugin Preset", presetRow);
+    presetTitleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 12px; margin-bottom: 2px;");
+    presetLayout->addWidget(presetTitleLabel);
+
     auto* presetCombo = new QComboBox(presetRow);
-    presetCombo->setToolTip("Load a preset for this plugin");
+    presetCombo->setToolTip("Select or load a saved preset for this plugin");
+    presetCombo->setStyleSheet("QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #333438; border-radius: 4px; padding: 4px 8px; font-weight: bold; }");
     const QString activePreset = node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{};
     refreshPluginPresetList(node, presetCombo, activePreset);
     presetLayout->addWidget(presetCombo);
@@ -3134,14 +3177,14 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     auto* btnBox = new QWidget(presetRow);
     auto* btnLayout = new QHBoxLayout(btnBox);
     btnLayout->setContentsMargins(0, 0, 0, 0);
-    btnLayout->setSpacing(4);
+    btnLayout->setSpacing(6);
 
-    auto* saveButton = new QPushButton("Save", btnBox);
-    saveButton->setStyleSheet("QPushButton { padding: 4px 8px; font-size: 11px; font-weight: bold; }");
+    auto* saveButton = new QPushButton("💾 Save Preset", btnBox);
+    saveButton->setStyleSheet("QPushButton { background-color: #00897B; color: white; padding: 5px 8px; font-size: 11px; font-weight: bold; border-radius: 4px; border: none; } QPushButton:hover { background-color: #009688; }");
     btnLayout->addWidget(saveButton, 1);
 
-    auto* optionsButton = new QPushButton("Options...", btnBox);
-    optionsButton->setStyleSheet("QPushButton { padding: 4px 8px; font-size: 11px; }");
+    auto* optionsButton = new QPushButton("⚙ Preset Options ▾", btnBox);
+    optionsButton->setStyleSheet("QPushButton { background-color: #333338; color: #E0E0E0; padding: 5px 8px; font-size: 11px; border-radius: 4px; border: none; } QPushButton:hover { background-color: #44444A; }");
     btnLayout->addWidget(optionsButton, 1);
 
     presetLayout->addWidget(btnBox);
@@ -3708,13 +3751,21 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     m_engine.resumeProcessing();
 
                     AudioNode::ModelMetadata meta = node->getModelMetadata();
+                    std::string parentAuthor = meta.author.empty() ? meta.modeledBy : meta.author;
+                    std::string parentGroup = node->getModelDisplayName();
+
                     parseNamFileMetadata(QString::fromStdString(selectedVar.localPath), meta);
+
+                    if (meta.author.empty() && !parentAuthor.empty()) meta.author = parentAuthor;
+                    if (meta.modeledBy.empty() && !parentAuthor.empty()) meta.modeledBy = parentAuthor;
                     if (!selectedVar.name.empty()) meta.toneTitle = selectedVar.name;
                     node->setModelMetadata(meta);
 
-                    size_t slash = selectedVar.localPath.find_last_of("/\\");
-                    std::string filename = (slash != std::string::npos) ? selectedVar.localPath.substr(slash + 1) : selectedVar.localPath;
-                    node->setModelDisplayName(selectedVar.name.empty() ? filename : selectedVar.name);
+                    if (!parentGroup.empty()) {
+                        node->setModelDisplayName(parentGroup);
+                    } else if (!selectedVar.name.empty()) {
+                        node->setModelDisplayName(selectedVar.name);
+                    }
                     
                     setUnsavedChanges(true);
                     saveConfigSettings();
