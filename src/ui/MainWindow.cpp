@@ -3151,113 +3151,128 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     }
 
     m_noParamLabel->hide();
+    bool isPluginNode = (node->getType() == NodeType::LV2Plugin ||
+                         node->getType() == NodeType::VST3Plugin ||
+                         node->getType() == NodeType::CLAPPlugin);
 
-    // Preset management bar
-    auto* presetRow = new QWidget(m_paramContainer);
-    auto* presetLayout = new QVBoxLayout(presetRow);
-    presetLayout->setContentsMargins(0, 0, 0, 8);
-    presetLayout->setSpacing(4);
+    if (isPluginNode) {
+        // Preset management bar
+        auto* presetRow = new QWidget(m_paramContainer);
+        auto* presetLayout = new QVBoxLayout(presetRow);
+        presetLayout->setContentsMargins(0, 0, 0, 8);
+        presetLayout->setSpacing(4);
 
-    auto* presetTitleLabel = new QLabel("Plugin Preset", presetRow);
-    presetTitleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 12px; margin-bottom: 2px;");
-    presetLayout->addWidget(presetTitleLabel);
+        auto* presetTitleLabel = new QLabel("Plugin Preset", presetRow);
+        presetTitleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 12px; margin-bottom: 2px;");
+        presetLayout->addWidget(presetTitleLabel);
 
-    auto* presetCombo = new QComboBox(presetRow);
-    presetCombo->setToolTip("Select or load a saved preset for this plugin");
-    presetCombo->setStyleSheet("QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #333438; border-radius: 4px; padding: 4px 8px; font-weight: bold; }");
-    const QString activePreset = node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{};
-    refreshPluginPresetList(node, presetCombo, activePreset);
-    presetLayout->addWidget(presetCombo);
+        auto* presetCombo = new QComboBox(presetRow);
+        presetCombo->setToolTip("Select or load a saved preset for this plugin");
+        presetCombo->setStyleSheet("QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #333438; border-radius: 4px; padding: 4px 8px; font-weight: bold; }");
+        const QString activePreset = node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{};
+        refreshPluginPresetList(node, presetCombo, activePreset);
+        presetLayout->addWidget(presetCombo);
 
-    auto* btnBox = new QWidget(presetRow);
-    auto* btnLayout = new QHBoxLayout(btnBox);
-    btnLayout->setContentsMargins(0, 0, 0, 0);
-    btnLayout->setSpacing(6);
+        auto* btnBox = new QWidget(presetRow);
+        auto* btnLayout = new QHBoxLayout(btnBox);
+        btnLayout->setContentsMargins(0, 0, 0, 0);
+        btnLayout->setSpacing(6);
 
-    auto* saveButton = new QPushButton("💾 Save Preset", btnBox);
-    saveButton->setStyleSheet("QPushButton { background-color: #00897B; color: white; padding: 5px 8px; font-size: 11px; font-weight: bold; border-radius: 4px; border: none; } QPushButton:hover { background-color: #009688; }");
-    btnLayout->addWidget(saveButton, 1);
+        auto* saveButton = new QPushButton("💾 Save Preset", btnBox);
+        saveButton->setStyleSheet("QPushButton { background-color: #00897B; color: white; padding: 5px 8px; font-size: 11px; font-weight: bold; border-radius: 4px; border: none; } QPushButton:hover { background-color: #009688; }");
+        btnLayout->addWidget(saveButton, 1);
 
-    auto* optionsButton = new QPushButton("⚙ Preset Options ▾", btnBox);
-    optionsButton->setStyleSheet("QPushButton { background-color: #333338; color: #E0E0E0; padding: 5px 8px; font-size: 11px; border-radius: 4px; border: none; } QPushButton:hover { background-color: #44444A; }");
-    btnLayout->addWidget(optionsButton, 1);
+        auto* optionsButton = new QPushButton("⚙ Preset Options ▾", btnBox);
+        optionsButton->setStyleSheet("QPushButton { background-color: #333338; color: #E0E0E0; padding: 5px 8px; font-size: 11px; border-radius: 4px; border: none; } QPushButton:hover { background-color: #44444A; }");
+        btnLayout->addWidget(optionsButton, 1);
 
-    presetLayout->addWidget(btnBox);
-    m_paramLayout->addWidget(presetRow);
+        presetLayout->addWidget(btnBox);
+        m_paramLayout->addWidget(presetRow);
 
-    connect(presetCombo, &QComboBox::activated, this, [this, node, presetCombo](int index) {
-        const QString name = presetCombo->itemData(index).toString();
-        if (name.isEmpty()) return;
-        if (!loadPluginPreset(node, name)) {
-            QMessageBox::warning(this, "Plugin Preset", "Could not load this plugin preset.");
-        }
-    });
+        connect(presetCombo, &QComboBox::activated, this, [this, node, presetCombo](int index) {
+            const QString name = presetCombo->itemData(index).toString();
+            if (name.isEmpty()) return;
+            if (!loadPluginPreset(node, name)) {
+                QMessageBox::warning(this, "Plugin Preset", "Could not load this plugin preset.");
+            }
+        });
 
-    connect(saveButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
-        QString name = presetCombo->currentData().toString();
-        if (name.isEmpty()) {
-            bool accepted = false;
-            name = QInputDialog::getText(this, "Save Plugin Preset", "Preset name:", QLineEdit::Normal, "", &accepted);
-            if (!accepted) return;
-        }
-        if (!savePluginPreset(node, name)) {
-            QMessageBox::warning(this, "Plugin Preset", "Could not save this plugin preset.");
-            return;
-        }
-        refreshPluginPresetList(node, presetCombo, name.trimmed());
-    });
-
-    connect(optionsButton, &QPushButton::clicked, this, [this, node, presetCombo, optionsButton]() {
-        QMenu menu(this);
-        QAction* saveAsAction = menu.addAction("Save As...");
-        QAction* renameAction = menu.addAction("Rename...");
-        QAction* deleteAction = menu.addAction("Delete Preset");
-
-        const QString currentPreset = presetCombo->currentData().toString();
-        if (currentPreset.isEmpty()) {
-            renameAction->setEnabled(false);
-            deleteAction->setEnabled(false);
-        }
-
-        QAction* chosen = menu.exec(optionsButton->mapToGlobal(QPoint(0, optionsButton->height())));
-        if (chosen == saveAsAction) {
-            bool accepted = false;
-            const QString name = QInputDialog::getText(this, "Save Plugin Preset As", "Preset name:", QLineEdit::Normal, "", &accepted);
-            if (!accepted) return;
+        connect(saveButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
+            QString name = presetCombo->currentData().toString();
+            if (name.isEmpty()) {
+                bool accepted = false;
+                name = QInputDialog::getText(this, "Save Plugin Preset", "Preset name:", QLineEdit::Normal, "", &accepted);
+                if (!accepted) return;
+            }
             if (!savePluginPreset(node, name)) {
                 QMessageBox::warning(this, "Plugin Preset", "Could not save this plugin preset.");
                 return;
             }
             refreshPluginPresetList(node, presetCombo, name.trimmed());
-        } else if (chosen == renameAction) {
-            const QString oldName = presetCombo->currentData().toString();
-            if (oldName.isEmpty()) return;
-            bool accepted = false;
-            const QString newName = QInputDialog::getText(
-                this, "Rename Plugin Preset", "New name:", QLineEdit::Normal, oldName, &accepted);
-            if (!accepted || !isValidPluginPresetName(newName)) return;
-            QDir directory(pluginPresetDirectory(*node));
-            if (!directory.rename(oldName + ".json", newName.trimmed() + ".json")) {
-                QMessageBox::warning(this, "Plugin Preset", "Could not rename this plugin preset.");
-                return;
-            }
-            refreshPluginPresetList(node, presetCombo, newName.trimmed());
-        } else if (chosen == deleteAction) {
-            const QString name = presetCombo->currentData().toString();
-            if (name.isEmpty()) return;
-            if (QMessageBox::question(this, "Delete Plugin Preset", "Delete '" + name + "'?") != QMessageBox::Yes) return;
-            if (!QFile::remove(QDir(pluginPresetDirectory(*node)).filePath(name + ".json"))) {
-                QMessageBox::warning(this, "Plugin Preset", "Could not delete this plugin preset.");
-                return;
-            }
-            refreshPluginPresetList(node, presetCombo);
-        }
-    });
+        });
 
+        connect(optionsButton, &QPushButton::clicked, this, [this, node, presetCombo, optionsButton]() {
+            QMenu menu(this);
+            QAction* saveAsAction = menu.addAction("Save As...");
+            QAction* renameAction = menu.addAction("Rename...");
+            QAction* deleteAction = menu.addAction("Delete Preset");
+
+            const QString currentPreset = presetCombo->currentData().toString();
+            if (currentPreset.isEmpty()) {
+                renameAction->setEnabled(false);
+                deleteAction->setEnabled(false);
+            }
+
+            QAction* chosen = menu.exec(optionsButton->mapToGlobal(QPoint(0, optionsButton->height())));
+            if (chosen == saveAsAction) {
+                bool accepted = false;
+                const QString name = QInputDialog::getText(this, "Save Plugin Preset As", "Preset name:", QLineEdit::Normal, "", &accepted);
+                if (!accepted) return;
+                if (!savePluginPreset(node, name)) {
+                    QMessageBox::warning(this, "Plugin Preset", "Could not save this plugin preset.");
+                    return;
+                }
+                refreshPluginPresetList(node, presetCombo, name.trimmed());
+            } else if (chosen == renameAction) {
+                bool accepted = false;
+                const QString newName = QInputDialog::getText(this, "Rename Plugin Preset", "New preset name:", QLineEdit::Normal, currentPreset, &accepted);
+                if (!accepted || newName.trimmed() == currentPreset) return;
+                if (!isValidPluginPresetName(newName)) {
+                    QMessageBox::warning(this, "Plugin Preset", "Preset names cannot be empty or contain path separators.");
+                    return;
+                }
+                const QString dir = pluginPresetDirectory(*node);
+                const QString oldPath = QDir(dir).filePath(currentPreset + ".json");
+                const QString newPath = QDir(dir).filePath(newName.trimmed() + ".json");
+                if (QFile::exists(newPath)) {
+                    QMessageBox::warning(this, "Plugin Preset", "A preset with that name already exists.");
+                    return;
+                }
+                if (QFile::rename(oldPath, newPath)) {
+                    if (m_activePluginPresetNodeId == node->uniqueId && m_activePluginPresetName == currentPreset) {
+                        m_activePluginPresetName = newName.trimmed();
+                    }
+                    refreshPluginPresetList(node, presetCombo, newName.trimmed());
+                } else {
+                    QMessageBox::warning(this, "Plugin Preset", "Could not rename this preset.");
+                }
+            } else if (chosen == deleteAction) {
+                if (QMessageBox::question(this, "Delete Plugin Preset", QString("Delete preset '%1'?").arg(currentPreset), QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+                    const QString dir = pluginPresetDirectory(*node);
+                    QFile::remove(QDir(dir).filePath(currentPreset + ".json"));
+                    if (m_activePluginPresetNodeId == node->uniqueId && m_activePluginPresetName == currentPreset) {
+                        m_activePluginPresetName.clear();
+                    }
+                    refreshPluginPresetList(node, presetCombo);
+                }
+            }
+        });
+    
         auto* presetSeparator = new QFrame(m_paramContainer);
         presetSeparator->setFrameShape(QFrame::HLine);
         presetSeparator->setStyleSheet("background-color: #333333; margin-bottom: 4px;");
         m_paramLayout->addWidget(presetSeparator);
+    }
     
     // Add "Open Graphical UI..." button if plugin has UIs
     auto* lv2Node = dynamic_cast<LV2PluginNode*>(node.get());
