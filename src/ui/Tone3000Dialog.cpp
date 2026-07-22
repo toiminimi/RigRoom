@@ -488,6 +488,13 @@ void Tone3000Dialog::performSearch() {
     requestSearch();
 }
 
+void Tone3000Dialog::setInitialSearchQuery(const QString& query) {
+    if (m_searchEdit) {
+        m_searchEdit->setText(query);
+        performSearch();
+    }
+}
+
 void Tone3000Dialog::requestSearch() {
     if (m_currentReply) {
         m_currentReply->abort();

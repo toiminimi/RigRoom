@@ -28,6 +28,7 @@ public:
     QString getDownloadedToneName() const { return m_downloadedToneName; }
     QString getDownloadedToneUrl() const { return m_downloadedToneUrl; }
     AudioNode::ModelMetadata getDownloadedMetadata() const { return m_downloadedMetadata; }
+    void setInitialSearchQuery(const QString& query);
     void reject() override;
 
 private slots:

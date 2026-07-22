@@ -44,6 +44,8 @@ add_executable(PedalBoard
     src/ui/GridRow.h
     src/ui/Tone3000Dialog.cpp
     src/ui/Tone3000Dialog.h
+    src/ui/ModelDetailsDialog.cpp
+    src/ui/ModelDetailsDialog.h
     src/ui/GtkUIHelper.cpp
     src/ui/GtkUIHelper.h
     src/ui/RoutingHandleItem.cpp
