@@ -178,19 +178,7 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         qreal currentMouseY = event->scenePos().y();
 
         auto isValidParent = [&](int parentRow) -> bool {
-            if (parentRow == m_branchRow) return false;
-            if (parentRow == NodeCanvas::MAIN_ROW) return true;
-            if (parentRow >= 0 && parentRow < NodeCanvas::NUM_ROWS) {
-                if (!m_canvas->hasSplitSection(parentRow)) return false;
-                if (m_canvas->getSplitParentRow(parentRow) == m_branchRow) return false;
-                int p = parentRow;
-                while (p != NodeCanvas::MAIN_ROW) {
-                    p = m_canvas->getSplitParentRow(p);
-                    if (p == m_branchRow) return false;
-                }
-                return true;
-            }
-            return false;
+            return parentRow == m_canvas->getSplitParentRow(m_branchRow);
         };
 
         PlusButtonWidget* nearestPlus = nullptr;
@@ -244,19 +232,7 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         qreal currentMouseY = event->scenePos().y();
 
         auto isValidParent = [&](int parentRow) -> bool {
-            if (parentRow == m_branchRow) return false;
-            if (parentRow == NodeCanvas::MAIN_ROW) return true;
-            if (parentRow >= 0 && parentRow < NodeCanvas::NUM_ROWS) {
-                if (!m_canvas->hasSplitSection(parentRow)) return false;
-                if (m_canvas->getSplitParentRow(parentRow) == m_branchRow) return false;
-                int p = parentRow;
-                while (p != NodeCanvas::MAIN_ROW) {
-                    p = m_canvas->getSplitParentRow(p);
-                    if (p == m_branchRow) return false;
-                }
-                return true;
-            }
-            return false;
+            return parentRow == m_canvas->getSplitParentRow(m_branchRow);
         };
 
         PlusButtonWidget* nearestPlus = nullptr;

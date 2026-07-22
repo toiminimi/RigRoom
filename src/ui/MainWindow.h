@@ -41,6 +41,7 @@ private slots:
     void onNodeSelected(std::shared_ptr<AudioNode> node);
     void updateCPUStatus();
     void showPluginControls(std::shared_ptr<AudioNode> node);
+    void onPluginDoubleClicked(std::shared_ptr<AudioNode> node);
     void onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol);
     void onInputHardwareChanged(int index);
     void onOutputHardwareChanged(int index);

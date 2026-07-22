@@ -606,10 +606,9 @@ void NodeCanvas::removeSplitSection(int row) {
         }
     }
 
-    const int parent = m_rows[row].parentRow;
     for (int r : {0, 1, 3, 4}) {
         if (r != row && m_rows[r].hasSplitSection && m_rows[r].parentRow == row) {
-            m_rows[r].parentRow = parent;
+            removeSplitSection(r);
         }
     }
 
@@ -923,6 +922,11 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
 
         requiredW = std::max(requiredW, 168.0);
         endX = std::max(parentMergeX, startX + requiredW);
+        if (r == 1 && m_rows[0].hasSplitSection) {
+            endX = std::max(endX, m_rows[0].parentMergeX + 56.0);
+        } else if (r == 3 && m_rows[4].hasSplitSection) {
+            endX = std::max(endX, m_rows[4].parentMergeX + 56.0);
+        }
     }
 
     qreal rowTrackW = std::max(50.0, endX - startX);
@@ -957,7 +961,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
             wire->setZValue(-3);
             m_scene->addItem(wire);
             m_dynamicItems.push_back(wire);
-            if (row.enabled) {
+            if (row.enabled && row.hasSplitSection) {
                 auto* splitWire = new QGraphicsPathItem();
                 QPainterPath splitPath;
                 splitPath.moveTo(startX, cy);
@@ -1035,7 +1039,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         }
 
         // Draw branch connectors (vertical/curved split/merge lines) for side rows
-        if (r != MAIN_ROW) {
+        if (r != MAIN_ROW && row.hasSplitSection) {
             // Split connector
             auto* branch = new QGraphicsPathItem();
             QPainterPath bpath;
@@ -1151,18 +1155,26 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
                 if (hasMergeGap) {
                     qreal mergeX = xCursor + INSERT_BTN_W / 2.0 + (hasSplitGap ? 84.0 : 28.0);
                     for (int child : mergeChildren) {
+                        mergeX = std::max(mergeX, m_rows[child].parentSplitX + 168.0);
                         m_rows[child].parentMergeX = mergeX;
                     }
+
+                    auto* plusLast = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
+                    plusLast->setPos(snapToGrid(mergeX + 28.0), cy);
+                    plusLast->setIsSecondOfCol(true);
+                    m_scene->addItem(plusLast);
+                    m_dynamicItems.push_back(plusLast);
+
+                    xCursor = mergeX + 28.0 + INSERT_BTN_W / 2.0;
+                } else {
+                    auto* plusLast = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
+                    plusLast->setPos(snapToGrid(xCursor + INSERT_BTN_W / 2.0 + currentGapOffset), cy);
+                    plusLast->setIsSecondOfCol(true);
+                    m_scene->addItem(plusLast);
+                    m_dynamicItems.push_back(plusLast);
+
+                    xCursor += INSERT_BTN_W + currentGapOffset;
                 }
-
-                // Place the final plus button
-                auto* plusLast = new PlusButtonWidget(r, i, PlusButtonWidget::Style::Ghost);
-                plusLast->setPos(snapToGrid(xCursor + INSERT_BTN_W / 2.0 + currentGapOffset), cy);
-                plusLast->setIsSecondOfCol(true);
-                m_scene->addItem(plusLast);
-                m_dynamicItems.push_back(plusLast);
-
-                xCursor += INSERT_BTN_W + currentGapOffset;
             } else {
                 // Spacing before plus button
                 xCursor += spacing;
@@ -1436,9 +1448,14 @@ void NodeCanvas::setSplitAnchor(int row, const std::string& nodeId) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     const int parentRow = m_rows[row].parentRow;
     if (!nodeId.empty() && findNodeColumn(parentRow, nodeId) < 0) return;
-    const int splitCol = findNodeColumn(parentRow, nodeId);
+    const int newSplitCol = findNodeColumn(parentRow, nodeId);
     const int mergeCol = findNodeColumn(parentRow, m_rows[row].mergeBeforeNodeId);
-    if (splitCol >= 0 && mergeCol >= 0 && splitCol >= mergeCol) {
+    
+    if (newSplitCol >= 0 && mergeCol >= 0 && mergeCol < newSplitCol + 2) {
+        updateLayout();
+        return;
+    }
+    if (newSplitCol < 0 && mergeCol == 0) {
         updateLayout();
         return;
     }
@@ -1451,8 +1468,13 @@ void NodeCanvas::setMergeAnchor(int row, const std::string& nodeId) {
     const int parentRow = m_rows[row].parentRow;
     if (!nodeId.empty() && findNodeColumn(parentRow, nodeId) < 0) return;
     const int splitCol = findNodeColumn(parentRow, m_rows[row].splitAfterNodeId);
-    const int mergeCol = findNodeColumn(parentRow, nodeId);
-    if (splitCol >= 0 && mergeCol >= 0 && splitCol >= mergeCol) {
+    const int newMergeCol = findNodeColumn(parentRow, nodeId);
+    
+    if (splitCol >= 0 && newMergeCol >= 0 && newMergeCol < splitCol + 2) {
+        updateLayout();
+        return;
+    }
+    if (splitCol < 0 && newMergeCol == 0) {
         updateLayout();
         return;
     }
