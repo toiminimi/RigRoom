@@ -102,8 +102,10 @@ void RoutingHandleItem::updatePreview(PlusButtonWidget* target) {
 void RoutingHandleItem::clearPreview() {
     if (m_previewTarget) m_previewTarget->setRoutingTarget(false);
     m_previewTarget = nullptr;
+    m_dragInvalid = false;
     m_previewLine->hide();
     m_previewText->hide();
+    update();
 }
 
 QRectF RoutingHandleItem::boundingRect() const {
@@ -113,14 +115,16 @@ QRectF RoutingHandleItem::boundingRect() const {
 void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     painter->setRenderHint(QPainter::Antialiasing);
 
-    const QColor accent = m_dragging ? QColor(255, 200, 50)
-        : (isSelected() || m_hovered ? QColor(53, 199, 255) : QColor(75, 85, 99));
-    painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging ? 2.0 : 1.2));
-    painter->setBrush(QColor(29, 31, 37));
+    const QColor accent = m_dragInvalid ? QColor(255, 60, 60)
+        : (m_dragging ? QColor(255, 200, 50)
+        : (isSelected() || m_hovered ? QColor(53, 199, 255) : QColor(75, 85, 99)));
+    painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging || m_dragInvalid ? 2.0 : 1.2));
+    painter->setBrush(m_dragInvalid ? QColor(45, 18, 18) : QColor(29, 31, 37));
     painter->drawRoundedRect(QRectF(-21, -15, 42, 30), 6, 6);
 
     painter->setPen(Qt::NoPen);
-    painter->setBrush(m_isSplit ? QColor(37, 99, 235) : QColor(126, 70, 180));
+    painter->setBrush(m_dragInvalid ? QColor(220, 38, 38)
+        : (m_isSplit ? QColor(37, 99, 235) : QColor(126, 70, 180)));
     painter->drawRoundedRect(QRectF(-21, -15, 42, 13), 6, 6);
     painter->drawRect(QRectF(-21, -8, 42, 6));
 
@@ -243,25 +247,56 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         int candidateSplitCol = plusIndex - 1;
         int candidateMergeCol = (plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex;
 
+        int candidateSplitGap = plusIndex;
+        int candidateMergeGap = plusIndex;
+
+        int parentSplitGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getSplitCol(parentRow) >= 0)
+            ? (m_canvas->getSplitCol(parentRow) + 1) : 0;
+        int parentMergeGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getMergeCol(parentRow) >= 0)
+            ? m_canvas->getMergeCol(parentRow) : NodeCanvas::NUM_COLS;
+
+        int ownSplitGap = (m_canvas->getSplitCol(m_branchRow) >= 0) ? (m_canvas->getSplitCol(m_branchRow) + 1) : 0;
+        int ownMergeGap = (m_canvas->getMergeCol(m_branchRow) >= 0) ? m_canvas->getMergeCol(m_branchRow) : NodeCanvas::NUM_COLS;
+
         bool isValid = true;
         QString invalidReason;
         if (m_isSplit) {
             if (firstPluginCol < 999 && candidateSplitCol >= firstPluginCol) {
                 isValid = false;
                 invalidReason = "Cannot split after plugins on this path";
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateSplitGap < parentSplitGap) {
+                isValid = false;
+                invalidReason = "Cannot split before parent branch split point";
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateSplitGap >= parentMergeGap) {
+                isValid = false;
+                invalidReason = "Cannot split at or after parent branch merge point";
+            } else if (m_canvas->getMergeCol(m_branchRow) >= 0 && candidateSplitGap >= ownMergeGap) {
+                isValid = false;
+                invalidReason = "Cannot split at or after branch merge point";
             }
         } else {
             if (lastPluginCol >= 0 && candidateMergeCol != -1 && candidateMergeCol <= lastPluginCol) {
                 isValid = false;
                 invalidReason = "Cannot merge before plugins on this path";
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateMergeGap > parentMergeGap) {
+                isValid = false;
+                invalidReason = "Cannot merge after parent branch merge point";
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateMergeGap <= parentSplitGap) {
+                isValid = false;
+                invalidReason = "Cannot merge at or before parent branch split point";
+            } else if (m_canvas->getSplitCol(m_branchRow) >= 0 && candidateMergeGap <= ownSplitGap) {
+                isValid = false;
+                invalidReason = "Cannot merge at or before branch split point";
             }
         }
 
         if (!isValid) {
+            m_dragInvalid = true;
             m_previewLine->setPen(QPen(QColor(255, 60, 60), 2.5, Qt::DashLine, Qt::RoundCap));
             m_previewText->setBrush(QColor(255, 90, 90));
             m_previewText->setText("❌ " + invalidReason);
         } else {
+            m_dragInvalid = false;
             m_previewLine->setPen(QPen(QColor(255, 200, 50), 2, Qt::DashLine, Qt::RoundCap));
             m_previewText->setBrush(QColor(255, 220, 100));
             QString text;
@@ -274,6 +309,7 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
             }
             m_previewText->setText(text);
         }
+        update();
         qreal textW = m_previewText->boundingRect().width();
         m_previewText->setPos(-textW / 2.0, targetPoint.y() / 2.0 - 10);
         m_previewText->show();
@@ -303,7 +339,6 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
 
         int targetColumn = m_isSplit ? (plusIndex - 1) : ((plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex);
 
-        // Find first and last plugin on m_branchRow
         int firstPluginCol = 999;
         int lastPluginCol = -1;
         for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
@@ -313,13 +348,40 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
             }
         }
 
+        int parentRow = m_canvas->getSplitParentRow(m_branchRow);
+        int candidateSplitCol = plusIndex - 1;
+        int candidateMergeCol = (plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex;
+
+        int candidateSplitGap = plusIndex;
+        int candidateMergeGap = plusIndex;
+
+        int parentSplitGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getSplitCol(parentRow) >= 0)
+            ? (m_canvas->getSplitCol(parentRow) + 1) : 0;
+        int parentMergeGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getMergeCol(parentRow) >= 0)
+            ? m_canvas->getMergeCol(parentRow) : NodeCanvas::NUM_COLS;
+
+        int ownSplitGap = (m_canvas->getSplitCol(m_branchRow) >= 0) ? (m_canvas->getSplitCol(m_branchRow) + 1) : 0;
+        int ownMergeGap = (m_canvas->getMergeCol(m_branchRow) >= 0) ? m_canvas->getMergeCol(m_branchRow) : NodeCanvas::NUM_COLS;
+
         bool isValid = true;
         if (m_isSplit) {
             if (firstPluginCol < 999 && targetColumn >= firstPluginCol) {
                 isValid = false;
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateSplitGap < parentSplitGap) {
+                isValid = false;
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateSplitGap >= parentMergeGap) {
+                isValid = false;
+            } else if (m_canvas->getMergeCol(m_branchRow) >= 0 && candidateSplitGap >= ownMergeGap) {
+                isValid = false;
             }
         } else {
             if (lastPluginCol >= 0 && targetColumn != -1 && targetColumn <= lastPluginCol) {
+                isValid = false;
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateMergeGap > parentMergeGap) {
+                isValid = false;
+            } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateMergeGap <= parentSplitGap) {
+                isValid = false;
+            } else if (m_canvas->getSplitCol(m_branchRow) >= 0 && candidateMergeGap <= ownSplitGap) {
                 isValid = false;
             }
         }
@@ -338,6 +400,8 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
                 canvas->endRoutingUpdate();
                 canvas->selectRoutingNode(row, split);
             });
+        } else if (!isValid && !wasClick) {
+            m_canvas->updateLayout();
         }
     }
     event->accept();

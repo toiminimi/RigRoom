@@ -33,6 +33,7 @@ private:
     bool m_isSplit;  // true for split, false for merge
     bool m_hovered = false;
     bool m_dragging = false;
+    bool m_dragInvalid = false;
     QPointF m_dragStartPos;
     PlusButtonWidget* m_previewTarget = nullptr;
     QGraphicsPathItem* m_previewLine = nullptr;

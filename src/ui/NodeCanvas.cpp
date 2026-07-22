@@ -802,14 +802,22 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         if (parentRow != MAIN_ROW && parentRow >= 0 && parentRow < NUM_ROWS) {
             parentSplitX = std::max(parentSplitX, m_rows[parentRow].parentSplitX);
         }
-        minSlot = (splitCol < 0) ? 0 : splitCol + 1;
 
         int mergeCol = getMergeCol(r);
         parentMergeX = (mergeCol < 0) ? getGapX(NUM_COLS) : getGapX(mergeCol);
         if (parentRow != MAIN_ROW && parentRow >= 0 && parentRow < NUM_ROWS) {
             parentMergeX = std::min(parentMergeX, m_rows[parentRow].parentMergeX);
         }
-        maxSlot = (mergeCol < 0) ? (NUM_COLS - 1) : (mergeCol - 1);
+
+        minSlot = 0;
+        while (minSlot < NUM_COLS && getColX(minSlot) < parentSplitX - 10.0) {
+            minSlot++;
+        }
+
+        maxSlot = NUM_COLS - 1;
+        while (maxSlot >= 0 && getColX(maxSlot) + PLUG_NODE_W > parentMergeX + 10.0) {
+            maxSlot--;
+        }
 
         startX = parentSplitX;
         endX = parentMergeX;
@@ -997,9 +1005,13 @@ void NodeCanvas::rebuildAudioConnections() {
         if (row == MAIN_ROW) return {"system_input", 2};
         const GridRow& path = m_rows[row];
         const int splitCol = getSplitCol(row);
-        if (splitCol >= 0 && m_rows[path.parentRow].plugins[splitCol]) {
-            const auto& node = m_rows[path.parentRow].plugins[splitCol];
-            return {node->uniqueId, node->getAudioOutputCount()};
+        if (splitCol >= 0) {
+            for (int c = splitCol; c >= 0; --c) {
+                if (m_rows[path.parentRow].plugins[c]) {
+                    const auto& node = m_rows[path.parentRow].plugins[c];
+                    return {node->uniqueId, node->getAudioOutputCount()};
+                }
+            }
         }
         return pathInput(path.parentRow);
     };
@@ -1007,9 +1019,13 @@ void NodeCanvas::rebuildAudioConnections() {
         if (row == MAIN_ROW) return {"system_output", 2};
         const GridRow& path = m_rows[row];
         const int mergeCol = getMergeCol(row);
-        if (mergeCol >= 0 && m_rows[path.parentRow].plugins[mergeCol]) {
-            const auto& node = m_rows[path.parentRow].plugins[mergeCol];
-            return {node->uniqueId, node->getAudioInputCount()};
+        if (mergeCol >= 0) {
+            for (int c = mergeCol; c < NUM_COLS; ++c) {
+                if (m_rows[path.parentRow].plugins[c]) {
+                    const auto& node = m_rows[path.parentRow].plugins[c];
+                    return {node->uniqueId, node->getAudioInputCount()};
+                }
+            }
         }
         return pathOutput(path.parentRow);
     };
