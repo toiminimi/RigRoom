@@ -3921,7 +3921,23 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     splitForm->addRow("Type", type);
     m_paramLayout->addLayout(splitForm);
 
-    auto addSlider = [this](const QString& title, int minimum, int maximum, int value) {
+class SliderResetFilter : public QObject {
+public:
+    int defaultValue;
+    SliderResetFilter(QObject* parent, int defVal) : QObject(parent), defaultValue(defVal) {}
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override {
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            if (auto* slider = qobject_cast<QSlider*>(obj)) {
+                slider->setValue(defaultValue);
+                return true;
+            }
+        }
+        return QObject::eventFilter(obj, event);
+    }
+};
+
+    auto addSlider = [this](const QString& title, int minimum, int maximum, int value, int defaultValue) {
         auto* titleRow = new QHBoxLayout();
         auto* label = new QLabel(title, m_paramContainer);
         auto* valueLabel = new QLabel(m_paramContainer);
@@ -3932,34 +3948,54 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
         auto* slider = new QSlider(Qt::Horizontal, m_paramContainer);
         slider->setRange(minimum, maximum);
         slider->setValue(value);
+        slider->installEventFilter(new SliderResetFilter(slider, defaultValue));
         m_paramLayout->addLayout(titleRow);
         m_paramLayout->addWidget(slider);
-        return std::pair<QSlider*, QLabel*>{slider, valueLabel};
+        return std::make_tuple(slider, label, valueLabel);
     };
-    auto [splitPosition, splitPositionValue] = addSlider("Route A / B", -100, 100,
-                                                         qRound(m_canvas->getSplitPosition(row) * 100.0f));
+    auto [splitPosition, splitTitleLabel, splitPositionValue] = addSlider("Route A / B", -100, 100,
+                                                                         qRound(m_canvas->getSplitPosition(row) * 100.0f), 0);
     auto updateSplitPosition = [splitPositionValue](int value) {
         splitPositionValue->setText(value == 0 ? "A = B" : QString("%1 %2").arg(std::abs(value)).arg(value < 0 ? "to A" : "to B"));
     };
     updateSplitPosition(splitPosition->value());
-    splitPosition->setEnabled(m_canvas->getSplitMode(row) == GridRow::SplitMode::AB);
+
+    auto updateABEnableState = [splitPosition, splitTitleLabel, splitPositionValue](bool isAB) {
+        splitPosition->setEnabled(isAB);
+        splitTitleLabel->setEnabled(isAB);
+        splitPositionValue->setEnabled(isAB);
+        splitTitleLabel->setStyleSheet(isAB ? "color: #e2e8f0;" : "color: #4a5568;");
+        splitPositionValue->setStyleSheet(isAB ? "color: #35c7ff; font-weight: bold;" : "color: #4a5568; font-weight: bold;");
+    };
+    updateABEnableState(m_canvas->getSplitMode(row) == GridRow::SplitMode::AB);
 
     auto* mixerTitle = new QLabel("MIXER", m_paramContainer);
     mixerTitle->setStyleSheet("font-weight: bold; color: #c18cff; margin-top: 9px;");
     m_paramLayout->addWidget(mixerTitle);
-    auto [mainLevel, mainLevelValue] = addSlider("Path A Level", 0, 100,
-                                                qRound(m_canvas->getMainMix(row) * 100.0f));
+    auto [mainLevel, mainLevelTitle, mainLevelValue] = addSlider("Path A Level", 0, 200,
+                                                qRound(m_canvas->getMainMix(row) * 100.0f), 100);
     auto updateMainLevel = [mainLevelValue](int value) {
-        mainLevelValue->setText(value == 0 ? "-inf dB" : QString("%1 dB").arg(20.0 * std::log10(value / 100.0), 0, 'f', 1));
+        if (value == 0) {
+            mainLevelValue->setText("-inf dB");
+        } else {
+            double db = 20.0 * std::log10(value / 100.0);
+            mainLevelValue->setText(QString("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1));
+        }
     };
     updateMainLevel(mainLevel->value());
-    auto [level, levelValue] = addSlider(pathName + " Level", 0, 100, qRound(m_canvas->getMix(row) * 100.0f));
+
+    auto [level, levelTitle, levelValue] = addSlider(pathName + " Level", 0, 200, qRound(m_canvas->getMix(row) * 100.0f), 100);
     auto updateLevel = [levelValue](int value) {
-        levelValue->setText(value == 0 ? "-inf dB" : QString("%1 dB").arg(20.0 * std::log10(value / 100.0), 0, 'f', 1));
+        if (value == 0) {
+            levelValue->setText("-inf dB");
+        } else {
+            double db = 20.0 * std::log10(value / 100.0);
+            levelValue->setText(QString("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1));
+        }
     };
     updateLevel(level->value());
-    auto [pan, panValue] = addSlider(m_canvas->getBranchOutputChannels(row) >= 2 ? pathName + " Balance" : pathName + " Pan",
-                                     -100, 100, qRound(m_canvas->getPan(row) * 100.0f));
+    auto [pan, panTitle, panValue] = addSlider(m_canvas->getBranchOutputChannels(row) >= 2 ? pathName + " Balance" : pathName + " Pan",
+                                     -100, 100, qRound(m_canvas->getPan(row) * 100.0f), 0);
     auto updatePan = [panValue](int value) {
         panValue->setText(value == 0 ? "Center" : QString("%1% %2").arg(std::abs(value)).arg(value < 0 ? "Left" : "Right"));
     };
@@ -3977,10 +4013,10 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     remove->setToolTip("Remove this Split and Mixer along with all plugins on this branch.");
     m_paramLayout->addWidget(remove);
 
-    connect(type, &QComboBox::currentIndexChanged, this, [this, row, type, splitPosition](int) {
+    connect(type, &QComboBox::currentIndexChanged, this, [this, row, type, updateABEnableState](int) {
         const auto mode = static_cast<GridRow::SplitMode>(type->currentData().toInt());
         m_canvas->setSplitMode(row, mode);
-        splitPosition->setEnabled(mode == GridRow::SplitMode::AB);
+        updateABEnableState(mode == GridRow::SplitMode::AB);
     });
     connect(splitPosition, &QSlider::valueChanged, this, [this, row, updateSplitPosition](int value) {
         m_canvas->setSplitPosition(row, value / 100.0f);

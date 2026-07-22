@@ -541,6 +541,7 @@ void NodeCanvas::setSplitMode(int row, GridRow::SplitMode mode) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].splitMode = mode;
     applyRoutingChange();
+    updateLayout();
 }
 
 float NodeCanvas::getSplitPosition(int row) const {
@@ -551,6 +552,7 @@ void NodeCanvas::setSplitPosition(int row, float position) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].splitPosition = std::clamp(position, -1.0f, 1.0f);
     applyRoutingChange();
+    updateLayout();
 }
 
 bool NodeCanvas::isMainInputEnabled(int row) const {
@@ -561,6 +563,7 @@ void NodeCanvas::setMainInputEnabled(int row, bool enabled) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].mainInputEnabled = enabled;
     applyRoutingChange();
+    updateLayout();
 }
 
 float NodeCanvas::getMainMix(int row) const {
@@ -570,13 +573,14 @@ float NodeCanvas::getMainMix(int row) const {
 void NodeCanvas::setMainMix(int row, float level) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     const int parentRow = m_rows[row].parentRow;
-    const float clamped = std::clamp(level, 0.0f, 1.0f);
+    const float clamped = std::clamp(level, 0.0f, 2.0f);
     for (int r = 0; r < NUM_ROWS; ++r) {
         if (r != MAIN_ROW && m_rows[r].parentRow == parentRow) {
             m_rows[r].mainMix = clamped;
         }
     }
     applyRoutingChange();
+    updateLayout();
 }
 
 void NodeCanvas::nodeDoubleClicked(NodeWidget* node) {
@@ -594,8 +598,8 @@ void NodeCanvas::onPlusButtonClicked(int row, int col, QPoint screenPos, bool is
 
 // ─── Layout Engine ────────────────────────────────────────────────────────────
 void NodeCanvas::calculateRowCenters(qreal rowCenters[NUM_ROWS], qreal H) const {
-    // Spacing between active lanes (spacious: 140px which snaps perfectly to grid and leaves ample room)
-    constexpr qreal LANE_HEIGHT = 140.0;
+    // Spacing between active lanes (spacious: 175px leaves generous vertical clearance between pedal cards and routing handle pills)
+    constexpr qreal LANE_HEIGHT = 175.0;
 
     // Calculate Y offsets relative to Main Row (Row 2, offset = 0)
     qreal offset[NUM_ROWS] = {0.0};
@@ -856,6 +860,45 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
     m_rows[r].parentSplitX = parentSplitX;
     m_rows[r].parentMergeX = parentMergeX;
 
+    auto getWirePen = [&](int rowIdx) -> QPen {
+        if (rowIdx == MAIN_ROW) {
+            return QPen(QColor(0, 176, 255, 180), 2.2, Qt::SolidLine, Qt::RoundCap);
+        }
+        const GridRow& path = m_rows[rowIdx];
+        if (!path.enabled || !path.hasSplitSection) {
+            return QPen(QColor(70, 70, 80, 70), 1.2, Qt::DashLine, Qt::RoundCap);
+        }
+
+        float splitGainFactor = 1.0f;
+        if (getSplitMode(rowIdx) == GridRow::SplitMode::AB) {
+            float pos = getSplitPosition(rowIdx); // -1.0 .. +1.0
+            if (rowIdx == 1 || rowIdx == 0) {
+                splitGainFactor = std::clamp((1.0f - pos) * 0.5f, 0.0f, 1.0f);
+            } else {
+                splitGainFactor = std::clamp((1.0f + pos) * 0.5f, 0.0f, 1.0f);
+            }
+        }
+
+        float mixGainFactor = getMix(rowIdx);
+        float effectiveGain = splitGainFactor * mixGainFactor;
+
+        if (effectiveGain <= 0.05f) {
+            return QPen(QColor(60, 70, 85, 90), 1.2, Qt::DashLine, Qt::RoundCap);
+        } else if (effectiveGain < 0.95f) {
+            qreal w = 1.2 + effectiveGain * 0.8;
+            int alpha = qRound(100 + effectiveGain * 100);
+            return QPen(QColor(0, 160, 230, alpha), w, Qt::SolidLine, Qt::RoundCap);
+        } else if (effectiveGain <= 1.05f) {
+            return QPen(QColor(53, 199, 255, 220), 2.2, Qt::SolidLine, Qt::RoundCap);
+        } else if (effectiveGain <= 2.0f) {
+            qreal w = 2.4 + (effectiveGain - 1.0f) * 1.2;
+            return QPen(QColor(255, 200, 50, 240), w, Qt::SolidLine, Qt::RoundCap);
+        } else {
+            qreal w = 3.6 + std::min(1.4f, (effectiveGain - 2.0f) * 0.5f);
+            return QPen(QColor(255, 60, 60, 255), w, Qt::SolidLine, Qt::RoundCap);
+        }
+    };
+
     // Draw horizontal wire segment
     {
         qreal segStartX = (r == MAIN_ROW) ? sysRightX : startX;
@@ -865,8 +908,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         path.moveTo(segStartX, cy);
         path.lineTo(segEndX, cy);
         seg->setPath(path);
-        QColor color = (r == MAIN_ROW || row.enabled) ? QColor(0, 176, 255, 160) : QColor(70, 70, 80, 70);
-        seg->setPen(QPen(color, 2, row.enabled || r == MAIN_ROW ? Qt::SolidLine : Qt::DashLine, Qt::RoundCap));
+        seg->setPen(getWirePen(r));
         seg->setZValue(-2);
         m_scene->addItem(seg);
         m_dynamicItems.push_back(seg);
@@ -880,8 +922,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         bpath.moveTo(startX, cy);
         bpath.cubicTo(startX, (cy + sysMidY)/2.0, parentSplitX, (cy + sysMidY)/2.0, parentSplitX, sysMidY);
         branch->setPath(bpath);
-        branch->setPen(QPen(row.enabled ? QColor(53, 199, 255, 150) : QColor(70, 70, 80, 70),
-                            1.8, row.enabled ? Qt::SolidLine : Qt::DashLine, Qt::RoundCap));
+        branch->setPen(getWirePen(r));
         branch->setZValue(-3);
         m_scene->addItem(branch);
         m_dynamicItems.push_back(branch);
@@ -898,8 +939,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         bpathR.moveTo(endX, cy);
         bpathR.cubicTo(endX, (cy + sysMidY)/2.0, parentMergeX, (cy + sysMidY)/2.0, parentMergeX, sysMidY);
         branchR->setPath(bpathR);
-        branchR->setPen(QPen(row.enabled ? QColor(53, 199, 255, 150) : QColor(70, 70, 80, 70),
-                             1.8, row.enabled ? Qt::SolidLine : Qt::DashLine, Qt::RoundCap));
+        branchR->setPen(getWirePen(r));
         branchR->setZValue(-3);
         m_scene->addItem(branchR);
         m_dynamicItems.push_back(branchR);
@@ -1077,7 +1117,7 @@ void NodeCanvas::rebuildAudioConnections() {
         const RouteEndpoint destination = pathOutput(r);
 
         if (chain.empty()) {
-            const float pathGain = branchSplitGain(r) * pathSplitGainAfter(r, {}) * pathMixerGainBefore(r, {});
+            const float pathGain = branchSplitGain(r) * pathSplitGainAfter(row.parentRow, source.id, r) * pathMixerGainBefore(r, {});
             connectBalanced(source, destination, m_branchGains[r], pathGain);
         }
 
@@ -1085,19 +1125,19 @@ void NodeCanvas::rebuildAudioConnections() {
 
         // Connect chain internal links
         for (size_t i = 0; i + 1 < chain.size(); ++i) {
-            const float gain = pathSplitGainAfter(r, chain[i]->uniqueId) *
+            const float gain = pathSplitGainAfter(row.parentRow, chain[i]->uniqueId, r) *
                                pathMixerGainBefore(r, chain[i + 1]->uniqueId);
             connectNodes(chain[i], chain[i+1], gain);
         }
 
         // Connect first node input (Split point)
-        const float inputGain = branchSplitGain(r) * pathSplitGainAfter(r, {}) *
+        const float inputGain = branchSplitGain(r) * pathSplitGainAfter(row.parentRow, source.id, r) *
                                 pathMixerGainBefore(r, chain[0]->uniqueId);
         connectFixed(source, chain[0], inputGain);
 
         // Connect last node output (Merge point) with return mix gain
         const auto& last = chain.back();
-        const float outputGain = pathSplitGainAfter(r, last->uniqueId) * pathMixerGainBefore(r, {});
+        const float outputGain = pathSplitGainAfter(row.parentRow, last->uniqueId, r) * pathMixerGainBefore(r, {});
         connectBalanced({last->uniqueId, last->getAudioOutputCount()}, destination, m_branchGains[r], outputGain);
     }
 
@@ -1163,12 +1203,24 @@ void NodeCanvas::keyPressEvent(QKeyEvent* event) {
 void NodeCanvas::setSplitCol(int row, int col) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].splitCol = col;
+    int parentRow = m_rows[row].parentRow;
+    if (parentRow >= 0 && parentRow < NUM_ROWS && col >= 0 && col < NUM_COLS && m_rows[parentRow].plugins[col]) {
+        m_rows[row].splitAfterNodeId = m_rows[parentRow].plugins[col]->uniqueId;
+    } else {
+        m_rows[row].splitAfterNodeId.clear();
+    }
     applyRoutingChange();
 }
 
 void NodeCanvas::setMergeCol(int row, int col) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].mergeCol = col;
+    int parentRow = m_rows[row].parentRow;
+    if (parentRow >= 0 && parentRow < NUM_ROWS && col >= 0 && col < NUM_COLS && m_rows[parentRow].plugins[col]) {
+        m_rows[row].mergeBeforeNodeId = m_rows[parentRow].plugins[col]->uniqueId;
+    } else {
+        m_rows[row].mergeBeforeNodeId.clear();
+    }
     applyRoutingChange();
 }
 
@@ -1287,10 +1339,11 @@ float NodeCanvas::branchSplitGain(int row) const {
     return std::sin(p * halfPi);
 }
 
-float NodeCanvas::pathSplitGainAfter(int parentRow, const std::string& sourceNodeId) const {
+float NodeCanvas::pathSplitGainAfter(int parentRow, const std::string& sourceNodeId, int ignoreBranchRow) const {
     constexpr float halfPi = 1.57079632679f;
     float gain = 1.0f;
     for (int row : {0, 1, 3, 4}) {
+        if (row == ignoreBranchRow) continue;
         if (!m_rows[row].hasSplitSection || !m_rows[row].enabled || m_rows[row].parentRow != parentRow ||
             m_rows[row].splitAfterNodeId != sourceNodeId) continue;
         if (!m_rows[row].mainInputEnabled) {
@@ -1347,9 +1400,10 @@ void NodeCanvas::applyRoutingChange(bool rebuildAudio) {
 
 void NodeCanvas::setMix(int row, float val) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
-    m_rows[row].mix = std::clamp(val, 0.0f, 1.0f);
+    m_rows[row].mix = std::clamp(val, 0.0f, 2.0f);
     m_rows[row].levelConfigured = true;
     updateBranchGains(row);
+    updateLayout();
     emit routingChanged();
 }
 
@@ -1357,6 +1411,7 @@ void NodeCanvas::setPan(int row, float val) {
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS) return;
     m_rows[row].pan = std::clamp(val, -1.0f, 1.0f);
     updateBranchGains(row);
+    updateLayout();
     emit routingChanged();
 }
 

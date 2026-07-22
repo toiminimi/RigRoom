@@ -118,7 +118,7 @@ private:
     void updateBranchGains(int row);
     int findNodeColumn(int row, const std::string& nodeId) const;
     void setBranchDefaults(int row, float level);
-    float pathSplitGainAfter(int parentRow, const std::string& sourceNodeId) const;
+    float pathSplitGainAfter(int parentRow, const std::string& sourceNodeId, int ignoreBranchRow = -1) const;
     float pathMixerGainBefore(int parentRow, const std::string& destinationNodeId) const;
     float branchSplitGain(int row) const;
     void layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, qreal trackW, qreal sysRightX, qreal sysLeftX, qreal sysMidY);

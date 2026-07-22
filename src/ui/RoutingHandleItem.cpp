@@ -109,37 +109,54 @@ void RoutingHandleItem::clearPreview() {
 }
 
 QRectF RoutingHandleItem::boundingRect() const {
-    return QRectF(-23, -17, 46, 34);
+    return QRectF(-44, -20, 88, 40);
 }
 
 void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     painter->setRenderHint(QPainter::Antialiasing);
 
-    const QColor accent = m_dragInvalid ? QColor(255, 60, 60)
-        : (m_dragging ? QColor(255, 200, 50)
-        : (isSelected() || m_hovered ? QColor(53, 199, 255) : QColor(75, 85, 99)));
-    painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging || m_dragInvalid ? 2.0 : 1.2));
+    QColor accent;
+    if (m_dragInvalid) {
+        accent = QColor(255, 60, 60);
+    } else if (m_dragging) {
+        accent = QColor(255, 200, 50);
+    } else if (isSelected() || m_hovered) {
+        accent = QColor(53, 199, 255);
+    } else if (!m_isSplit) {
+        float mixVal = m_canvas->getMix(m_branchRow);
+        if (mixVal > 1.05f) {
+            accent = QColor(255, 200, 50); // Boosted Golden Amber!
+        } else if (mixVal < 0.95f) {
+            accent = QColor(100, 110, 130); // Attenuated
+        } else {
+            accent = QColor(75, 85, 99);
+        }
+    } else {
+        accent = QColor(75, 85, 99);
+    }
+
+    painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging || m_dragInvalid || (!m_isSplit && m_canvas->getMix(m_branchRow) > 1.05f) ? 2.0 : 1.2));
     painter->setBrush(m_dragInvalid ? QColor(45, 18, 18) : QColor(29, 31, 37));
-    painter->drawRoundedRect(QRectF(-21, -15, 42, 30), 6, 6);
+    painter->drawRoundedRect(QRectF(-42, -18, 84, 36), 6, 6);
 
     painter->setPen(Qt::NoPen);
     painter->setBrush(m_dragInvalid ? QColor(220, 38, 38)
         : (m_isSplit ? QColor(37, 99, 235) : QColor(126, 70, 180)));
-    painter->drawRoundedRect(QRectF(-21, -15, 42, 13), 6, 6);
-    painter->drawRect(QRectF(-21, -8, 42, 6));
+    painter->drawRoundedRect(QRectF(-42, -18, 84, 16), 6, 6);
+    painter->drawRect(QRectF(-42, -10, 84, 8));
 
     QFont labelFont = painter->font();
-    labelFont.setPixelSize(8);
+    labelFont.setPixelSize(9);
     labelFont.setBold(true);
     painter->setFont(labelFont);
     painter->setPen(QColor(245, 247, 250));
-    painter->drawText(QRectF(-21, -15, 42, 13), Qt::AlignCenter, m_isSplit ? "SPLIT" : "MIX");
+    painter->drawText(QRectF(-42, -18, 84, 16), Qt::AlignCenter, m_isSplit ? "SPLIT" : "MIX");
 
     QFont detailFont = painter->font();
-    detailFont.setPixelSize(8);
+    detailFont.setPixelSize(9);
     detailFont.setBold(false);
     painter->setFont(detailFont);
-    painter->setPen(QColor(180, 185, 195));
+    painter->setPen(QColor(200, 205, 215));
     const QString pathName = m_canvas->getBranchName(m_branchRow);
     QString pathLetter = pathName;
     if (pathLetter.startsWith("Path ")) {
@@ -152,7 +169,17 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
             m_canvas->getSplitMode(m_branchRow) == GridRow::SplitMode::AB ? "A/B" : "COPY");
     } else {
         const float level = m_canvas->getMix(m_branchRow);
-        QString lvlStr = level <= 0.0f ? "-inf" : QString("%1dB").arg(qRound(20.0f * std::log10(level)));
+        QString lvlStr;
+        if (level <= 0.0f) {
+            lvlStr = "-inf";
+        } else {
+            double db = 20.0 * std::log10(level);
+            if (std::abs(db) < 0.05) {
+                lvlStr = "0dB";
+            } else {
+                lvlStr = QString("%1%2dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1);
+            }
+        }
         const float pan = m_canvas->getPan(m_branchRow);
         if (std::abs(pan) < 0.05f) {
             detail = QString("%1 · %2").arg(pathLetter).arg(lvlStr);
@@ -162,6 +189,7 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
             detail = QString("%1 · %2 %3").arg(pathLetter).arg(lvlStr).arg(panStr);
         }
     }
+    painter->drawText(QRectF(-42, -2, 84, 20), Qt::AlignCenter, detail);
 
     // Set tooltip dynamically
     QString tooltipText;
@@ -171,29 +199,16 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
             tooltipText += "Mode: Copy (Parallel)";
         } else {
             float pos = m_canvas->getSplitPosition(m_branchRow);
-            tooltipText += QString("Mode: A/B Split (%1)").arg(
-                pos == 0.0f ? "A = B" : (pos < 0.0f ? QString("%1% to A").arg(qRound(-pos * 100.0f))
-                                                    : QString("%1% to B").arg(qRound(pos * 100.0f)))
-            );
+            if (pos == 0.0f) tooltipText += "Mode: A/B (50/50 Equal Power)";
+            else tooltipText += QString("Mode: A/B (%1% to %2)").arg(qRound(std::abs(pos) * 100.0f)).arg(pos < 0 ? "A" : "B");
         }
     } else {
-        tooltipText = QString("Mixer Section %1\n").arg(pathLetter);
-        float level = m_canvas->getMix(m_branchRow);
-        tooltipText += QString("Level: %1 dB\n").arg(level <= 0.0f ? "-inf" : QString::number(20.0f * std::log10(level), 'f', 1));
-        float pan = m_canvas->getPan(m_branchRow);
-        tooltipText += QString("Pan/Balance: %1").arg(pan == 0.0f ? "Center" : (pan < 0.0f ? QString("%1% Left").arg(qRound(-pan * 100.0f))
-                                                                                       : QString("%1% Right").arg(qRound(pan * 100.0f))));
+        tooltipText = QString("Mix Return %1\nLevel: %2\nPan: %3")
+            .arg(pathLetter)
+            .arg(m_canvas->getMix(m_branchRow) <= 0.0f ? "-inf dB" : QString("%1 dB").arg(20.0 * std::log10(m_canvas->getMix(m_branchRow)), 0, 'f', 1))
+            .arg(m_canvas->getPan(m_branchRow) == 0.0f ? "Center" : QString("%1% %2").arg(qRound(std::abs(m_canvas->getPan(m_branchRow)) * 100.0f)).arg(m_canvas->getPan(m_branchRow) < 0 ? "Left" : "Right"));
     }
-    const_cast<RoutingHandleItem*>(this)->setToolTip(tooltipText);
-
-    painter->drawText(QRectF(-21, -2, 42, 16), Qt::AlignCenter, detail);
-
-    painter->setPen(QPen(accent, 1.4));
-    painter->setBrush(QColor(14, 16, 20));
-    painter->drawEllipse(QRectF(-25, -4, 8, 8));
-    painter->drawEllipse(QRectF(17, -4, 8, 8));
-    const qreal branchY = m_branchRow == 0 ? -19.0 : 11.0;
-    painter->drawEllipse(QRectF(-4, branchY, 8, 8));
+    setToolTip(tooltipText);
 }
 
 void RoutingHandleItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
