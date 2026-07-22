@@ -27,6 +27,7 @@ public:
     std::string getDownloadedModelPath() const { return m_downloadedModelPath; }
     QString getDownloadedToneName() const { return m_downloadedToneName; }
     QString getDownloadedToneUrl() const { return m_downloadedToneUrl; }
+    AudioNode::ModelMetadata getDownloadedMetadata() const { return m_downloadedMetadata; }
     void reject() override;
 
 private slots:
@@ -113,6 +114,7 @@ private:
     std::string m_downloadedModelPath;
     QString m_downloadedToneName;
     QString m_downloadedToneUrl;
+    AudioNode::ModelMetadata m_downloadedMetadata;
 
     // Supabase config
     QString m_supabaseUrl = "https://api.tone3000.com";

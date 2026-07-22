@@ -100,6 +100,25 @@ public:
         std::string localPath;
     };
 
+    struct ModelMetadata {
+        std::string toneId;
+        std::string toneTitle;
+        std::string toneSlug;
+        std::string author;
+        std::string gearType;
+        std::string tags;
+        std::string description;
+        std::string architecture;
+        std::string modeledBy;
+        std::string gearMake;
+        std::string gearModel;
+        double loudness = 0.0;
+        double sampleRate = 0.0;
+    };
+
+    const ModelMetadata& getModelMetadata() const { return m_modelMetadata; }
+    void setModelMetadata(const ModelMetadata& meta) { m_modelMetadata = meta; }
+
     const std::vector<ModelVariant>& getModelVariants() const { return m_modelVariants; }
     void setModelVariants(const std::vector<ModelVariant>& vars) { m_modelVariants = vars; }
     void setModelVariantLocalPath(size_t index, const std::string& path) {
@@ -120,4 +139,5 @@ protected:
     std::string m_modelDisplayName;
     std::string m_modelSourceUrl;
     std::vector<ModelVariant> m_modelVariants;
+    ModelMetadata m_modelMetadata;
 };

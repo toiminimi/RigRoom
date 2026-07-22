@@ -3023,6 +3023,58 @@ static void clearLayoutContents(QLayout* layout) {
     }
 }
 
+static void parseNamFileMetadata(const QString& filePath, AudioNode::ModelMetadata& meta) {
+    if (filePath.isEmpty() || !QFile::exists(filePath)) return;
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly)) return;
+    
+    QByteArray data = file.readAll();
+    file.close();
+    
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (!doc.isObject()) return;
+    
+    QJsonObject obj = doc.object();
+    if (obj.contains("name") && meta.toneTitle.empty()) {
+        meta.toneTitle = obj["name"].toString().toStdString();
+    }
+    if (obj.contains("modeled_by") && meta.modeledBy.empty()) {
+        meta.modeledBy = obj["modeled_by"].toString().toStdString();
+    }
+    if (obj.contains("author") && meta.author.empty()) {
+        meta.author = obj["author"].toString().toStdString();
+    }
+    if (obj.contains("gear_make") && meta.gearMake.empty()) {
+        meta.gearMake = obj["gear_make"].toString().toStdString();
+    }
+    if (obj.contains("gear_model") && meta.gearModel.empty()) {
+        meta.gearModel = obj["gear_model"].toString().toStdString();
+    }
+    if (obj.contains("gear_type") && meta.gearType.empty()) {
+        meta.gearType = obj["gear_type"].toString().toStdString();
+    }
+    if (obj.contains("tags") && meta.tags.empty()) {
+        if (obj["tags"].isArray()) {
+            QStringList tagList;
+            for (const auto& tagVal : obj["tags"].toArray()) {
+                tagList << tagVal.toString();
+            }
+            meta.tags = tagList.join(", ").toStdString();
+        } else {
+            meta.tags = obj["tags"].toString().toStdString();
+        }
+    }
+    if (obj.contains("architecture")) {
+        meta.architecture = obj["architecture"].toString().toStdString();
+    }
+    if (obj.contains("loudness")) {
+        meta.loudness = obj["loudness"].toDouble();
+    }
+    if (obj.contains("sample_rate")) {
+        meta.sampleRate = obj["sample_rate"].toDouble();
+    }
+}
+
 void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     // Clear parameters container
     m_parameterControlBindings.clear();
@@ -3039,47 +3091,68 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
 
     // Preset management bar
     auto* presetRow = new QWidget(m_paramContainer);
-        auto* presetLayout = new QHBoxLayout(presetRow);
-        presetLayout->setContentsMargins(0, 0, 0, 4);
-        presetLayout->setSpacing(4);
+    auto* presetLayout = new QVBoxLayout(presetRow);
+    presetLayout->setContentsMargins(0, 0, 0, 4);
+    presetLayout->setSpacing(4);
 
-        auto* presetCombo = new QComboBox(presetRow);
-        presetCombo->setToolTip("Load a preset for this plugin");
-        const QString activePreset = node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{};
-        refreshPluginPresetList(node, presetCombo, activePreset);
-        presetLayout->addWidget(presetCombo, 1);
+    auto* presetCombo = new QComboBox(presetRow);
+    presetCombo->setToolTip("Load a preset for this plugin");
+    const QString activePreset = node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{};
+    refreshPluginPresetList(node, presetCombo, activePreset);
+    presetLayout->addWidget(presetCombo);
 
-        auto* saveButton = new QPushButton("Save", presetRow);
-        auto* saveAsButton = new QPushButton("Save As", presetRow);
-        auto* renameButton = new QPushButton("Rename", presetRow);
-        auto* deleteButton = new QPushButton("Delete", presetRow);
-        for (auto* button : {saveButton, saveAsButton, renameButton, deleteButton}) {
-            button->setStyleSheet("QPushButton { padding: 4px 6px; }");
-            presetLayout->addWidget(button);
+    auto* btnBox = new QWidget(presetRow);
+    auto* btnLayout = new QHBoxLayout(btnBox);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(4);
+
+    auto* saveButton = new QPushButton("Save", btnBox);
+    saveButton->setStyleSheet("QPushButton { padding: 4px 8px; font-size: 11px; font-weight: bold; }");
+    btnLayout->addWidget(saveButton, 1);
+
+    auto* optionsButton = new QPushButton("Options...", btnBox);
+    optionsButton->setStyleSheet("QPushButton { padding: 4px 8px; font-size: 11px; }");
+    btnLayout->addWidget(optionsButton, 1);
+
+    presetLayout->addWidget(btnBox);
+    m_paramLayout->addWidget(presetRow);
+
+    connect(presetCombo, &QComboBox::activated, this, [this, node, presetCombo](int index) {
+        const QString name = presetCombo->itemData(index).toString();
+        if (name.isEmpty()) return;
+        if (!loadPluginPreset(node, name)) {
+            QMessageBox::warning(this, "Plugin Preset", "Could not load this plugin preset.");
         }
-        m_paramLayout->addWidget(presetRow);
+    });
 
-        connect(presetCombo, &QComboBox::activated, this, [this, node, presetCombo](int index) {
-            const QString name = presetCombo->itemData(index).toString();
-            if (name.isEmpty()) return;
-            if (!loadPluginPreset(node, name)) {
-                QMessageBox::warning(this, "Plugin Preset", "Could not load this plugin preset.");
-            }
-        });
-        connect(saveButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
-            QString name = presetCombo->currentData().toString();
-            if (name.isEmpty()) {
-                bool accepted = false;
-                name = QInputDialog::getText(this, "Save Plugin Preset", "Preset name:", QLineEdit::Normal, "", &accepted);
-                if (!accepted) return;
-            }
-            if (!savePluginPreset(node, name)) {
-                QMessageBox::warning(this, "Plugin Preset", "Could not save this plugin preset.");
-                return;
-            }
-            refreshPluginPresetList(node, presetCombo, name.trimmed());
-        });
-        connect(saveAsButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
+    connect(saveButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
+        QString name = presetCombo->currentData().toString();
+        if (name.isEmpty()) {
+            bool accepted = false;
+            name = QInputDialog::getText(this, "Save Plugin Preset", "Preset name:", QLineEdit::Normal, "", &accepted);
+            if (!accepted) return;
+        }
+        if (!savePluginPreset(node, name)) {
+            QMessageBox::warning(this, "Plugin Preset", "Could not save this plugin preset.");
+            return;
+        }
+        refreshPluginPresetList(node, presetCombo, name.trimmed());
+    });
+
+    connect(optionsButton, &QPushButton::clicked, this, [this, node, presetCombo, optionsButton]() {
+        QMenu menu(this);
+        QAction* saveAsAction = menu.addAction("Save As...");
+        QAction* renameAction = menu.addAction("Rename...");
+        QAction* deleteAction = menu.addAction("Delete Preset");
+
+        const QString currentPreset = presetCombo->currentData().toString();
+        if (currentPreset.isEmpty()) {
+            renameAction->setEnabled(false);
+            deleteAction->setEnabled(false);
+        }
+
+        QAction* chosen = menu.exec(optionsButton->mapToGlobal(QPoint(0, optionsButton->height())));
+        if (chosen == saveAsAction) {
             bool accepted = false;
             const QString name = QInputDialog::getText(this, "Save Plugin Preset As", "Preset name:", QLineEdit::Normal, "", &accepted);
             if (!accepted) return;
@@ -3088,8 +3161,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 return;
             }
             refreshPluginPresetList(node, presetCombo, name.trimmed());
-        });
-        connect(renameButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
+        } else if (chosen == renameAction) {
             const QString oldName = presetCombo->currentData().toString();
             if (oldName.isEmpty()) return;
             bool accepted = false;
@@ -3102,8 +3174,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 return;
             }
             refreshPluginPresetList(node, presetCombo, newName.trimmed());
-        });
-        connect(deleteButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
+        } else if (chosen == deleteAction) {
             const QString name = presetCombo->currentData().toString();
             if (name.isEmpty()) return;
             if (QMessageBox::question(this, "Delete Plugin Preset", "Delete '" + name + "'?") != QMessageBox::Yes) return;
@@ -3112,7 +3183,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 return;
             }
             refreshPluginPresetList(node, presetCombo);
-        });
+        }
+    });
 
         auto* presetSeparator = new QFrame(m_paramContainer);
         presetSeparator->setFrameShape(QFrame::HLine);
@@ -3265,7 +3337,11 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         rowLayout->setContentsMargins(0, 4, 0, 4);
         
         QLabel* label = new QLabel(QString::fromStdString(param.name), rowWidget);
-        label->setMinimumWidth(80);
+        label->setToolTip(QString::fromStdString(param.name));
+        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        label->setMinimumWidth(60);
+        label->setMaximumWidth(110);
+        label->setWordWrap(true);
         rowLayout->addWidget(label);
         
         uint32_t idx = param.index;
@@ -3404,6 +3480,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
 
             QLabel* fileLabel = new QLabel(fpFrame);
             fileLabel->setStyleSheet("color: #E0E0E0; font-size: 11px; font-style: italic;");
+            fileLabel->setWordWrap(true);
             std::string currentPath = fp.fileValue;
             if (currentPath.empty()) {
                 fileLabel->setText("No file loaded");
@@ -3421,15 +3498,123 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     size_t slash = currentPath.find_last_of("/\\");
                     std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
                     fileLabel->setText("Loaded: " + QString::fromStdString(displayName.empty() ? filename : displayName));
+
+                    auto meta = node->getModelMetadata();
+                    parseNamFileMetadata(QString::fromStdString(currentPath), meta);
+                    node->setModelMetadata(meta);
+
+                    QFrame* metaCard = new QFrame(fpFrame);
+                    metaCard->setStyleSheet(
+                        "QFrame {"
+                        "  background-color: #16181a;"
+                        "  border: 1px solid #2d3135;"
+                        "  border-radius: 6px;"
+                        "  margin-top: 4px;"
+                        "  margin-bottom: 6px;"
+                        "}"
+                        "QLabel { color: #e2e2e6; font-size: 10px; border: none; background: transparent; }"
+                    );
+                    QVBoxLayout* metaCardLayout = new QVBoxLayout(metaCard);
+                    metaCardLayout->setContentsMargins(8, 8, 8, 8);
+                    metaCardLayout->setSpacing(3);
+
+                    size_t slash2 = currentPath.find_last_of("/\\");
+                    std::string fname = (slash2 != std::string::npos) ? currentPath.substr(slash2 + 1) : currentPath;
+                    QString titleText = QString::fromStdString(meta.toneTitle.empty() ? (displayName.empty() ? fname : displayName) : meta.toneTitle);
+                    
+                    QLabel* toneTitleLabel = new QLabel(QString("<b>%1</b>").arg(titleText.toHtmlEscaped()), metaCard);
+                    toneTitleLabel->setWordWrap(true);
+                    toneTitleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                    toneTitleLabel->setMinimumWidth(0);
+                    toneTitleLabel->setStyleSheet("font-size: 11px; color: #00B0FF;");
+                    metaCardLayout->addWidget(toneTitleLabel);
+
+                    QString authorStr = QString::fromStdString(meta.author.empty() ? meta.modeledBy : meta.author);
+                    if (!authorStr.isEmpty()) {
+                        QLabel* authorLabel = new QLabel(QString("<b>Author:</b> %1").arg(authorStr.toHtmlEscaped()), metaCard);
+                        authorLabel->setWordWrap(true);
+                        authorLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                        authorLabel->setMinimumWidth(0);
+                        authorLabel->setStyleSheet("color: #b0bec5; font-size: 10px;");
+                        metaCardLayout->addWidget(authorLabel);
+                    }
+
+                    // Collapsible Details Section
+                    QWidget* detailsWidget = new QWidget(metaCard);
+                    QVBoxLayout* detailsLayout = new QVBoxLayout(detailsWidget);
+                    detailsLayout->setContentsMargins(0, 4, 0, 0);
+                    detailsLayout->setSpacing(3);
+
+                    QStringList gearAndTags;
+                    if (!meta.gearType.empty()) gearAndTags << QString("<b>Gear:</b> %1").arg(QString::fromStdString(meta.gearType).toHtmlEscaped());
+                    QString gearMake = QString::fromStdString(meta.gearMake).trimmed();
+                    QString gearModel = QString::fromStdString(meta.gearModel).trimmed();
+                    if (!gearMake.isEmpty() || !gearModel.isEmpty()) {
+                        QString makeModel;
+                        if (gearMake.isEmpty()) makeModel = gearModel;
+                        else if (gearModel.isEmpty() || gearModel.contains(gearMake, Qt::CaseInsensitive)) makeModel = gearModel;
+                        else makeModel = gearMake + " " + gearModel;
+                        gearAndTags << QString("<b>Make/Model:</b> %1").arg(makeModel.toHtmlEscaped());
+                    }
+                    if (!meta.tags.empty()) gearAndTags << QString("<b>Tags:</b> %1").arg(QString::fromStdString(meta.tags).toHtmlEscaped());
+                    if (!gearAndTags.isEmpty()) {
+                        QLabel* gearLabel = new QLabel(gearAndTags.join(" • "), detailsWidget);
+                        gearLabel->setWordWrap(true);
+                        gearLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                        gearLabel->setMinimumWidth(0);
+                        gearLabel->setStyleSheet("color: #cfd8dc; font-size: 10px;");
+                        detailsLayout->addWidget(gearLabel);
+                    }
+
+                    QStringList engineDetails;
+                    if (!meta.architecture.empty()) engineDetails << QString("<b>Engine:</b> %1").arg(QString::fromStdString(meta.architecture).toHtmlEscaped());
+                    if (meta.loudness != 0.0) engineDetails << QString("<b>Loudness:</b> %1 dB").arg(QString::number(meta.loudness, 'f', 1));
+                    if (meta.sampleRate > 0.0) engineDetails << QString("<b>Sample Rate:</b> %1 kHz").arg(QString::number(meta.sampleRate / 1000.0, 'f', 1));
+                    if (!engineDetails.isEmpty()) {
+                        QLabel* engineLabel = new QLabel(engineDetails.join(" • "), detailsWidget);
+                        engineLabel->setWordWrap(true);
+                        engineLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                        engineLabel->setMinimumWidth(0);
+                        engineLabel->setStyleSheet("color: #90a4ae; font-size: 10px;");
+                        detailsLayout->addWidget(engineLabel);
+                    }
+
+                    QString pathDisplay = QString::fromStdString(currentPath);
+                    if (pathDisplay.startsWith(QDir::homePath())) {
+                        pathDisplay.replace(0, QDir::homePath().length(), "~");
+                    }
+                    QLabel* pathLabel = new QLabel(QString("<b>Path:</b> <span style='color: #4fc3f7;'>%1</span>").arg(pathDisplay.toHtmlEscaped()), detailsWidget);
+                    pathLabel->setWordWrap(true);
+                    pathLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                    pathLabel->setMinimumWidth(0);
+                    pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+                    pathLabel->setStyleSheet("font-size: 10px; color: #80deea;");
+                    detailsLayout->addWidget(pathLabel);
+
+                    QPushButton* toggleBtn = new QPushButton("ℹ Model Info ▾", metaCard);
+                    toggleBtn->setFlat(true);
+                    toggleBtn->setStyleSheet("QPushButton { color: #80deea; font-size: 10px; text-align: left; padding: 2px 0px; border: none; } QPushButton:hover { color: #00B0FF; }");
+                    metaCardLayout->addWidget(toggleBtn);
+                    metaCardLayout->addWidget(detailsWidget);
+
+                    detailsWidget->setVisible(true);
+
+                    connect(toggleBtn, &QPushButton::clicked, this, [toggleBtn, detailsWidget]() {
+                        bool isVis = !detailsWidget->isVisible();
+                        detailsWidget->setVisible(isVis);
+                        toggleBtn->setText(isVis ? "ℹ Model Info ▾" : "ℹ Model Info ▸");
+                    });
+
+                    fpLayout->addWidget(metaCard);
                 }
             }
 
-            QHBoxLayout* btnLayout = new QHBoxLayout();
-            btnLayout->setSpacing(6);
+            QVBoxLayout* btnLayout = new QVBoxLayout();
+            btnLayout->setSpacing(4);
 
             QPushButton* loadBtn = new QPushButton("Load File...", fpFrame);
             loadBtn->setStyleSheet(
-                "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 6px; border: none; }"
+                "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 6px; font-size: 11px; border: none; }"
                 "QPushButton:hover { background-color: #009688; }"
             );
             btnLayout->addWidget(loadBtn);
@@ -3440,7 +3625,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
                 browseBtn = new QPushButton("Browse TONE3000...", fpFrame);
                 browseBtn->setStyleSheet(
-                    "QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 6px; border: none; }"
+                    "QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 6px; font-size: 11px; border: none; }"
                     "QPushButton:hover { background-color: #388E3C; }"
                 );
                 btnLayout->addWidget(browseBtn);
@@ -3472,12 +3657,18 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     fileLabel->setText("Loaded: " + QString::fromStdString(filename));
                     
                     if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
-                        node->setModelDisplayName(filename);
+                        AudioNode::ModelMetadata meta;
+                        meta.toneTitle = QFileInfo(filePath).completeBaseName().toStdString();
+                        parseNamFileMetadata(filePath, meta);
+                        node->setModelMetadata(meta);
+                        node->setModelDisplayName(meta.toneTitle.empty() ? filename : meta.toneTitle);
                         node->setModelSourceUrl({});
+                        node->setModelVariants({});
                     }
 
                     setUnsavedChanges(true);
                     saveConfigSettings();
+                    showPluginControls(node);
                 }
             });
 
@@ -3491,6 +3682,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                             node->setFileProperty(uri, filePath);
                             m_engine.resumeProcessing();
                             
+                            AudioNode::ModelMetadata meta = dialog.getDownloadedMetadata();
+                            parseNamFileMetadata(QString::fromStdString(filePath), meta);
+                            node->setModelMetadata(meta);
+
                             size_t slash = filePath.find_last_of("/\\");
                             std::string filename = (slash != std::string::npos) ? filePath.substr(slash + 1) : filePath;
                             const QString toneName = dialog.getDownloadedToneName();
@@ -3508,11 +3703,11 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             }
 
             if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model" && !currentPath.empty()) {
-                auto* modelActions = new QHBoxLayout();
-                modelActions->setSpacing(6);
+                auto* modelActions = new QVBoxLayout();
+                modelActions->setSpacing(4);
 
                 auto* exportButton = new QPushButton("Export NAM...", fpFrame);
-                exportButton->setStyleSheet("QPushButton { padding: 4px; }");
+                exportButton->setStyleSheet("QPushButton { padding: 4px; font-size: 11px; }");
                 modelActions->addWidget(exportButton);
                 connect(exportButton, &QPushButton::clicked, this, [this, node]() {
                     const QString sourcePath = QString::fromStdString(node->getModelFilePath());
@@ -3533,7 +3728,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 const QString sourceUrl = QString::fromStdString(node->getModelSourceUrl());
                 if (!sourceUrl.isEmpty()) {
                     auto* sourceButton = new QPushButton("Open on TONE3000", fpFrame);
-                    sourceButton->setStyleSheet("QPushButton { padding: 4px; }");
+                    sourceButton->setStyleSheet("QPushButton { padding: 4px; font-size: 11px; }");
                     modelActions->addWidget(sourceButton);
                     connect(sourceButton, &QPushButton::clicked, this, [sourceUrl] {
                         QDesktopServices::openUrl(QUrl(sourceUrl));
@@ -3594,15 +3789,18 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     node->loadModelFile(selectedVar.localPath);
                     m_engine.resumeProcessing();
 
+                    AudioNode::ModelMetadata meta = node->getModelMetadata();
+                    parseNamFileMetadata(QString::fromStdString(selectedVar.localPath), meta);
+                    if (!selectedVar.name.empty()) meta.toneTitle = selectedVar.name;
+                    node->setModelMetadata(meta);
+
                     size_t slash = selectedVar.localPath.find_last_of("/\\");
                     std::string filename = (slash != std::string::npos) ? selectedVar.localPath.substr(slash + 1) : selectedVar.localPath;
                     node->setModelDisplayName(selectedVar.name.empty() ? filename : selectedVar.name);
-                    if (namFileLabel) {
-                        namFileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
-                    }
-
+                    
                     setUnsavedChanges(true);
                     saveConfigSettings();
+                    showPluginControls(node);
                 } else {
                     downloadVariant(node, variantIdx, varCombo, namFileLabel);
                 }
@@ -3843,12 +4041,17 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
             node->loadModelFile(var.localPath);
             m_engine.resumeProcessing();
 
+            AudioNode::ModelMetadata meta = node->getModelMetadata();
+            parseNamFileMetadata(localFilePath, meta);
+            if (!var.name.empty()) meta.toneTitle = var.name;
+            node->setModelMetadata(meta);
+
             node->setModelDisplayName(var.name.empty() ? safeName.toStdString() : var.name);
-            if (!fileLabel.isNull()) fileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
             setUnsavedChanges(true);
             saveConfigSettings();
 
             if (!combo.isNull()) combo->setItemText(variantIdx, QString::fromStdString(var.name) + " (Cached)");
+            showPluginControls(node);
         } else {
             if (!fileLabel.isNull()) fileLabel->setText("Failed to save model file!");
         }

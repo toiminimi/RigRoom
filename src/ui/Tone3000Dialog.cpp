@@ -1095,21 +1095,52 @@ void Tone3000Dialog::onDownloadClicked() {
     QString url = model["model_url"].toString();
     QString name = model["name"].toString();
     m_downloadedToneName = name;
+    QString toneFolder = "tone_models";
+
+    m_downloadedMetadata = AudioNode::ModelMetadata{};
     if (const int row = m_resultsTable->currentRow(); row >= 0 && row < m_currentTones.size()) {
         const QJsonObject tone = m_currentTones[row].toObject();
         const QString title = tone["title"].toString();
+        const int toneId = tone["id"].toInt();
         if (!title.isEmpty() && title != name) m_downloadedToneName = title + " - " + name;
         m_downloadedToneUrl = tone["url"].toString();
-        if (m_downloadedToneUrl.isEmpty()) {
-            QString slug = tone["slug"].toString();
-            if (slug.isEmpty()) {
-                slug = title.toLower();
-                slug.replace(QRegularExpression("[^a-z0-9]+"), "-");
-                slug.remove(QRegularExpression("^-|-$"));
-                slug += "-" + QString::number(tone["id"].toInt());
-            }
-            m_downloadedToneUrl = "https://www.tone3000.com/tones/" + slug;
+        
+        QString slug = tone["slug"].toString();
+        if (slug.isEmpty()) {
+            slug = title.toLower();
+            slug.replace(QRegularExpression("[^a-z0-9]+"), "-");
+            slug.remove(QRegularExpression("^-|-$"));
         }
+        if (m_downloadedToneUrl.isEmpty()) {
+            m_downloadedToneUrl = "https://www.tone3000.com/tones/" + (slug.isEmpty() ? QString::number(toneId) : slug);
+        }
+
+        QString safeSlug = slug;
+        safeSlug.replace(QRegularExpression("[^a-zA-Z0-9_\\-]"), "_");
+        if (safeSlug.isEmpty()) safeSlug = "profile";
+        toneFolder = QString("tone_%1_%2").arg(toneId > 0 ? QString::number(toneId) : "0").arg(safeSlug);
+
+        m_downloadedMetadata.toneId = toneId > 0 ? QString::number(toneId).toStdString() : "";
+        m_downloadedMetadata.toneTitle = title.toStdString();
+        m_downloadedMetadata.toneSlug = slug.toStdString();
+
+        QString username;
+        if (tone.contains("user") && tone["user"].isObject()) {
+            username = tone["user"].toObject()["username"].toString();
+        } else if (tone.contains("username")) {
+            username = tone["username"].toString();
+        }
+        m_downloadedMetadata.author = username.toStdString();
+        m_downloadedMetadata.gearType = tone["gear"].toString().toStdString();
+
+        QStringList tagList;
+        if (tone.contains("tags") && tone["tags"].isArray()) {
+            for (const auto& val : tone["tags"].toArray()) {
+                tagList << val.toObject()["name"].toString();
+            }
+        }
+        m_downloadedMetadata.tags = tagList.join(", ").toStdString();
+        m_downloadedMetadata.description = tone["description"].toString().toStdString();
     }
     
     if (url.isEmpty()) {
@@ -1121,6 +1152,10 @@ void Tone3000Dialog::onDownloadClicked() {
     if (!safeName.endsWith(".nam", Qt::CaseInsensitive)) {
         safeName += ".nam";
     }
+
+    QString cacheDir = QDir::homePath() + "/.cache/PedalBoard/tone3000/" + toneFolder;
+    QDir().mkpath(cacheDir);
+    m_downloadedModelPath = (cacheDir + "/" + safeName).toStdString();
 
     downloadModelFile(url, safeName, false);
 }
@@ -1155,10 +1190,11 @@ void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filena
 
     m_previewDownload = isPreview;
 
-    // Setup local cache path
-    QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/tone3000";
-    QDir().mkpath(cacheDir);
-    m_downloadedModelPath = (cacheDir + "/" + filename).toStdString();
+    if (m_downloadedModelPath.empty()) {
+        QString cacheDir = QDir::homePath() + "/.cache/PedalBoard/tone3000/tone_preview";
+        QDir().mkpath(cacheDir);
+        m_downloadedModelPath = (cacheDir + "/" + filename).toStdString();
+    }
 
     m_statusLabel->setText(isPreview ? "Downloading preview profile..." : "Downloading profile...");
     m_progressBar->setVisible(true);
@@ -1253,6 +1289,7 @@ void Tone3000Dialog::onDownloadFinished() {
     } else {
         // Store variants on the node before accepting
         if (m_node) {
+            QString currentCacheDir = QFileInfo(QString::fromStdString(m_downloadedModelPath)).absoluteDir().absolutePath();
             std::vector<AudioNode::ModelVariant> vars;
             for (int i = 0; i < m_currentModels.size(); ++i) {
                 QJsonObject model = m_currentModels[i].toObject();
@@ -1263,13 +1300,13 @@ void Tone3000Dialog::onDownloadFinished() {
                 if (i == m_modelsCombo->currentIndex()) {
                     var.localPath = m_downloadedModelPath;
                 } else {
-                    // Check if already cached
+                    // Check if already cached in currentCacheDir
                     QString itemSafeName = model["name"].toString();
                     itemSafeName.replace(QRegularExpression("[^a-zA-Z0-9_\\-.]"), "_");
                     if (!itemSafeName.endsWith(".nam", Qt::CaseInsensitive) && !itemSafeName.endsWith(".json", Qt::CaseInsensitive)) {
                         itemSafeName += ".nam";
                     }
-                    QString expectedPath = QDir::homePath() + "/.cache/PedalBoard/tone3000/" + itemSafeName;
+                    QString expectedPath = currentCacheDir + "/" + itemSafeName;
                     if (QFile::exists(expectedPath)) {
                         var.localPath = expectedPath.toStdString();
                     }
