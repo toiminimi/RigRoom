@@ -3466,84 +3466,45 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         separator->setFrameShadow(QFrame::Sunken);
         separator->setStyleSheet("background-color: #333333; margin-top: 10px; margin-bottom: 10px;");
         m_paramLayout->addWidget(separator);
-
         for (const auto& fp : fileProps) {
             QFrame* fpFrame = new QFrame(m_paramContainer);
-            fpFrame->setStyleSheet("background-color: #252528; border-radius: 6px; padding: 10px; margin-bottom: 8px;");
+            fpFrame->setStyleSheet("background-color: #212427; border: 1px solid #2d3135; border-radius: 6px; margin-bottom: 6px;");
             QVBoxLayout* fpLayout = new QVBoxLayout(fpFrame);
-            fpLayout->setContentsMargins(6, 6, 6, 6);
-            fpLayout->setSpacing(4);
+            fpLayout->setContentsMargins(8, 8, 8, 8);
+            fpLayout->setSpacing(5);
 
             QLabel* titleLabel = new QLabel(QString::fromStdString(fp.label), fpFrame);
             titleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 12px;");
             fpLayout->addWidget(titleLabel);
 
-            QLabel* fileLabel = new QLabel(fpFrame);
-            fileLabel->setStyleSheet("color: #E0E0E0; font-size: 11px; font-style: italic;");
-            fileLabel->setWordWrap(true);
             std::string currentPath = fp.fileValue;
-            if (currentPath.empty()) {
-                fileLabel->setText("No file loaded");
-            } else {
-                size_t slash = currentPath.find_last_of("/\\");
-                std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
-                fileLabel->setText("Loaded: " + QString::fromStdString(filename));
-            }
-            fpLayout->addWidget(fileLabel);
-
             if (fp.uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
-                namFileLabel = fileLabel;
                 const std::string& displayName = node->getModelDisplayName();
                 if (!currentPath.empty()) {
-                    size_t slash = currentPath.find_last_of("/\\");
-                    std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
-                    fileLabel->setText("Loaded: " + QString::fromStdString(displayName.empty() ? filename : displayName));
-
                     auto meta = node->getModelMetadata();
                     parseNamFileMetadata(QString::fromStdString(currentPath), meta);
                     node->setModelMetadata(meta);
-
-                    QFrame* metaCard = new QFrame(fpFrame);
-                    metaCard->setStyleSheet(
-                        "QFrame {"
-                        "  background-color: #16181a;"
-                        "  border: 1px solid #2d3135;"
-                        "  border-radius: 6px;"
-                        "  margin-top: 4px;"
-                        "  margin-bottom: 6px;"
-                        "}"
-                        "QLabel { color: #e2e2e6; font-size: 10px; border: none; background: transparent; }"
-                    );
-                    QVBoxLayout* metaCardLayout = new QVBoxLayout(metaCard);
-                    metaCardLayout->setContentsMargins(8, 8, 8, 8);
-                    metaCardLayout->setSpacing(3);
 
                     size_t slash2 = currentPath.find_last_of("/\\");
                     std::string fname = (slash2 != std::string::npos) ? currentPath.substr(slash2 + 1) : currentPath;
                     QString titleText = QString::fromStdString(meta.toneTitle.empty() ? (displayName.empty() ? fname : displayName) : meta.toneTitle);
                     
-                    QLabel* toneTitleLabel = new QLabel(QString("<b>%1</b>").arg(titleText.toHtmlEscaped()), metaCard);
+                    QLabel* toneTitleLabel = new QLabel(QString("<b>%1</b>").arg(titleText.toHtmlEscaped()), fpFrame);
                     toneTitleLabel->setWordWrap(true);
                     toneTitleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                     toneTitleLabel->setMinimumWidth(0);
-                    toneTitleLabel->setStyleSheet("font-size: 11px; color: #00B0FF;");
-                    metaCardLayout->addWidget(toneTitleLabel);
+                    toneTitleLabel->setStyleSheet("font-size: 12px; color: #00B0FF;");
+                    fpLayout->addWidget(toneTitleLabel);
 
                     QString authorStr = QString::fromStdString(meta.author.empty() ? meta.modeledBy : meta.author);
                     if (!authorStr.isEmpty()) {
-                        QLabel* authorLabel = new QLabel(QString("<b>Author:</b> %1").arg(authorStr.toHtmlEscaped()), metaCard);
+                        QLabel* authorLabel = new QLabel(QString("<b>Author:</b> %1").arg(authorStr.toHtmlEscaped()), fpFrame);
                         authorLabel->setWordWrap(true);
                         authorLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                         authorLabel->setMinimumWidth(0);
                         authorLabel->setStyleSheet("color: #b0bec5; font-size: 10px;");
-                        metaCardLayout->addWidget(authorLabel);
+                        fpLayout->addWidget(authorLabel);
                     }
-
-                    // Collapsible Details Section
-                    QWidget* detailsWidget = new QWidget(metaCard);
-                    QVBoxLayout* detailsLayout = new QVBoxLayout(detailsWidget);
-                    detailsLayout->setContentsMargins(0, 4, 0, 0);
-                    detailsLayout->setSpacing(3);
 
                     QStringList gearAndTags;
                     if (!meta.gearType.empty()) gearAndTags << QString("<b>Gear:</b> %1").arg(QString::fromStdString(meta.gearType).toHtmlEscaped());
@@ -3558,12 +3519,12 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     }
                     if (!meta.tags.empty()) gearAndTags << QString("<b>Tags:</b> %1").arg(QString::fromStdString(meta.tags).toHtmlEscaped());
                     if (!gearAndTags.isEmpty()) {
-                        QLabel* gearLabel = new QLabel(gearAndTags.join(" • "), detailsWidget);
+                        QLabel* gearLabel = new QLabel(gearAndTags.join(" • "), fpFrame);
                         gearLabel->setWordWrap(true);
                         gearLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                         gearLabel->setMinimumWidth(0);
                         gearLabel->setStyleSheet("color: #cfd8dc; font-size: 10px;");
-                        detailsLayout->addWidget(gearLabel);
+                        fpLayout->addWidget(gearLabel);
                     }
 
                     QStringList engineDetails;
@@ -3571,109 +3532,98 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     if (meta.loudness != 0.0) engineDetails << QString("<b>Loudness:</b> %1 dB").arg(QString::number(meta.loudness, 'f', 1));
                     if (meta.sampleRate > 0.0) engineDetails << QString("<b>Sample Rate:</b> %1 kHz").arg(QString::number(meta.sampleRate / 1000.0, 'f', 1));
                     if (!engineDetails.isEmpty()) {
-                        QLabel* engineLabel = new QLabel(engineDetails.join(" • "), detailsWidget);
+                        QLabel* engineLabel = new QLabel(engineDetails.join(" • "), fpFrame);
                         engineLabel->setWordWrap(true);
                         engineLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                         engineLabel->setMinimumWidth(0);
                         engineLabel->setStyleSheet("color: #90a4ae; font-size: 10px;");
-                        detailsLayout->addWidget(engineLabel);
+                        fpLayout->addWidget(engineLabel);
                     }
 
                     QString pathDisplay = QString::fromStdString(currentPath);
                     if (pathDisplay.startsWith(QDir::homePath())) {
                         pathDisplay.replace(0, QDir::homePath().length(), "~");
                     }
-                    QLabel* pathLabel = new QLabel(QString("<b>Path:</b> <span style='color: #4fc3f7;'>%1</span>").arg(pathDisplay.toHtmlEscaped()), detailsWidget);
+                    QLabel* pathLabel = new QLabel(QString("<b>Path:</b> <span style='color: #4fc3f7;'>%1</span>").arg(pathDisplay.toHtmlEscaped()), fpFrame);
                     pathLabel->setWordWrap(true);
                     pathLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
                     pathLabel->setMinimumWidth(0);
                     pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
                     pathLabel->setStyleSheet("font-size: 10px; color: #80deea;");
-                    detailsLayout->addWidget(pathLabel);
-
-                    QPushButton* toggleBtn = new QPushButton("ℹ Model Info ▾", metaCard);
-                    toggleBtn->setFlat(true);
-                    toggleBtn->setStyleSheet("QPushButton { color: #80deea; font-size: 10px; text-align: left; padding: 2px 0px; border: none; } QPushButton:hover { color: #00B0FF; }");
-                    metaCardLayout->addWidget(toggleBtn);
-                    metaCardLayout->addWidget(detailsWidget);
-
-                    detailsWidget->setVisible(true);
-
-                    connect(toggleBtn, &QPushButton::clicked, this, [toggleBtn, detailsWidget]() {
-                        bool isVis = !detailsWidget->isVisible();
-                        detailsWidget->setVisible(isVis);
-                        toggleBtn->setText(isVis ? "ℹ Model Info ▾" : "ℹ Model Info ▸");
-                    });
-
-                    fpLayout->addWidget(metaCard);
+                    fpLayout->addWidget(pathLabel);
+                } else {
+                    QLabel* emptyLabel = new QLabel("No file loaded", fpFrame);
+                    emptyLabel->setStyleSheet("color: #E0E0E0; font-size: 11px; font-style: italic;");
+                    fpLayout->addWidget(emptyLabel);
                 }
+            } else {
+                QLabel* fileLabel = new QLabel(fpFrame);
+                fileLabel->setStyleSheet("color: #E0E0E0; font-size: 11px; font-style: italic;");
+                fileLabel->setWordWrap(true);
+                if (currentPath.empty()) {
+                    fileLabel->setText("No file loaded");
+                } else {
+                    size_t slash = currentPath.find_last_of("/\\");
+                    std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
+                    fileLabel->setText("Loaded: " + QString::fromStdString(filename));
+                }
+                fpLayout->addWidget(fileLabel);
             }
 
-            QVBoxLayout* btnLayout = new QVBoxLayout();
-            btnLayout->setSpacing(4);
+            QGridLayout* btnGrid = new QGridLayout();
+            btnGrid->setContentsMargins(0, 4, 0, 0);
+            btnGrid->setSpacing(4);
 
             QPushButton* loadBtn = new QPushButton("Load File...", fpFrame);
             loadBtn->setStyleSheet(
-                "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 6px; font-size: 11px; border: none; }"
+                "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px; font-size: 11px; border: none; }"
                 "QPushButton:hover { background-color: #009688; }"
             );
-            btnLayout->addWidget(loadBtn);
+            btnGrid->addWidget(loadBtn, 0, 0);
 
             std::string uri = fp.uri;
-
-            QPushButton* browseBtn = nullptr;
             if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
-                browseBtn = new QPushButton("Browse TONE3000...", fpFrame);
+                QPushButton* browseBtn = new QPushButton("Browse TONE3000...", fpFrame);
                 browseBtn->setStyleSheet(
-                    "QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 6px; font-size: 11px; border: none; }"
+                    "QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 5px; font-size: 11px; border: none; }"
                     "QPushButton:hover { background-color: #388E3C; }"
                 );
-                btnLayout->addWidget(browseBtn);
-            }
+                btnGrid->addWidget(browseBtn, 0, 1);
 
-            fpLayout->addLayout(btnLayout);
+                if (!currentPath.empty()) {
+                    QPushButton* exportButton = new QPushButton("Export NAM...", fpFrame);
+                    exportButton->setStyleSheet("QPushButton { padding: 4px; font-size: 11px; }");
+                    btnGrid->addWidget(exportButton, 1, 0);
 
-            connect(loadBtn, &QPushButton::clicked, this, [this, node, uri, fileLabel]() {
-                QString filter = "All Files (*)";
-                if (uri.find("model") != std::string::npos) {
-                    filter = "Neural Models (*.nam *.nammodel *.json *.aidax *.aidadspmodel);;All Files (*)";
-                } else if (uri.find("File") != std::string::npos || uri.find("file") != std::string::npos || uri.find("ir") != std::string::npos) {
-                    filter = "Impulse Responses (*.wav *.flac *.ir);;All Files (*)";
-                }
+                    const QString sourceUrl = QString::fromStdString(node->getModelSourceUrl());
+                    if (!sourceUrl.isEmpty()) {
+                        QPushButton* sourceButton = new QPushButton("Open on Web", fpFrame);
+                        sourceButton->setStyleSheet("QPushButton { padding: 4px; font-size: 11px; }");
+                        btnGrid->addWidget(sourceButton, 1, 1);
 
-                QString filePath = QFileDialog::getOpenFileName(
-                    this,
-                    "Select File",
-                    "",
-                    filter
-                );
-                if (!filePath.isEmpty()) {
-                    m_engine.suspendProcessing();
-                    node->setFileProperty(uri, filePath.toStdString());
-                    m_engine.resumeProcessing();
-                    
-                    size_t slash = filePath.toStdString().find_last_of("/\\");
-                    std::string filename = (slash != std::string::npos) ? filePath.toStdString().substr(slash + 1) : filePath.toStdString();
-                    fileLabel->setText("Loaded: " + QString::fromStdString(filename));
-                    
-                    if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
-                        AudioNode::ModelMetadata meta;
-                        meta.toneTitle = QFileInfo(filePath).completeBaseName().toStdString();
-                        parseNamFileMetadata(filePath, meta);
-                        node->setModelMetadata(meta);
-                        node->setModelDisplayName(meta.toneTitle.empty() ? filename : meta.toneTitle);
-                        node->setModelSourceUrl({});
-                        node->setModelVariants({});
+                        connect(sourceButton, &QPushButton::clicked, this, [sourceUrl] {
+                            QDesktopServices::openUrl(QUrl(sourceUrl));
+                        });
                     }
 
-                    setUnsavedChanges(true);
-                    saveConfigSettings();
-                    showPluginControls(node);
+                    connect(exportButton, &QPushButton::clicked, this, [this, node]() {
+                        const QString sourcePath = QString::fromStdString(node->getModelFilePath());
+                        if (!QFileInfo(sourcePath).isFile()) {
+                            QMessageBox::warning(this, "Export NAM", "The active NAM file is unavailable.");
+                            return;
+                        }
+                        const QString destination = QFileDialog::getSaveFileName(
+                            this, "Export NAM", QFileInfo(sourcePath).fileName(), "NAM Models (*.nam);;All Files (*)");
+                        if (destination.isEmpty()) return;
+                        if (QFileInfo(destination).absoluteFilePath() == QFileInfo(sourcePath).absoluteFilePath()) return;
+                        QFile::remove(destination);
+                        if (!QFile::copy(sourcePath, destination)) {
+                            QMessageBox::warning(this, "Export NAM", "Could not export the NAM file.");
+                        }
+                    });
                 }
-            });
 
-            if (browseBtn) {
-                connect(browseBtn, &QPushButton::clicked, this, [this, node, uri, fileLabel]() {
+                connect(browseBtn, &QPushButton::clicked, this, [this, node, uri]() {
                     Tone3000Dialog dialog(node.get(), &m_engine, this);
                     if (dialog.exec() == QDialog::Accepted) {
                         std::string filePath = dialog.getDownloadedModelPath();
@@ -3692,51 +3642,53 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                             node->setModelDisplayName((toneName.isEmpty() ? QString::fromStdString(filename) : toneName).toStdString());
                             node->setModelSourceUrl(dialog.getDownloadedToneUrl().toStdString());
                             
-                            fileLabel->setText("Loaded: " + QString::fromStdString(node->getModelDisplayName()));
                             setUnsavedChanges(true);
                             saveConfigSettings();
                             
-                            showPluginControls(node);
+                            QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
                         }
                     }
                 });
             }
 
-            if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model" && !currentPath.empty()) {
-                auto* modelActions = new QVBoxLayout();
-                modelActions->setSpacing(4);
+            fpLayout->addLayout(btnGrid);
 
-                auto* exportButton = new QPushButton("Export NAM...", fpFrame);
-                exportButton->setStyleSheet("QPushButton { padding: 4px; font-size: 11px; }");
-                modelActions->addWidget(exportButton);
-                connect(exportButton, &QPushButton::clicked, this, [this, node]() {
-                    const QString sourcePath = QString::fromStdString(node->getModelFilePath());
-                    if (!QFileInfo(sourcePath).isFile()) {
-                        QMessageBox::warning(this, "Export NAM", "The active NAM file is unavailable.");
-                        return;
-                    }
-                    const QString destination = QFileDialog::getSaveFileName(
-                        this, "Export NAM", QFileInfo(sourcePath).fileName(), "NAM Models (*.nam);;All Files (*)");
-                    if (destination.isEmpty()) return;
-                    if (QFileInfo(destination).absoluteFilePath() == QFileInfo(sourcePath).absoluteFilePath()) return;
-                    QFile::remove(destination);
-                    if (!QFile::copy(sourcePath, destination)) {
-                        QMessageBox::warning(this, "Export NAM", "Could not export the NAM file.");
-                    }
-                });
-
-                const QString sourceUrl = QString::fromStdString(node->getModelSourceUrl());
-                if (!sourceUrl.isEmpty()) {
-                    auto* sourceButton = new QPushButton("Open on TONE3000", fpFrame);
-                    sourceButton->setStyleSheet("QPushButton { padding: 4px; font-size: 11px; }");
-                    modelActions->addWidget(sourceButton);
-                    connect(sourceButton, &QPushButton::clicked, this, [sourceUrl] {
-                        QDesktopServices::openUrl(QUrl(sourceUrl));
-                    });
+            connect(loadBtn, &QPushButton::clicked, this, [this, node, uri]() {
+                QString filter = "All Files (*)";
+                if (uri.find("model") != std::string::npos) {
+                    filter = "Neural Models (*.nam *.nammodel *.json *.aidax *.aidadspmodel);;All Files (*)";
+                } else if (uri.find("File") != std::string::npos || uri.find("file") != std::string::npos || uri.find("ir") != std::string::npos) {
+                    filter = "Impulse Responses (*.wav *.flac *.ir);;All Files (*)";
                 }
 
-                fpLayout->addLayout(modelActions);
-            }
+                QString filePath = QFileDialog::getOpenFileName(
+                    this,
+                    "Select File",
+                    "",
+                    filter
+                );
+                if (!filePath.isEmpty()) {
+                    m_engine.suspendProcessing();
+                    node->setFileProperty(uri, filePath.toStdString());
+                    m_engine.resumeProcessing();
+                    
+                    if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
+                        AudioNode::ModelMetadata meta;
+                        meta.toneTitle = QFileInfo(filePath).completeBaseName().toStdString();
+                        parseNamFileMetadata(filePath, meta);
+                        node->setModelMetadata(meta);
+                        size_t slash = filePath.toStdString().find_last_of("/\\");
+                        std::string filename = (slash != std::string::npos) ? filePath.toStdString().substr(slash + 1) : filePath.toStdString();
+                        node->setModelDisplayName(meta.toneTitle.empty() ? filename : meta.toneTitle);
+                        node->setModelSourceUrl({});
+                        node->setModelVariants({});
+                    }
+
+                    setUnsavedChanges(true);
+                    saveConfigSettings();
+                    QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+                }
+            });
 
             m_paramLayout->addWidget(fpFrame);
         }
@@ -3779,7 +3731,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
 
         m_paramLayout->addWidget(varCombo);
 
-        connect(varCombo, &QComboBox::activated, this, [this, node, varCombo, namFileLabel](int index) {
+        connect(varCombo, &QComboBox::activated, this, [this, node, varCombo](int index) {
             int variantIdx = varCombo->itemData(index).toInt();
             const auto& vars = node->getModelVariants();
             if (variantIdx >= 0 && variantIdx < (int)vars.size()) {
@@ -3800,9 +3752,9 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     
                     setUnsavedChanges(true);
                     saveConfigSettings();
-                    showPluginControls(node);
+                    QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
                 } else {
-                    downloadVariant(node, variantIdx, varCombo, namFileLabel);
+                    downloadVariant(node, variantIdx, varCombo, nullptr);
                 }
             }
         });
