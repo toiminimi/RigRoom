@@ -50,23 +50,51 @@ void RoutingHandleItem::updatePreview(PlusButtonWidget* target) {
     m_previewLine->setPath(previewPath);
     m_previewLine->show();
 
-    std::vector<int> occupied;
     const int parentRow = m_canvas->getSplitParentRow(m_branchRow);
-    for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
-        if (m_canvas->getPluginAt(parentRow, c)) occupied.push_back(c);
-    }
     const int plusIndex = target->getCol();
-    QString text;
-    if (m_isSplit) {
-        text = plusIndex == 0
-            ? "Split from System Input"
-            : "Split after " + QString::fromStdString(m_canvas->getPluginAt(parentRow, occupied[plusIndex - 1])->getName());
-    } else {
-        text = plusIndex >= static_cast<int>(occupied.size())
-            ? "Merge to System Output"
-            : "Merge before " + QString::fromStdString(m_canvas->getPluginAt(parentRow, occupied[plusIndex])->getName());
+
+    int firstPluginCol = 999;
+    int lastPluginCol = -1;
+    for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+        if (m_canvas->getPluginAt(m_branchRow, c)) {
+            firstPluginCol = std::min(firstPluginCol, c);
+            lastPluginCol = std::max(lastPluginCol, c);
+        }
     }
-    m_previewText->setText(text);
+
+    bool isValid = true;
+    QString invalidReason;
+    if (m_isSplit) {
+        int candidateSplitCol = plusIndex - 1;
+        if (firstPluginCol < 999 && candidateSplitCol >= firstPluginCol) {
+            isValid = false;
+            invalidReason = "Cannot split after plugins on this path";
+        }
+    } else {
+        int candidateMergeCol = (plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex;
+        if (lastPluginCol >= 0 && candidateMergeCol != -1 && candidateMergeCol <= lastPluginCol) {
+            isValid = false;
+            invalidReason = "Cannot merge before plugins on this path";
+        }
+    }
+
+    if (!isValid) {
+        m_previewLine->setPen(QPen(QColor(255, 60, 60), 2.5, Qt::DashLine, Qt::RoundCap));
+        m_previewText->setBrush(QColor(255, 90, 90));
+        m_previewText->setText("❌ " + invalidReason);
+    } else {
+        m_previewLine->setPen(QPen(QColor(255, 200, 50), 2, Qt::DashLine, Qt::RoundCap));
+        m_previewText->setBrush(QColor(255, 220, 100));
+        QString text;
+        if (m_isSplit) {
+            auto prevPlug = (plusIndex > 0 && plusIndex - 1 < NodeCanvas::NUM_COLS) ? m_canvas->getPluginAt(parentRow, plusIndex - 1) : nullptr;
+            text = prevPlug ? ("Split after " + QString::fromStdString(prevPlug->getName())) : (plusIndex == 0 ? "Split from System Input" : "Split point");
+        } else {
+            auto nextPlug = (plusIndex >= 0 && plusIndex < NodeCanvas::NUM_COLS) ? m_canvas->getPluginAt(parentRow, plusIndex) : nullptr;
+            text = nextPlug ? ("Merge before " + QString::fromStdString(nextPlug->getName())) : (plusIndex >= NodeCanvas::NUM_COLS ? "Merge to System Output" : "Merge point");
+        }
+        m_previewText->setText(text);
+    }
     m_previewText->setPos(10, targetPoint.y() / 2.0 - 10);
     m_previewText->show();
 }
@@ -79,7 +107,7 @@ void RoutingHandleItem::clearPreview() {
 }
 
 QRectF RoutingHandleItem::boundingRect() const {
-    return QRectF(-30, -19, 60, 38);
+    return QRectF(-23, -17, 46, 34);
 }
 
 void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
@@ -89,19 +117,19 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
         : (isSelected() || m_hovered ? QColor(53, 199, 255) : QColor(75, 85, 99));
     painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging ? 2.0 : 1.2));
     painter->setBrush(QColor(29, 31, 37));
-    painter->drawRoundedRect(QRectF(-28, -17, 56, 34), 7, 7);
+    painter->drawRoundedRect(QRectF(-21, -15, 42, 30), 6, 6);
 
     painter->setPen(Qt::NoPen);
     painter->setBrush(m_isSplit ? QColor(37, 99, 235) : QColor(126, 70, 180));
-    painter->drawRoundedRect(QRectF(-28, -17, 56, 14), 7, 7);
-    painter->drawRect(QRectF(-28, -10, 56, 7));
+    painter->drawRoundedRect(QRectF(-21, -15, 42, 13), 6, 6);
+    painter->drawRect(QRectF(-21, -8, 42, 6));
 
     QFont labelFont = painter->font();
-    labelFont.setPixelSize(9);
+    labelFont.setPixelSize(8);
     labelFont.setBold(true);
     painter->setFont(labelFont);
     painter->setPen(QColor(245, 247, 250));
-    painter->drawText(QRectF(-26, -17, 52, 14), Qt::AlignCenter, m_isSplit ? "SPLIT" : "MIX");
+    painter->drawText(QRectF(-21, -15, 42, 13), Qt::AlignCenter, m_isSplit ? "SPLIT" : "MIX");
 
     QFont detailFont = painter->font();
     detailFont.setPixelSize(8);
@@ -154,13 +182,13 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
     }
     const_cast<RoutingHandleItem*>(this)->setToolTip(tooltipText);
 
-    painter->drawText(QRectF(-26, -2, 52, 16), Qt::AlignCenter, detail);
+    painter->drawText(QRectF(-21, -2, 42, 16), Qt::AlignCenter, detail);
 
     painter->setPen(QPen(accent, 1.4));
     painter->setBrush(QColor(14, 16, 20));
-    painter->drawEllipse(QRectF(-32, -4, 8, 8));
-    painter->drawEllipse(QRectF(24, -4, 8, 8));
-    const qreal branchY = m_branchRow == 0 ? -21.0 : 13.0;
+    painter->drawEllipse(QRectF(-25, -4, 8, 8));
+    painter->drawEllipse(QRectF(17, -4, 8, 8));
+    const qreal branchY = m_branchRow == 0 ? -19.0 : 11.0;
     painter->drawEllipse(QRectF(-4, branchY, 8, 8));
 }
 
@@ -175,48 +203,80 @@ void RoutingHandleItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
 void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
     if (m_dragging) {
         qreal currentMouseX = event->scenePos().x();
-        qreal currentMouseY = event->scenePos().y();
+        int parentRow = m_canvas->getSplitParentRow(m_branchRow);
 
-        auto isValidParent = [&](int parentRow) -> bool {
-            return parentRow == m_canvas->getSplitParentRow(m_branchRow);
-        };
-
-        PlusButtonWidget* nearestPlus = nullptr;
-        qreal minDistance = 999999.0;
-        for (auto* item : scene()->items()) {
-            if (auto* plus = dynamic_cast<PlusButtonWidget*>(item)) {
-                if (isValidParent(plus->getRow())) {
-                    QPointF plusPos = plus->scenePos();
-                    qreal dx = plusPos.x() - currentMouseX;
-                    qreal dy = plusPos.y() - currentMouseY;
-                    qreal dist = std::sqrt(dx * dx + dy * dy);
-                    if (dist < minDistance) {
-                        minDistance = dist;
-                        nearestPlus = plus;
-                    }
-                }
+        int plusIndex = 0;
+        qreal minDist = 999999.0;
+        for (int k = 0; k <= NodeCanvas::NUM_COLS; ++k) {
+            qreal dist = std::abs(currentMouseX - m_canvas->getGapX(k));
+            if (dist < minDist) {
+                minDist = dist;
+                plusIndex = k;
             }
         }
 
-        if (nearestPlus) {
-            qreal branchY = pos().y();
-            for (auto* item : scene()->items()) {
-                if (auto* plus = dynamic_cast<PlusButtonWidget*>(item)) {
-                    if (plus->getRow() == m_branchRow) {
-                        branchY = plus->scenePos().y();
-                        break;
-                    }
-                }
-            }
-            qreal parentY = nearestPlus->scenePos().y();
-            qreal snapY = (parentY + branchY) / 2.0;
+        qreal snapX = m_canvas->getGapX(plusIndex);
 
-            setPos(nearestPlus->scenePos().x(), snapY);
-            updatePreview(nearestPlus);
+        // Keep handle on its own Y coordinate during drag
+        setPos(snapX, pos().y());
+
+        // Find parent Y for dashed connection preview
+        qreal parentY = m_canvas->getRowCenterY(parentRow);
+
+        // Draw vertical connection preview line from handle to parent row
+        QPointF targetPoint = mapFromScene(QPointF(snapX, parentY));
+        QPainterPath previewPath;
+        previewPath.moveTo(0, 0);
+        previewPath.lineTo(targetPoint);
+        m_previewLine->setPath(previewPath);
+        m_previewLine->show();
+
+        int firstPluginCol = 999;
+        int lastPluginCol = -1;
+        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+            if (m_canvas->getPluginAt(m_branchRow, c)) {
+                firstPluginCol = std::min(firstPluginCol, c);
+                lastPluginCol = std::max(lastPluginCol, c);
+            }
+        }
+
+        int candidateSplitCol = plusIndex - 1;
+        int candidateMergeCol = (plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex;
+
+        bool isValid = true;
+        QString invalidReason;
+        if (m_isSplit) {
+            if (firstPluginCol < 999 && candidateSplitCol >= firstPluginCol) {
+                isValid = false;
+                invalidReason = "Cannot split after plugins on this path";
+            }
         } else {
-            setPos(currentMouseX, pos().y());
-            updatePreview(nullptr);
+            if (lastPluginCol >= 0 && candidateMergeCol != -1 && candidateMergeCol <= lastPluginCol) {
+                isValid = false;
+                invalidReason = "Cannot merge before plugins on this path";
+            }
         }
+
+        if (!isValid) {
+            m_previewLine->setPen(QPen(QColor(255, 60, 60), 2.5, Qt::DashLine, Qt::RoundCap));
+            m_previewText->setBrush(QColor(255, 90, 90));
+            m_previewText->setText("❌ " + invalidReason);
+        } else {
+            m_previewLine->setPen(QPen(QColor(255, 200, 50), 2, Qt::DashLine, Qt::RoundCap));
+            m_previewText->setBrush(QColor(255, 220, 100));
+            QString text;
+            if (m_isSplit) {
+                auto prevPlug = (plusIndex > 0 && plusIndex - 1 < NodeCanvas::NUM_COLS) ? m_canvas->getPluginAt(parentRow, plusIndex - 1) : nullptr;
+                text = prevPlug ? ("Split after " + QString::fromStdString(prevPlug->getName())) : (plusIndex == 0 ? "Split from System Input" : "Split point");
+            } else {
+                auto nextPlug = (plusIndex >= 0 && plusIndex < NodeCanvas::NUM_COLS) ? m_canvas->getPluginAt(parentRow, plusIndex) : nullptr;
+                text = nextPlug ? ("Merge before " + QString::fromStdString(nextPlug->getName())) : (plusIndex >= NodeCanvas::NUM_COLS ? "Merge to System Output" : "Merge point");
+            }
+            m_previewText->setText(text);
+        }
+        qreal textW = m_previewText->boundingRect().width();
+        m_previewText->setPos(-textW / 2.0, targetPoint.y() / 2.0 - 10);
+        m_previewText->show();
     }
     event->accept();
 }
@@ -229,56 +289,44 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
 
         const bool wasClick = QLineF(m_dragStartPos, event->scenePos()).length() < 4.0;
         qreal currentMouseX = event->scenePos().x();
-        qreal currentMouseY = event->scenePos().y();
+        int targetParentRow = m_canvas->getSplitParentRow(m_branchRow);
 
-        auto isValidParent = [&](int parentRow) -> bool {
-            return parentRow == m_canvas->getSplitParentRow(m_branchRow);
-        };
-
-        PlusButtonWidget* nearestPlus = nullptr;
-        qreal minDistance = 999999.0;
-        for (auto* item : scene()->items()) {
-            if (auto* plus = dynamic_cast<PlusButtonWidget*>(item)) {
-                if (isValidParent(plus->getRow())) {
-                    QPointF plusPos = plus->scenePos();
-                    qreal dx = plusPos.x() - currentMouseX;
-                    qreal dy = plusPos.y() - currentMouseY;
-                    qreal dist = std::sqrt(dx * dx + dy * dy);
-                    if (dist < minDistance) {
-                        minDistance = dist;
-                        nearestPlus = plus;
-                    }
-                }
+        int plusIndex = 0;
+        qreal minDist = 999999.0;
+        for (int k = 0; k <= NodeCanvas::NUM_COLS; ++k) {
+            qreal dist = std::abs(currentMouseX - m_canvas->getGapX(k));
+            if (dist < minDist) {
+                minDist = dist;
+                plusIndex = k;
             }
         }
 
-        int targetColumn = -2;
-        int targetParentRow = -1;
-        if (nearestPlus) {
-            targetParentRow = nearestPlus->getRow();
-            int plusIndex = nearestPlus->getCol();
+        int targetColumn = m_isSplit ? (plusIndex - 1) : ((plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex);
 
-            std::vector<int> occupied;
-            for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
-                if (m_canvas->getPluginAt(targetParentRow, c)) occupied.push_back(c);
+        // Find first and last plugin on m_branchRow
+        int firstPluginCol = 999;
+        int lastPluginCol = -1;
+        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+            if (m_canvas->getPluginAt(m_branchRow, c)) {
+                firstPluginCol = std::min(firstPluginCol, c);
+                lastPluginCol = std::max(lastPluginCol, c);
             }
+        }
 
-            if (m_isSplit) {
-                targetColumn = -1;
-                if (plusIndex > 0 && plusIndex - 1 < (int)occupied.size()) {
-                    targetColumn = occupied[plusIndex - 1];
-                }
-            } else {
-                targetColumn = -1;
-                if (plusIndex < (int)occupied.size()) {
-                    targetColumn = occupied[plusIndex];
-                }
+        bool isValid = true;
+        if (m_isSplit) {
+            if (firstPluginCol < 999 && targetColumn >= firstPluginCol) {
+                isValid = false;
+            }
+        } else {
+            if (lastPluginCol >= 0 && targetColumn != -1 && targetColumn <= lastPluginCol) {
+                isValid = false;
             }
         }
 
         clearPreview();
         if (wasClick) m_canvas->selectRoutingNode(m_branchRow, m_isSplit);
-        if (targetColumn != -2 && !wasClick && targetParentRow >= 0) {
+        if (isValid && targetColumn != -2 && !wasClick && targetParentRow >= 0) {
             NodeCanvas* canvas = m_canvas;
             const int row = m_branchRow;
             const bool split = m_isSplit;

@@ -2017,6 +2017,8 @@ void MainWindow::savePresetToFile(const QString& path) {
         branch["name"] = m_canvas->getBranchName(row);
         branch["splitAfterNodeId"] = QString::fromStdString(m_canvas->getSplitAnchor(row));
         branch["mergeBeforeNodeId"] = QString::fromStdString(m_canvas->getMergeAnchor(row));
+        branch["splitCol"] = m_canvas->getSplitCol(row);
+        branch["mergeCol"] = m_canvas->getMergeCol(row);
         branch["mix"] = static_cast<double>(m_canvas->getMix(row));
         branch["pan"] = static_cast<double>(m_canvas->getPan(row));
         branch["enabled"] = m_canvas->isBranchEnabled(row);
@@ -2177,6 +2179,12 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         m_canvas->setBranchName(row, branch["name"].toString());
         m_canvas->setSplitAnchor(row, branch["splitAfterNodeId"].toString().toStdString());
         m_canvas->setMergeAnchor(row, branch["mergeBeforeNodeId"].toString().toStdString());
+        if (branch.contains("splitCol")) {
+            m_canvas->setSplitCol(row, branch["splitCol"].toInt(-1));
+        }
+        if (branch.contains("mergeCol")) {
+            m_canvas->setMergeCol(row, branch["mergeCol"].toInt(-1));
+        }
         m_canvas->setMix(row, static_cast<float>(branch["mix"].toDouble(1.0)));
         m_canvas->setPan(row, static_cast<float>(branch["pan"].toDouble(0.0)));
         m_canvas->setPolarityInverted(row, branch["polarityInverted"].toBool(false));

@@ -64,6 +64,8 @@ public:
     void applyRoutingChange(bool rebuildAudio = true);
     bool hasSplitSection(int row) const;
     void setSplitSectionPresent(int row, bool present);
+    qreal getRowCenterY(int row) const;
+    qreal getGapX(int gapIdx) const;
     int getSplitParentRow(int row) const;
     void setSplitParentRow(int row, int parentRow);
     GridRow::SplitMode getSplitMode(int row) const;

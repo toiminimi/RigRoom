@@ -14,6 +14,8 @@ struct GridRow {
     // stable IDs for display and legacy-preset compatibility only.
     std::string splitAfterNodeId;
     std::string mergeBeforeNodeId;
+    int splitCol = -1;
+    int mergeCol = -1;
     int parentRow = 1;
     bool hasSplitSection = false;
     SplitMode splitMode = SplitMode::Copy;
