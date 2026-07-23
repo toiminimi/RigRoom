@@ -1,4 +1,10 @@
 build/
 crash_debug.txt
 *.AppImage
+*.user
+.idea/
+.vscode/
+.DS_Store
+*.log
+
 
