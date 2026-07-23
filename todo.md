@@ -23,8 +23,9 @@
 
 ## 🟢 Priority 4: Release, Branding & Documentation
 - [x] **About Dialog & OSS Licenses**: Add About dialog disclosing open-source components (Qt 6, JACK, Lilv, CLAP, VST3 SDK) and GPLv3 license.
-- [ ] **GitHub README.md**: Create comprehensive README with feature highlights, build instructions, and screenshots.
+- [x] **GitHub README.md**: Create comprehensive README with feature highlights, build instructions, keyboard shortcuts, and screenshots.
 - [ ] **Update Repository URL & Official App Name**: Update exact GitHub repository URL (`https://github.com/...`) and official application name in `AboutDialog.cpp` & documentation when published.
+- [ ] **Sponsor & Donation Links**: Add optional Buy Me a Coffee / GitHub Sponsors link in README & About tab when created.
 - [ ] **Packaging & Code Cleanup**: Prepare Flatpak / AppImage packaging scripts and clean up code for initial GitHub public release.
 
 
