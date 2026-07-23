@@ -9,6 +9,7 @@
 #include "NodeWidget.h"
 #include "Tone3000Dialog.h"
 #include "ModelDetailsDialog.h"
+#include "AboutDialog.h"
 #include <filesystem>
 #include <iostream>
 #include "PortWidget.h"
@@ -1180,8 +1181,8 @@ void MainWindow::setupUI() {
     // Setup Settings Dialog
     m_settingsDialog = new QDialog(this);
     m_settingsDialog->setWindowTitle("Application Settings");
-    m_settingsDialog->setMinimumWidth(550);
-    m_settingsDialog->setMinimumHeight(450);
+    m_settingsDialog->setMinimumWidth(620);
+    m_settingsDialog->setMinimumHeight(520);
     m_settingsDialog->setStyleSheet(styleSheet());
     
     QVBoxLayout* dialogLayout = new QVBoxLayout(m_settingsDialog);
@@ -1478,6 +1479,9 @@ void MainWindow::setupUI() {
     toneTabLayout->addWidget(toneBox);
     toneTabLayout->addStretch();
     mainSettingsTab->addTab(toneTab, "☁️ TONE3000");
+
+    AboutWidget* aboutWidget = new AboutWidget(m_settingsDialog);
+    mainSettingsTab->addTab(aboutWidget, "ℹ️ About");
 
     dialogLayout->addWidget(mainSettingsTab);
     

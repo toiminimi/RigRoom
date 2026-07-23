@@ -50,6 +50,8 @@ add_executable(PedalBoard
     src/ui/GtkUIHelper.h
     src/ui/RoutingHandleItem.cpp
     src/ui/RoutingHandleItem.h
+    src/ui/AboutDialog.cpp
+    src/ui/AboutDialog.h
 )
 
 target_include_directories(PedalBoard PRIVATE src src/audio)

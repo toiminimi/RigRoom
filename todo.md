@@ -22,9 +22,9 @@
 - [x] **Custom Plugin Paths & Type Toggles**: Allow users to specify custom VST3/CLAP/LV2 search directories and toggle specific plugin formats on/off.
 
 ## 🟢 Priority 4: Release, Branding & Documentation
-- [ ] **App Naming**: Decide on official application name.
+- [x] **About Dialog & OSS Licenses**: Add About dialog disclosing open-source components (Qt 6, JACK, Lilv, CLAP, VST3 SDK) and GPLv3 license.
 - [ ] **GitHub README.md**: Create comprehensive README with feature highlights, build instructions, and screenshots.
-- [ ] **About Dialog & OSS Licenses**: Add About dialog disclosing open-source components and licenses used (JUCE, Qt, etc.).
+- [ ] **Update Repository URL & Official App Name**: Update exact GitHub repository URL (`https://github.com/...`) and official application name in `AboutDialog.cpp` & documentation when published.
 - [ ] **Packaging & Code Cleanup**: Prepare Flatpak / AppImage packaging scripts and clean up code for initial GitHub public release.
 
 
