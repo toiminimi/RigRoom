@@ -26,6 +26,6 @@
 - [x] **GitHub README.md**: Create comprehensive README with feature highlights, build instructions, keyboard shortcuts, and screenshots.
 - [ ] **Update Repository URL & Official App Name**: Update exact GitHub repository URL (`https://github.com/...`) and official application name in `AboutDialog.cpp` & documentation when published.
 - [ ] **Sponsor & Donation Links**: Add optional Buy Me a Coffee / GitHub Sponsors link in README & About tab when created.
-- [ ] **Packaging & Code Cleanup**: Prepare Flatpak / AppImage packaging scripts and clean up code for initial GitHub public release.
+- [x] **Packaging & Code Cleanup**: AppImage packaging scripts (`packaging/build-appimage.sh`, `AppRun`, `.desktop`) created for release binaries.
 
 
