@@ -1,6 +1,7 @@
 # PedalBoard TODO & Roadmap
 
 ## 🔴 Priority 0: Critical Bugs
+- [ ] **If plugin is missing app crashes**: If plugin which was earlier available is missing, make it recover and load the pedalboards but highlight that plugin block so that user know it's missing. make sure that info about plugin is saved so that once plugin comes back available is possible to load again
 - [x] **Plugin GUI Preset Switch Crash**: App crashes when switching pedalboard presets while external plugin GUIs are open.
 
 ## 🟠 Priority 1: Core Audio & DSP Engine
@@ -17,8 +18,8 @@
 
 ## 🔵 Priority 3: Settings & TONE3000 Integration
 - [x] **Settings API Key Management**: Add "Clear API Key" button, confirmation indication on save, and helpful guide/links on acquiring a TONE3000 API key.
-- [ ] **TONE3000 Prompt Dismissal & Feature Gating**: Allow dismissing API key suggestions and hide API-dependent features when no key is set.
-- [ ] **Custom Plugin Paths & Type Toggles**: Allow users to specify custom VST3/CLAP/LV2 search directories and toggle specific plugin formats on/off.
+- [x] **TONE3000 Prompt Dismissal & Feature Gating**: Allow dismissing API key suggestions and hide API-dependent features when no key is set.
+- [x] **Custom Plugin Paths & Type Toggles**: Allow users to specify custom VST3/CLAP/LV2 search directories and toggle specific plugin formats on/off.
 
 ## 🟢 Priority 4: Release, Branding & Documentation
 - [ ] **App Naming**: Decide on official application name.

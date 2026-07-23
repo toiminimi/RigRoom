@@ -58,6 +58,7 @@
 #include <QResizeEvent>
 #include <QLibrary>
 #include <QLocalServer>
+#include <QTabWidget>
 #include <QLocalSocket>
 #include <QProcess>
 #include <QDataStream>
@@ -840,6 +841,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             if (obj.contains("outputGain")) {
                 savedOutputGain = obj["outputGain"].toDouble();
             }
+
+            if (obj.contains("customLV2Paths")) {
+                m_customLV2Paths.clear();
+                for (const auto& val : obj["customLV2Paths"].toArray()) m_customLV2Paths.append(val.toString());
+            }
+            if (obj.contains("customVST3Paths")) {
+                m_customVST3Paths.clear();
+                for (const auto& val : obj["customVST3Paths"].toArray()) m_customVST3Paths.append(val.toString());
+            }
+            if (obj.contains("customCLAPPaths")) {
+                m_customCLAPPaths.clear();
+                for (const auto& val : obj["customCLAPPaths"].toArray()) m_customCLAPPaths.append(val.toString());
+            }
         }
         configFile.close();
     }
@@ -1164,17 +1178,30 @@ void MainWindow::setupUI() {
     
     // Setup Settings Dialog
     m_settingsDialog = new QDialog(this);
-    m_settingsDialog->setWindowTitle("Audio Settings");
-    m_settingsDialog->setMinimumWidth(400);
+    m_settingsDialog->setWindowTitle("Application Settings");
+    m_settingsDialog->setMinimumWidth(550);
+    m_settingsDialog->setMinimumHeight(450);
     m_settingsDialog->setStyleSheet(styleSheet());
     
     QVBoxLayout* dialogLayout = new QVBoxLayout(m_settingsDialog);
     dialogLayout->setContentsMargins(15, 15, 15, 15);
     dialogLayout->setSpacing(12);
+
+    QTabWidget* mainSettingsTab = new QTabWidget(m_settingsDialog);
+    mainSettingsTab->setStyleSheet(
+        "QTabWidget::pane { border: 1px solid #282832; background: #121216; border-radius: 6px; padding: 6px; }"
+        "QTabBar::tab { background: #1a1a20; color: #A0A0B0; padding: 8px 16px; margin-right: 4px; border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: bold; font-size: 12px; }"
+        "QTabBar::tab:selected { background: #00B0FF; color: white; }"
+    );
+
+    // TAB 1: Audio Configuration
+    QWidget* audioTab = new QWidget();
+    QVBoxLayout* audioTabLayout = new QVBoxLayout(audioTab);
+    audioTabLayout->setContentsMargins(10, 10, 10, 10);
     
-    QGroupBox* ioBox = new QGroupBox("Audio Configuration", m_settingsDialog);
+    QGroupBox* ioBox = new QGroupBox("Audio & Hardware Configuration", audioTab);
     ioBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333333; border-radius: 6px; margin-top: 10px; padding: 15px; }"
+        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 15px; background: #1a1a1f; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
     );
     QFormLayout* formLayout = new QFormLayout(ioBox);
@@ -1227,10 +1254,124 @@ void MainWindow::setupUI() {
     formLayout->addRow("Buffer Size:", m_bufferSizeCombo);
     formLayout->addRow("Default Track Slots:", defaultTrackSlotsCombo);
     
-    dialogLayout->addWidget(ioBox);
+    audioTabLayout->addWidget(ioBox);
+    audioTabLayout->addStretch();
+    mainSettingsTab->addTab(audioTab, "🎛️ Audio");
+
+    // TAB 2: Plugins & Formats
+    QWidget* pluginsTab = new QWidget();
+    QVBoxLayout* pluginsLayout = new QVBoxLayout(pluginsTab);
+    pluginsLayout->setContentsMargins(10, 10, 10, 10);
+    pluginsLayout->setSpacing(12);
+
+    QGroupBox* pathsBox = new QGroupBox("Custom Plugin Search Directories", pluginsTab);
+    pathsBox->setStyleSheet(
+        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 12px; background: #1a1a1f; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+    );
+    QVBoxLayout* pathsLayout = new QVBoxLayout(pathsBox);
+    pathsLayout->setSpacing(8);
+
+    QTabWidget* formatPathsTab = new QTabWidget(pathsBox);
+    formatPathsTab->setStyleSheet(
+        "QTabWidget::pane { border: 1px solid #282832; background: #141418; border-radius: 4px; }"
+        "QTabBar::tab { background: #222228; color: #A0A0B0; padding: 6px 14px; margin-right: 2px; border-top-left-radius: 4px; border-top-right-radius: 4px; font-weight: bold; font-size: 11px; }"
+        "QTabBar::tab:selected { background: #00B0FF; color: white; }"
+    );
+
+    auto createPathPage = [this](QStringList& pathList) -> QWidget* {
+        QWidget* page = new QWidget();
+        QHBoxLayout* pageLayout = new QHBoxLayout(page);
+        pageLayout->setContentsMargins(8, 8, 8, 8);
+        
+        QListWidget* listWidget = new QListWidget(page);
+        listWidget->setStyleSheet("QListWidget { background: #1c1c22; border: 1px solid #2d2d38; border-radius: 4px; color: #ECECF0; font-size: 11px; }");
+        for (const auto& path : pathList) {
+            listWidget->addItem(path);
+        }
+
+        QVBoxLayout* btnCol = new QVBoxLayout();
+        btnCol->setSpacing(6);
+
+        QPushButton* addBtn = new QPushButton("➕ Add Folder", page);
+        addBtn->setStyleSheet("QPushButton { background: #282834; color: #00B0FF; font-weight: bold; border: 1px solid #00B0FF; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #00B0FF; color: white; }");
+        
+        QPushButton* removeBtn = new QPushButton("🗑️ Remove", page);
+        removeBtn->setStyleSheet("QPushButton { background: #352528; color: #FF6B6B; font-weight: bold; border: 1px solid #4a3034; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #4a2d32; color: #FF8787; border-color: #FF5252; }");
+
+        btnCol->addWidget(addBtn);
+        btnCol->addWidget(removeBtn);
+        btnCol->addStretch();
+
+        pageLayout->addWidget(listWidget, 1);
+        pageLayout->addLayout(btnCol);
+
+        connect(addBtn, &QPushButton::clicked, this, [this, page, listWidget, &pathList]() {
+            QString dir = QFileDialog::getExistingDirectory(page, "Select Plugin Directory", QDir::homePath());
+            if (!dir.isEmpty() && !pathList.contains(dir)) {
+                pathList.append(dir);
+                listWidget->addItem(dir);
+                saveConfigSettings();
+            }
+        });
+
+        connect(removeBtn, &QPushButton::clicked, this, [this, listWidget, &pathList]() {
+            int row = listWidget->currentRow();
+            if (row >= 0) {
+                QString path = listWidget->item(row)->text();
+                pathList.removeAll(path);
+                delete listWidget->takeItem(row);
+                saveConfigSettings();
+            }
+        });
+
+        return page;
+    };
+
+    formatPathsTab->addTab(createPathPage(m_customLV2Paths), "LV2 Search Paths");
+    formatPathsTab->addTab(createPathPage(m_customVST3Paths), "VST3 Search Paths");
+    formatPathsTab->addTab(createPathPage(m_customCLAPPaths), "CLAP Search Paths");
+
+    pathsLayout->addWidget(formatPathsTab);
+    pluginsLayout->addWidget(pathsBox);
+
+    QHBoxLayout* rescanLayout = new QHBoxLayout();
+    QPushButton* rescanBtn = new QPushButton("🔄 Rescan Plugins Now", pluginsTab);
+    rescanBtn->setCursor(Qt::PointingHandCursor);
+    rescanBtn->setStyleSheet(
+        "QPushButton { background: #00B0FF; color: white; font-weight: bold; border-radius: 4px; padding: 8px 16px; font-size: 12px; }"
+        "QPushButton:hover { background: #0091EA; }"
+    );
+    QLabel* rescanNote = new QLabel("Applies custom search directories immediately.", pluginsTab);
+    rescanNote->setStyleSheet("color: #888898; font-size: 11px;");
+
+    rescanLayout->addWidget(rescanBtn);
+    rescanLayout->addWidget(rescanNote);
+    rescanLayout->addStretch();
+    pluginsLayout->addLayout(rescanLayout);
+
+    connect(rescanBtn, &QPushButton::clicked, this, [this, rescanBtn]() {
+        rescanBtn->setText("⏳ Scanning...");
+        rescanBtn->setEnabled(false);
+        qApp->processEvents();
+        
+        scanPlugins();
+        
+        rescanBtn->setText("✓ Plugins Rescanned!");
+        QTimer::singleShot(1500, this, [rescanBtn]() {
+            rescanBtn->setText("🔄 Rescan Plugins Now");
+            rescanBtn->setEnabled(true);
+        });
+    });
+
+    mainSettingsTab->addTab(pluginsTab, "🔌 Plugins & Formats");
+
+    // TAB 3: TONE3000 Integration
+    QWidget* toneTab = new QWidget();
+    QVBoxLayout* toneTabLayout = new QVBoxLayout(toneTab);
+    toneTabLayout->setContentsMargins(10, 10, 10, 10);
     
-    // TONE3000 Integration & API Key Management
-    QGroupBox* toneBox = new QGroupBox("TONE3000 Integration", m_settingsDialog);
+    QGroupBox* toneBox = new QGroupBox("TONE3000 Integration", toneTab);
     toneBox->setStyleSheet(
         "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 15px; background: #1a1a1f; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
@@ -1333,7 +1474,11 @@ void MainWindow::setupUI() {
     toneLayout->addWidget(toneStatusLabel);
     toneLayout->addLayout(keyInputLayout);
     toneLayout->addWidget(helpLabel);
-    dialogLayout->addWidget(toneBox);
+    toneTabLayout->addWidget(toneBox);
+    toneTabLayout->addStretch();
+    mainSettingsTab->addTab(toneTab, "☁️ TONE3000");
+
+    dialogLayout->addWidget(mainSettingsTab);
     
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->addStretch();
@@ -1521,6 +1666,26 @@ void MainWindow::setupUI() {
 }
 
 void MainWindow::scanPlugins() {
+    m_availablePlugins.clear();
+
+    if (m_lilvWorld) {
+        lilv_world_free(m_lilvWorld);
+        m_lilvWorld = nullptr;
+    }
+
+    // Scan LV2 plugins
+    QStringList defaultLv2Paths = {
+        "/usr/lib/lv2",
+        "/usr/lib64/lv2",
+        "/usr/local/lib/lv2",
+        "/app/extensions/Plugins/lv2",
+        QDir::homePath() + "/.lv2"
+    };
+    QStringList allLv2Paths = defaultLv2Paths + m_customLV2Paths;
+    allLv2Paths.removeDuplicates();
+    QString lv2PathEnv = allLv2Paths.join(":");
+    qputenv("LV2_PATH", lv2PathEnv.toUtf8());
+
     m_lilvWorld = lilv_world_new();
     lilv_world_load_all(m_lilvWorld);
     
@@ -1629,13 +1794,17 @@ void MainWindow::scanPlugins() {
     lilv_node_free(brandProperty);
     lilv_node_free(thumbnailProperty);
     
-    // Scan standard VST3 paths dynamically
+    // Scan VST3 plugins
     std::vector<std::string> vst3Dirs = {
         "/usr/lib/vst3",
         "/usr/lib64/vst3",
         "/usr/local/lib/vst3",
+        "/app/extensions/Plugins/vst3",
         (QDir::homePath() + "/.vst3").toStdString()
     };
+    for (const auto& p : m_customVST3Paths) {
+        if (!p.isEmpty()) vst3Dirs.push_back(p.toStdString());
+    }
     
     QSet<QString> scannedPaths;
     for (const auto& dirPath : vst3Dirs) {
@@ -1675,33 +1844,37 @@ void MainWindow::scanPlugins() {
     }
     
     // Scan CLAP plugins
-    auto clapPlugins = CLAPPluginNode::scanStandardPaths();
-    for (const auto& clapDesc : clapPlugins) {
-        std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
-        std::string category = "Utilities";
-        if (!clapDesc.features.empty()) {
-            std::string feat = clapDesc.features[0];
-            if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
-            else if (feat.find("delay") != std::string::npos || feat.find("reverb") != std::string::npos) category = "Delays & Reverbs";
-            else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
-            else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
-        }
-        PluginInfo clapInfo = {
-            clapDesc.name,
-            uri,
-            category,
-            clapDesc.vendor,
-            "",
-            false,
-            2, 2, 0,
-            clapDesc.version,
-            clapDesc.description,
-            clapDesc.features,
-            clapDesc.pluginPath,
-            true
-        };
-        m_availablePlugins.push_back(clapInfo);
+    std::vector<std::string> customClapDirs;
+    for (const auto& p : m_customCLAPPaths) {
+        if (!p.isEmpty()) customClapDirs.push_back(p.toStdString());
     }
+        auto clapPlugins = CLAPPluginNode::scanStandardPaths(customClapDirs);
+        for (const auto& clapDesc : clapPlugins) {
+            std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
+            std::string category = "Utilities";
+            if (!clapDesc.features.empty()) {
+                std::string feat = clapDesc.features[0];
+                if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
+                else if (feat.find("delay") != std::string::npos || feat.find("reverb") != std::string::npos) category = "Delays & Reverbs";
+                else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
+                else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
+            }
+            PluginInfo clapInfo = {
+                clapDesc.name,
+                uri,
+                category,
+                clapDesc.vendor,
+                "",
+                false,
+                2, 2, 0,
+                clapDesc.version,
+                clapDesc.description,
+                clapDesc.features,
+                clapDesc.pluginPath,
+                true
+            };
+            m_availablePlugins.push_back(clapInfo);
+        }
 
     PluginInfo bypassInfo = { "Bypass / Pass-through", "builtin:bypass", "Utilities", "", "", false };
     m_availablePlugins.push_back(bypassInfo);
@@ -2560,6 +2733,15 @@ void MainWindow::saveConfigSettings() {
     configObj["hwOutputStereo"] = m_hwOutputModeCombo->currentIndex() == 1;
     configObj["inputGain"] = m_engine.getInputGainDB();
     configObj["defaultTrackSlots"] = m_globalDefaultSlots;
+
+    QJsonArray lv2Arr, vst3Arr, clapArr;
+    for (const auto& p : m_customLV2Paths) lv2Arr.append(p);
+    for (const auto& p : m_customVST3Paths) vst3Arr.append(p);
+    for (const auto& p : m_customCLAPPaths) clapArr.append(p);
+    configObj["customLV2Paths"] = lv2Arr;
+    configObj["customVST3Paths"] = vst3Arr;
+    configObj["customCLAPPaths"] = clapArr;
+
     if (m_currentPresetIndex >= 0 && m_presetCombo && m_presetCombo->currentIndex() >= 0) {
         configObj["lastPreset"] = m_presetCombo->currentText();
     } else {

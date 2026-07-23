@@ -682,10 +682,21 @@ void NodeCanvas::updateLayout() {
     qreal inputW = m_sysInputWidget ? m_sysInputWidget->width() : SYS_NODE_W;
     qreal outputW = m_sysOutputWidget ? m_sysOutputWidget->width() : SYS_NODE_W;
     
-    // Ensure full track width for active grid slots plus system input & output nodes
+    // Calculate required width and visible viewport width in scene coordinates
+    qreal viewW = viewport()->width() > 0 ? (qreal)viewport()->width() : 1000.0;
+    qreal visibleSceneW = (m_zoomLevel > 0.0) ? (viewW / m_zoomLevel) : viewW;
+
     qreal minTrackSpan = m_numCols * 168.0 + 40.0;
     qreal requiredCanvasW = MARGIN_X + inputW + 24.0 + minTrackSpan + 24.0 + outputW + MARGIN_X;
-    qreal W = std::max((qreal)viewport()->width(), requiredCanvasW);
+    
+    bool fitsInViewport = (requiredCanvasW <= visibleSceneW);
+    qreal W = fitsInViewport ? visibleSceneW : requiredCanvasW;
+
+    if (fitsInViewport) {
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    } else {
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    }
     
     qreal H = std::max(200.0, (qreal)viewport()->height());
     constexpr qreal LANE_HEIGHT = 140.0;
@@ -783,7 +794,11 @@ void NodeCanvas::updateLayout() {
         makeDot(sysLeftX, sysMidY, QColor(0, 200, 120));
     }
 
-    m_scene->setSceneRect(QRectF(0, 0, W, H).united(m_scene->itemsBoundingRect()));
+    if (fitsInViewport) {
+        m_scene->setSceneRect(0, 0, W, H);
+    } else {
+        m_scene->setSceneRect(QRectF(0, 0, W, H).united(m_scene->itemsBoundingRect()));
+    }
 }
 
 qreal NodeCanvas::getGapX(int gapIdx) const {

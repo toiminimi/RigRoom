@@ -41,7 +41,7 @@ public:
     void requestResize(uint32_t width, uint32_t height) { if (m_resizeCallback) m_resizeCallback(width, height); }
 
     static std::vector<CLAPPluginDescriptor> scanLibrary(const std::string& path);
-    static std::vector<CLAPPluginDescriptor> scanStandardPaths();
+    static std::vector<CLAPPluginDescriptor> scanStandardPaths(const std::vector<std::string>& customPaths = {});
 
 private:
     void initHostCallbacks();

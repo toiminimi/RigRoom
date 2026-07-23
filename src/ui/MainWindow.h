@@ -118,6 +118,12 @@ private:
     QDialog* m_settingsDialog = nullptr;
     QLineEdit* m_apiKeyEdit = nullptr;
     std::function<void()> m_updateKeyStatusFunc;
+
+    // Custom plugin search paths
+    QStringList m_customLV2Paths;
+    QStringList m_customVST3Paths;
+    QStringList m_customCLAPPaths;
+
     float m_inputLevelDecay = 0.0f;
     float m_outputLevelDecay = 0.0f;
     int m_inputClipHoldTicks = 0;

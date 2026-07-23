@@ -617,14 +617,20 @@ std::vector<CLAPPluginDescriptor> CLAPPluginNode::scanLibrary(const std::string&
     return result;
 }
 
-std::vector<CLAPPluginDescriptor> CLAPPluginNode::scanStandardPaths() {
+std::vector<CLAPPluginDescriptor> CLAPPluginNode::scanStandardPaths(const std::vector<std::string>& customPaths) {
     std::vector<CLAPPluginDescriptor> allPlugins;
     std::vector<std::string> dirs = {
         "/usr/lib/clap",
         "/usr/lib64/clap",
         "/usr/local/lib/clap",
+        "/app/extensions/Plugins/clap",
         (QDir::homePath() + "/.clap").toStdString()
     };
+    for (const auto& cPath : customPaths) {
+        if (!cPath.empty()) {
+            dirs.push_back(cPath);
+        }
+    }
 
     QSet<QString> scannedFiles;
     for (const auto& dirPath : dirs) {
