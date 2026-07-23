@@ -41,6 +41,8 @@ private slots:
     void onLoadPreset();
     void onPrevPreset();
     void onNextPreset();
+    void onSlotMinusClicked();
+    void onSlotPlusClicked();
     void onBufferSizeChanged(int index);
     void onNodeSelected(std::shared_ptr<AudioNode> node);
     void updateCPUStatus();
@@ -90,9 +92,14 @@ private:
     QPushButton* m_savePresetButton = nullptr;
     QToolButton* m_prevPresetBtn = nullptr;
     QToolButton* m_nextPresetBtn = nullptr;
+    QToolButton* m_slotMinusBtn = nullptr;
+    QToolButton* m_slotPlusBtn = nullptr;
+    QLabel* m_slotCountLabel = nullptr;
     QTimer* m_saveFeedbackTimer = nullptr;
     void updatePresetNavigationButtons();
+    void updateSlotControls();
     void triggerSaveFeedback();
+    int m_globalDefaultSlots = 6;
     QComboBox* m_bufferSizeCombo = nullptr;
     QComboBox* m_hwInputModeCombo = nullptr;
     QComboBox* m_hwInputCombo = nullptr;

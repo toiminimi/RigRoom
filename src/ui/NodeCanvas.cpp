@@ -376,6 +376,7 @@ void NodeCanvas::movePlugin(int fromRow, int fromCol, int toRow, int toCol) {
 
 void NodeCanvas::clearCanvas() {
     emit canvasAboutToBeCleared();
+    m_numCols = MIN_COLS;
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c)
             m_rows[r].plugins[c] = nullptr;
@@ -666,11 +667,16 @@ qreal NodeCanvas::getRowCenterY(int row) const {
 void NodeCanvas::updateLayout() {
     clearSceneItems();
 
-    qreal W = std::max(400.0, (qreal)viewport()->width());
-    int longestChain = 0;
-    for (const auto& row : m_rows) longestChain = std::max(longestChain, row.count());
-    qreal minimumChainW = longestChain * PLUG_NODE_W + (longestChain + 1) * (INSERT_BTN_W + 2 * MIN_SPACING);
-    W = std::max(W, 2 * MARGIN_X + 2 * SYS_NODE_W + 32.0 + minimumChainW);
+    int highestUsedCol = getHighestOccupiedCol();
+    m_numCols = std::clamp(m_numCols, std::max(4, highestUsedCol + 1), MAX_COLS);
+
+    qreal inputW = m_sysInputWidget ? m_sysInputWidget->width() : SYS_NODE_W;
+    qreal outputW = m_sysOutputWidget ? m_sysOutputWidget->width() : SYS_NODE_W;
+    
+    // Ensure full track width for active grid slots plus system input & output nodes
+    qreal minTrackSpan = m_numCols * 168.0 + 40.0;
+    qreal requiredCanvasW = MARGIN_X + inputW + 24.0 + minTrackSpan + 24.0 + outputW + MARGIN_X;
+    qreal W = std::max((qreal)viewport()->width(), requiredCanvasW);
     
     qreal H = std::max(200.0, (qreal)viewport()->height());
     constexpr qreal LANE_HEIGHT = 140.0;
@@ -701,11 +707,8 @@ void NodeCanvas::updateLayout() {
 
     qreal sysCY = rowCenters[MAIN_ROW];
 
-    // Place system nodes using actual dimensions
-    qreal inputW = m_sysInputWidget ? m_sysInputWidget->width() : 160.0;
-    qreal inputH = m_sysInputWidget ? m_sysInputWidget->height() : 70.0;
-    qreal outputW = m_sysOutputWidget ? m_sysOutputWidget->width() : 160.0;
-    qreal outputH = m_sysOutputWidget ? m_sysOutputWidget->height() : 70.0;
+    qreal inputH = m_sysInputWidget ? m_sysInputWidget->height() : SYS_NODE_H;
+    qreal outputH = m_sysOutputWidget ? m_sysOutputWidget->height() : SYS_NODE_H;
 
     if (m_sysInputWidget) {
         m_sysInputWidget->setPos(MARGIN_X, sysCY - inputH / 2);
@@ -783,7 +786,7 @@ qreal NodeCanvas::getGapX(int gapIdx) const {
     };
 
     if (gapIdx <= 0) return trackLeft + 4.0;
-    if (gapIdx >= NUM_COLS) return getColX(NUM_COLS - 1) + PLUG_NODE_W + 24.0;
+    if (gapIdx >= m_numCols) return getColX(m_numCols - 1) + PLUG_NODE_W + 24.0;
     return getColX(gapIdx) - 24.0;
 }
 
@@ -800,7 +803,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
     qreal parentSplitX = trackLeft;
     qreal parentMergeX = trackRight;
     int minSlot = 0;
-    int maxSlot = NUM_COLS - 1;
+    int maxSlot = m_numCols - 1;
 
     if (r != MAIN_ROW) {
         int parentRow = row.parentRow;
@@ -811,17 +814,17 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         }
 
         int mergeCol = getMergeCol(r);
-        parentMergeX = (mergeCol < 0) ? getGapX(NUM_COLS) : getGapX(mergeCol);
+        parentMergeX = (mergeCol < 0) ? getGapX(m_numCols) : getGapX(mergeCol);
         if (parentRow != MAIN_ROW && parentRow >= 0 && parentRow < NUM_ROWS) {
             parentMergeX = std::min(parentMergeX, m_rows[parentRow].parentMergeX);
         }
 
         minSlot = 0;
-        while (minSlot < NUM_COLS && getColX(minSlot) < parentSplitX - 10.0) {
+        while (minSlot < m_numCols && getColX(minSlot) < parentSplitX - 10.0) {
             minSlot++;
         }
 
-        maxSlot = NUM_COLS - 1;
+        maxSlot = m_numCols - 1;
         while (maxSlot >= 0 && getColX(maxSlot) + PLUG_NODE_W > parentMergeX + 10.0) {
             maxSlot--;
         }
@@ -838,7 +841,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
     }
 
     // Clear stale node widgets not in active range
-    for (int c = 0; c < NUM_COLS; ++c) {
+    for (int c = 0; c < m_numCols; ++c) {
         bool isActiveSlot = (r == MAIN_ROW) || (c >= minSlot && c <= maxSlot);
         if ((!row.plugins[c] || !isActiveSlot) && m_nodeWidgets[r][c]) {
             m_scene->removeItem(m_nodeWidgets[r][c]);
@@ -848,7 +851,7 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
     }
 
     // Place node widgets at fixed column positions
-    for (int c = 0; c < NUM_COLS; ++c) {
+    for (int c = 0; c < m_numCols; ++c) {
         bool isActiveSlot = (r == MAIN_ROW) || (c >= minSlot && c <= maxSlot);
         if (isActiveSlot && row.plugins[c]) {
             if (!m_nodeWidgets[r][c]) {
@@ -955,8 +958,8 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
         m_dynamicItems.push_back(mergeHandle);
     }
 
-    // Place plus buttons centered in unoccupied slot spaces
-    for (int c = 0; c < NUM_COLS; ++c) {
+    // Place plus buttons centered in unoccupied slot spaces up to m_numCols
+    for (int c = 0; c < m_numCols; ++c) {
         bool isActiveSlot = (r == MAIN_ROW) || (c >= minSlot && c <= maxSlot);
         bool isOccupied = (row.plugins[c] != nullptr);
         if (isActiveSlot && !isOccupied) {
@@ -1808,4 +1811,33 @@ void NodeCanvas::tickAnimations() {
     if (!anyMoving && m_animationTimer) {
         m_animationTimer->stop();
     }
+}
+
+void NodeCanvas::addCol() {
+    if (m_numCols < MAX_COLS) {
+        m_numCols++;
+        updateLayout();
+    }
+}
+
+int NodeCanvas::getHighestOccupiedCol() const {
+    int highestUsedCol = -1;
+    for (int r = 0; r < NUM_ROWS; ++r) {
+        for (int c = 0; c < NUM_COLS; ++c) {
+            if (m_rows[r].plugins[c]) {
+                highestUsedCol = std::max(highestUsedCol, c);
+            }
+        }
+        if (m_rows[r].hasSplitSection) {
+            highestUsedCol = std::max(highestUsedCol, getSplitCol(r));
+            highestUsedCol = std::max(highestUsedCol, getMergeCol(r));
+        }
+    }
+    return highestUsedCol;
+}
+
+void NodeCanvas::setNumCols(int cols) {
+    int minNeeded = getHighestOccupiedCol() + 1;
+    m_numCols = std::clamp(cols, std::max(4, minNeeded), MAX_COLS);
+    updateLayout();
 }

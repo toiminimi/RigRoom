@@ -570,6 +570,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_canvas, &NodeCanvas::canvasAboutToBeCleared, this, &MainWindow::closeAllPluginUIs);
     connect(m_canvas, &NodeCanvas::nodeAboutToBeRemoved, this, &MainWindow::closePluginUIForNode);
     connect(m_canvas, &NodeCanvas::routingChanged, this, [this]() {
+        updateSlotControls();
         if (!m_isLoadingPreset) {
             setUnsavedChanges(true);
         }
@@ -594,6 +595,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         QJsonDocument doc = QJsonDocument::fromJson(configFileCheck.readAll());
         if (doc.isObject()) {
             QJsonObject obj = doc.object();
+            if (obj.contains("defaultTrackSlots")) {
+                m_globalDefaultSlots = std::clamp(obj["defaultTrackSlots"].toInt(6), 4, 12);
+            }
             if (obj.contains("lastPreset")) {
                 lastPresetName = obj["lastPreset"].toString();
             }
@@ -613,6 +617,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             }
         }
     } else {
+        m_presetCombo->setCurrentIndex(-1);
+        m_presetCombo->setPlaceholderText("Untitled");
+        m_currentPresetIndex = -1;
         setUnsavedChanges(false);
     }
 }
@@ -801,6 +808,37 @@ void MainWindow::setupUI() {
     });
     topBar->addWidget(presetOptionsBtn);
 
+    topBar->addSpacing(12);
+    QLabel* slotTitleLabel = new QLabel("Slots:", this);
+    slotTitleLabel->setStyleSheet("color: #AAAAAA; font-weight: bold; font-size: 11px;");
+    topBar->addWidget(slotTitleLabel);
+
+    m_slotMinusBtn = new QToolButton(this);
+    m_slotMinusBtn->setText("➖");
+    m_slotMinusBtn->setToolTip("Remove empty tail slot (Ctrl+-)");
+    m_slotMinusBtn->setFixedSize(24, 24);
+    m_slotMinusBtn->setCursor(Qt::PointingHandCursor);
+    m_slotMinusBtn->setStyleSheet(
+        "QToolButton { background-color: #242528; color: #E0E0E0; font-size: 10px; border: 1px solid #333438; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #303236; color: white; }"
+        "QToolButton:disabled { color: #555555; background-color: #1A1A1C; border-color: #252528; }"
+    );
+    connect(m_slotMinusBtn, &QToolButton::clicked, this, &MainWindow::onSlotMinusClicked);
+    topBar->addWidget(m_slotMinusBtn);
+
+    m_slotCountLabel = new QLabel("6", this);
+    m_slotCountLabel->setStyleSheet("font-weight: bold; color: #00B0FF; padding: 0 4px; font-size: 12px;");
+    topBar->addWidget(m_slotCountLabel);
+
+    m_slotPlusBtn = new QToolButton(this);
+    m_slotPlusBtn->setText("➕");
+    m_slotPlusBtn->setToolTip("Add extra track slot (Ctrl+=)");
+    m_slotPlusBtn->setFixedSize(24, 24);
+    m_slotPlusBtn->setCursor(Qt::PointingHandCursor);
+    m_slotPlusBtn->setStyleSheet(m_slotMinusBtn->styleSheet());
+    connect(m_slotPlusBtn, &QToolButton::clicked, this, &MainWindow::onSlotPlusClicked);
+    topBar->addWidget(m_slotPlusBtn);
+
     // Global Keyboard Shortcuts
     auto* saveSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_S), this);
     connect(saveSc, &QShortcut::activated, this, &MainWindow::onSavePreset);
@@ -859,11 +897,27 @@ void MainWindow::setupUI() {
     if (sizeIdx != -1) m_bufferSizeCombo->setCurrentIndex(sizeIdx);
     connect(m_bufferSizeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onBufferSizeChanged);
     
+    auto* slotMinusSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus), this);
+    connect(slotMinusSc, &QShortcut::activated, this, &MainWindow::onSlotMinusClicked);
+
+    auto* slotPlusSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Equal), this);
+    connect(slotPlusSc, &QShortcut::activated, this, &MainWindow::onSlotPlusClicked);
+
+    QComboBox* defaultTrackSlotsCombo = new QComboBox(m_settingsDialog);
+    defaultTrackSlotsCombo->addItems({"4", "6", "8", "10", "12"});
+    int defaultIdx = defaultTrackSlotsCombo->findText(QString::number(m_globalDefaultSlots));
+    if (defaultIdx != -1) defaultTrackSlotsCombo->setCurrentIndex(defaultIdx);
+    connect(defaultTrackSlotsCombo, &QComboBox::currentTextChanged, this, [this](const QString& text) {
+        m_globalDefaultSlots = std::clamp(text.toInt(), 4, 12);
+        saveConfigSettings();
+    });
+    
     formLayout->addRow("Input Mode:", m_hwInputModeCombo);
     formLayout->addRow("Input Device:", m_hwInputCombo);
     formLayout->addRow("Output Mode:", m_hwOutputModeCombo);
     formLayout->addRow("Output Device:", m_hwOutputCombo);
     formLayout->addRow("Buffer Size:", m_bufferSizeCombo);
+    formLayout->addRow("Default Track Slots:", defaultTrackSlotsCombo);
     
     dialogLayout->addWidget(ioBox);
     
@@ -1710,12 +1764,46 @@ void MainWindow::onNewPreset() {
     m_activePluginPresetName.clear();
     showPluginControls(nullptr);
     m_canvas->clearCanvas();
+    m_canvas->setNumCols(m_globalDefaultSlots);
+    updateSlotControls();
     m_presetCombo->setCurrentIndex(-1);
     m_presetCombo->setPlaceholderText("Untitled");
     m_currentPresetIndex = -1;
     m_isLoadingPreset = false;
     setUnsavedChanges(true);
     saveConfigSettings();
+}
+
+void MainWindow::onSlotMinusClicked() {
+    if (!m_canvas) return;
+    int curr = m_canvas->getNumCols();
+    int highest = m_canvas->getHighestOccupiedCol();
+    int minAllowed = std::max(4, highest + 1);
+    if (curr > minAllowed) {
+        m_canvas->setNumCols(curr - 1);
+        updateSlotControls();
+        setUnsavedChanges(true);
+    }
+}
+
+void MainWindow::onSlotPlusClicked() {
+    if (!m_canvas) return;
+    int curr = m_canvas->getNumCols();
+    if (curr < 12) {
+        m_canvas->setNumCols(curr + 1);
+        updateSlotControls();
+        setUnsavedChanges(true);
+    }
+}
+
+void MainWindow::updateSlotControls() {
+    if (!m_canvas || !m_slotMinusBtn || !m_slotPlusBtn || !m_slotCountLabel) return;
+    int curr = m_canvas->getNumCols();
+    int highest = m_canvas->getHighestOccupiedCol();
+    int minAllowed = std::max(4, highest + 1);
+    m_slotCountLabel->setText(QString::number(curr));
+    m_slotMinusBtn->setEnabled(curr > minAllowed);
+    m_slotPlusBtn->setEnabled(curr < 12);
 }
 
 void MainWindow::onSavePresetAs() {
@@ -2046,8 +2134,12 @@ void MainWindow::saveConfigSettings() {
     configObj["hwInputStereo"] = m_hwInputModeCombo->currentIndex() == 1;
     configObj["hwOutputStereo"] = m_hwOutputModeCombo->currentIndex() == 1;
     configObj["inputGain"] = m_engine.getInputGainDB();
-    configObj["outputGain"] = m_engine.getOutputGainDB();
-    configObj["lastPreset"] = m_presetCombo->currentText();
+    configObj["defaultTrackSlots"] = m_globalDefaultSlots;
+    if (m_currentPresetIndex >= 0 && m_presetCombo && m_presetCombo->currentIndex() >= 0) {
+        configObj["lastPreset"] = m_presetCombo->currentText();
+    } else {
+        configObj["lastPreset"] = "";
+    }
     
     QFile configFileWrite(QDir::homePath() + "/.config/PedalBoard/config.json");
     if (configFileWrite.open(QFile::WriteOnly)) {
@@ -2306,6 +2398,7 @@ void MainWindow::savePresetToFile(const QString& path) {
     presetObj["routing"] = routing;
 
     presetObj["nodes"] = nodesArray;
+    presetObj["trackSlots"] = m_canvas->getNumCols();
     
     QJsonDocument doc(presetObj);
     QFile file(path);
@@ -2338,6 +2431,10 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     
     m_canvas->beginRoutingUpdate();
     m_canvas->clearCanvas();
+
+    int loadedSlots = presetObj.contains("trackSlots") ? presetObj["trackSlots"].toInt(m_globalDefaultSlots) : m_globalDefaultSlots;
+    m_canvas->setNumCols(loadedSlots);
+    updateSlotControls();
     
     QJsonArray nodesArray = presetObj["nodes"].toArray();
     for (int i = 0; i < nodesArray.size(); ++i) {

@@ -99,9 +99,14 @@ public:
     
     static constexpr int NUM_ROWS = 5;
     static constexpr int MAIN_ROW = 2;
-    // Rows are signal chains, not visual wrap rows. Keep enough stages for a
-    // practical pedalboard and let the canvas scroll when a chain is wider.
-    static constexpr int NUM_COLS = 12;
+    static constexpr int MIN_COLS = 6;
+    static constexpr int MAX_COLS = 12;
+    static constexpr int NUM_COLS = MAX_COLS;
+    
+    int getNumCols() const { return m_numCols; }
+    int getHighestOccupiedCol() const;
+    void setNumCols(int cols);
+    void addCol();
 
 signals:
     void nodeSelected(std::shared_ptr<AudioNode> node);
@@ -158,6 +163,7 @@ private:
     int m_routingUpdateDepth = 0;
     bool m_routingUpdatePending = false;
     bool m_mainOutputEnabled = true;
+    int m_numCols = 6;
 
     void setItemTargetPos(QGraphicsItem* item, QPointF targetPos, bool animate = true);
 

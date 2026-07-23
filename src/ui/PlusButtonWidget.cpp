@@ -31,30 +31,30 @@ void PlusButtonWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem*,
     
     if (m_style == Style::Full) {
         // Bright, inviting full button
-        QColor bg    = m_hovered ? QColor(0, 176, 255, 60)  : QColor(30, 30, 35, 200);
-        QColor border = m_hovered ? QColor(0, 200, 255)      : QColor(80, 80, 90);
-        QColor cross  = m_hovered ? QColor(0, 220, 255)      : QColor(160, 160, 170);
+        QColor bg     = m_hovered ? QColor(0, 176, 255, 70)  : QColor(30, 32, 40, 220);
+        QColor border = m_hovered ? QColor(0, 229, 255)      : QColor(0, 176, 255, 200);
+        QColor cross  = m_hovered ? QColor(255, 255, 255)    : QColor(0, 220, 255);
         
-        painter->setPen(QPen(border, 1.8));
+        painter->setPen(QPen(border, 2.0));
         painter->setBrush(bg);
         painter->drawEllipse(QRectF(-16, -16, 32, 32));
         
-        painter->setPen(QPen(cross, 2.2, Qt::SolidLine, Qt::RoundCap));
+        painter->setPen(QPen(cross, 2.4, Qt::SolidLine, Qt::RoundCap));
         painter->drawLine(-7, 0, 7, 0);
         painter->drawLine(0, -7, 0, 7);
     } else {
-        // Subtle ghost button — appears only on hover of the row track
-        QColor bg     = m_hovered ? QColor(0, 176, 255, 30)  : QColor(0, 0, 0, 0);
-        QColor border  = m_hovered ? QColor(0, 176, 255, 180) : QColor(70, 70, 80, 120);
-        QColor cross   = m_hovered ? QColor(0, 200, 255, 220) : QColor(100, 100, 110, 100);
+        // Prominent slot button
+        QColor bg     = m_hovered ? QColor(0, 176, 255, 60)  : QColor(26, 28, 36, 220);
+        QColor border  = m_hovered ? QColor(0, 229, 255)      : QColor(0, 176, 255, 170);
+        QColor cross   = m_hovered ? QColor(255, 255, 255)    : QColor(180, 230, 255, 230);
         
-        painter->setPen(QPen(border, 1.2));
+        painter->setPen(QPen(border, 1.8));
         painter->setBrush(bg);
-        painter->drawEllipse(QRectF(-11, -11, 22, 22));
+        painter->drawEllipse(QRectF(-14, -14, 28, 28));
         
-        painter->setPen(QPen(cross, 1.6, Qt::SolidLine, Qt::RoundCap));
-        painter->drawLine(-5, 0, 5, 0);
-        painter->drawLine(0, -5, 0, 5);
+        painter->setPen(QPen(cross, 2.0, Qt::SolidLine, Qt::RoundCap));
+        painter->drawLine(-6, 0, 6, 0);
+        painter->drawLine(0, -6, 0, 6);
     }
 }
 
