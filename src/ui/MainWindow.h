@@ -151,13 +151,22 @@ private:
     QNetworkReply* m_currentDownloadReply = nullptr;
     void downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect = false);
     
+public:
     struct PluginInfo {
         std::string name;
         std::string uri;
         std::string category;
         std::string brand;
         QString thumbnailPath;
-        bool isLV2;
+        bool isLV2 = false;
+        int audioInputs = 2;
+        int audioOutputs = 2;
+        int controlPorts = 0;
+        std::string version;
+        std::string description;
+        std::vector<std::string> features;
+        std::string path;
+        bool hasNativeGUI = false;
     };
     std::vector<PluginInfo> m_availablePlugins;
     QSet<QString> m_favoritePluginUris;

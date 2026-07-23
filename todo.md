@@ -12,8 +12,8 @@
 - [x] **Disable Split Drag when Lanes Full**: Prevent dragging split nodes when maximum lane capacity is reached.
 - [x] **Pedalboard Preset Handling & Canvas Display**: Better handling and UI for pedalboard presets (e.g. showing active pedalboard preset selector directly on the canvas/top header).
 - [x] **Nicer Plugin Blocks**: Upgrade visual design, shadows, icons, and signal flow aesthetics of plugin blocks on canvas.
-- [ ] **Canvas Zoom**: Add zoom controls / wheel zoom to navigate complex pedalboard signal trees.
-- [ ] **Plugin Browser Format Filtering**: Separate LV2 / CLAP / VST3 format filters from categories in the plugin browser.
+- [x] **Canvas Zoom**: Add zoom controls / wheel zoom to navigate complex pedalboard signal trees.
+- [x] **Plugin Browser Format Filtering & Rich Details**: Separate LV2 / CLAP / VST3 format filter tabs from categories, and display an enhanced plugin metadata detail panel (format, vendor, channel layout, URI, parameters).
 
 ## 🔵 Priority 3: Settings & TONE3000 Integration
 - [ ] **Settings API Key Management**: Add "Clear API Key" button, confirmation indication on save, and helpful guide/links on acquiring a TONE3000 API key.

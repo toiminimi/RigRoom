@@ -8,6 +8,11 @@
 #include <QGraphicsPathItem>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsSceneMouseEvent>
+#include <QScrollBar>
+#include <QFrame>
+#include <QLabel>
+#include <QToolButton>
+#include <QHBoxLayout>
 #include <QPainterPath>
 #include <QResizeEvent>
 #include <algorithm>
@@ -252,6 +257,8 @@ NodeCanvas::NodeCanvas(AudioEngine* engine, QWidget* parent)
     setBackgroundBrush(QColor(14, 14, 16));
     setDragMode(QGraphicsView::NoDrag);
     setFocusPolicy(Qt::StrongFocus);
+    setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+    setResizeAnchor(QGraphicsView::AnchorUnderMouse);
 
     // Build system node widgets once
     for (auto& node : m_engine->getNodes()) {
@@ -276,6 +283,8 @@ NodeCanvas::NodeCanvas(AudioEngine* engine, QWidget* parent)
     // Initialize animation timer
     m_animationTimer = new QTimer(this);
     connect(m_animationTimer, &QTimer::timeout, this, &NodeCanvas::tickAnimations);
+
+    setupZoomOverlay();
     m_rows[0].name = "Path B";
     m_rows[2].name = "Path B";
 }
@@ -1178,6 +1187,7 @@ void NodeCanvas::clearSceneItems() {
 void NodeCanvas::resizeEvent(QResizeEvent* event) {
     QGraphicsView::resizeEvent(event);
     updateLayout();
+    updateZoomOverlayPos();
 }
 
 void NodeCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
@@ -1840,4 +1850,145 @@ void NodeCanvas::setNumCols(int cols) {
     int minNeeded = getHighestOccupiedCol() + 1;
     m_numCols = std::clamp(cols, std::max(4, minNeeded), MAX_COLS);
     updateLayout();
+}
+
+void NodeCanvas::setZoomLevel(double zoom) {
+    double newZoom = std::clamp(zoom, 0.5, 2.0);
+    if (qAbs(m_zoomLevel - newZoom) < 0.001) return;
+
+    double scaleFactor = newZoom / m_zoomLevel;
+    m_zoomLevel = newZoom;
+    scale(scaleFactor, scaleFactor);
+
+    if (m_zoomOverlayLabel) {
+        m_zoomOverlayLabel->setText(QString("%1%").arg(qRound(m_zoomLevel * 100.0)));
+    }
+    if (m_zoomOverlayMinusBtn) {
+        m_zoomOverlayMinusBtn->setEnabled(m_zoomLevel > 0.51);
+    }
+    if (m_zoomOverlayPlusBtn) {
+        m_zoomOverlayPlusBtn->setEnabled(m_zoomLevel < 1.99);
+    }
+
+    emit zoomChanged(m_zoomLevel);
+}
+
+void NodeCanvas::setupZoomOverlay() {
+    m_zoomOverlay = new QFrame(this);
+    m_zoomOverlay->setObjectName("zoomOverlay");
+    m_zoomOverlay->setStyleSheet(
+        "QFrame#zoomOverlay { background-color: rgba(20, 22, 28, 225); border: 1px solid rgba(255, 255, 255, 30); border-radius: 8px; }"
+    );
+
+    QHBoxLayout* layout = new QHBoxLayout(m_zoomOverlay);
+    layout->setContentsMargins(6, 4, 6, 4);
+    layout->setSpacing(6);
+
+    QString btnStyle = 
+        "QToolButton { background-color: #262830; color: #E0E0E0; font-size: 10px; border: 1px solid #363842; border-radius: 4px; padding: 2px; }"
+        "QToolButton:hover { background-color: #363844; color: white; border-color: #00B0FF; }"
+        "QToolButton:disabled { color: #555555; background-color: #1A1A1C; border-color: #252528; }";
+
+    m_zoomOverlayMinusBtn = new QToolButton(m_zoomOverlay);
+    m_zoomOverlayMinusBtn->setText("➖");
+    m_zoomOverlayMinusBtn->setFixedSize(22, 22);
+    m_zoomOverlayMinusBtn->setToolTip("Zoom Out (Ctrl + Wheel Down)");
+    m_zoomOverlayMinusBtn->setCursor(Qt::PointingHandCursor);
+    m_zoomOverlayMinusBtn->setStyleSheet(btnStyle);
+    connect(m_zoomOverlayMinusBtn, &QToolButton::clicked, this, &NodeCanvas::zoomOut);
+    layout->addWidget(m_zoomOverlayMinusBtn);
+
+    m_zoomOverlayLabel = new QLabel("100%", m_zoomOverlay);
+    m_zoomOverlayLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 11px; padding: 0 4px;");
+    layout->addWidget(m_zoomOverlayLabel);
+
+    m_zoomOverlayPlusBtn = new QToolButton(m_zoomOverlay);
+    m_zoomOverlayPlusBtn->setText("➕");
+    m_zoomOverlayPlusBtn->setFixedSize(22, 22);
+    m_zoomOverlayPlusBtn->setToolTip("Zoom In (Ctrl + Wheel Up)");
+    m_zoomOverlayPlusBtn->setCursor(Qt::PointingHandCursor);
+    m_zoomOverlayPlusBtn->setStyleSheet(btnStyle);
+    connect(m_zoomOverlayPlusBtn, &QToolButton::clicked, this, &NodeCanvas::zoomIn);
+    layout->addWidget(m_zoomOverlayPlusBtn);
+
+    m_zoomOverlayResetBtn = new QToolButton(m_zoomOverlay);
+    m_zoomOverlayResetBtn->setText("↺");
+    m_zoomOverlayResetBtn->setFixedSize(22, 22);
+    m_zoomOverlayResetBtn->setToolTip("Reset Zoom (Ctrl+0)");
+    m_zoomOverlayResetBtn->setCursor(Qt::PointingHandCursor);
+    m_zoomOverlayResetBtn->setStyleSheet(btnStyle);
+    connect(m_zoomOverlayResetBtn, &QToolButton::clicked, this, &NodeCanvas::resetZoom);
+    layout->addWidget(m_zoomOverlayResetBtn);
+
+    m_zoomOverlay->adjustSize();
+    updateZoomOverlayPos();
+}
+
+void NodeCanvas::updateZoomOverlayPos() {
+    if (!m_zoomOverlay) return;
+    m_zoomOverlay->adjustSize();
+    int x = viewport()->width() - m_zoomOverlay->width() - 16;
+    int y = viewport()->height() - m_zoomOverlay->height() - 16;
+    m_zoomOverlay->move(x, y);
+    m_zoomOverlay->raise();
+}
+
+void NodeCanvas::resetZoom() {
+    setZoomLevel(1.0);
+}
+
+void NodeCanvas::zoomIn() {
+    setZoomLevel(m_zoomLevel + 0.10);
+}
+
+void NodeCanvas::zoomOut() {
+    setZoomLevel(m_zoomLevel - 0.10);
+}
+
+void NodeCanvas::wheelEvent(QWheelEvent* event) {
+    if (event->modifiers() & Qt::ControlModifier) {
+        int delta = event->angleDelta().y();
+        if (delta > 0) {
+            zoomIn();
+        } else if (delta < 0) {
+            zoomOut();
+        }
+        event->accept();
+    } else {
+        QGraphicsView::wheelEvent(event);
+    }
+}
+
+void NodeCanvas::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::MiddleButton ||
+       (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ShiftModifier))) {
+        m_isPanning = true;
+        m_panStartPos = event->pos();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+    QGraphicsView::mousePressEvent(event);
+}
+
+void NodeCanvas::mouseMoveEvent(QMouseEvent* event) {
+    if (m_isPanning) {
+        QPoint delta = event->pos() - m_panStartPos;
+        m_panStartPos = event->pos();
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - delta.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+}
+
+void NodeCanvas::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_isPanning && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
+        m_isPanning = false;
+        unsetCursor();
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseReleaseEvent(event);
 }

@@ -271,6 +271,14 @@ struct PickerPluginInfo {
     QString thumbnailPath;
     QString format;
     QString searchable;
+    int audioInputs = 2;
+    int audioOutputs = 2;
+    int controlPorts = 0;
+    QString version;
+    QString description;
+    QStringList features;
+    QString path;
+    bool hasNativeGUI = false;
 };
 
 static QString pluginCategoryGlyph(const QString& category) {
@@ -285,6 +293,43 @@ static QString pluginCategoryGlyph(const QString& category) {
     return "FX";
 }
 
+static std::vector<PickerPluginInfo> buildPickerInfos(const std::vector<MainWindow::PluginInfo>& available) {
+    std::vector<PickerPluginInfo> plugins;
+    plugins.reserve(available.size());
+    for (const auto& info : available) {
+        QString name = QString::fromStdString(info.name);
+        QString category = QString::fromStdString(info.category);
+        QString brand = QString::fromStdString(info.brand);
+        QString uri = QString::fromStdString(info.uri);
+        QString format = info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : (info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3"));
+        QString searchable = (name + " " + category + " " + brand + " " + uri + " " + format).toLower();
+
+        QStringList featureList;
+        for (const auto& feat : info.features) {
+            featureList.push_back(QString::fromStdString(feat));
+        }
+
+        plugins.push_back({
+            name,
+            uri,
+            category,
+            brand,
+            info.thumbnailPath,
+            format,
+            searchable,
+            info.audioInputs,
+            info.audioOutputs,
+            info.controlPorts,
+            QString::fromStdString(info.version),
+            QString::fromStdString(info.description),
+            featureList,
+            QString::fromStdString(info.path),
+            info.hasNativeGUI
+        });
+    }
+    return plugins;
+}
+
 class PluginPickerDialog final : public QDialog {
 public:
     PluginPickerDialog(
@@ -293,16 +338,16 @@ public:
         std::function<void()> favoritesChanged,
         QWidget* parent = nullptr)
         : QDialog(parent), m_plugins(plugins), m_favorites(favorites), m_favoritesChanged(std::move(favoritesChanged)) {
-        setWindowTitle("Add Plugin");
+        setWindowTitle("Plugin Browser & Selector");
         setModal(true);
-        resize(620, 540);
+        resize(840, 560);
         setStyleSheet(
-            "QDialog { background: #1b1b1f; color: #e9e9ee; }"
-            "QLineEdit, QComboBox, QListWidget { background: #242429; border: 1px solid #393941; border-radius: 5px; color: #ececf0; padding: 7px; }"
+            "QDialog { background: #16161a; color: #e9e9ee; }"
+            "QLineEdit, QComboBox, QListWidget { background: #202026; border: 1px solid #33333d; border-radius: 5px; color: #ececf0; padding: 6px 10px; font-size: 12px; }"
             "QListWidget::item { border: none; padding: 0; }"
             "QListWidget::item:selected { background: transparent; }"
-            "QToolButton { border: none; color: #ffc857; font-size: 18px; padding: 5px; }"
-            "QPushButton { background: #00a8e8; border: none; border-radius: 5px; color: white; font-weight: bold; padding: 7px 14px; }"
+            "QToolButton { border: none; color: #ffc857; font-size: 16px; padding: 4px; }"
+            "QPushButton { background: #00a8e8; border: none; border-radius: 5px; color: white; font-weight: bold; padding: 8px 16px; font-size: 12px; }"
             "QPushButton:hover { background: #27b9f0; }");
 
         // Pre-load and scale all thumbnails to cache
@@ -313,40 +358,167 @@ public:
             }
         }
 
-        auto* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(16, 16, 16, 16);
-        layout->setSpacing(10);
+        auto* mainLayout = new QVBoxLayout(this);
+        mainLayout->setContentsMargins(16, 16, 16, 16);
+        mainLayout->setSpacing(12);
 
+        // Filter Bar (Search + Format Filter + Category Filter)
         auto* filterRow = new QHBoxLayout();
+        filterRow->setSpacing(8);
+
         m_search = new QLineEdit(this);
-        m_search->setPlaceholderText("Search plugins by name, category, brand, or URI...");
+        m_search->setPlaceholderText("🔍 Search plugins by name, brand, category, or URI...");
+
+        m_formatFilter = new QComboBox(this);
+        m_formatFilter->setMinimumWidth(120);
+        m_formatFilter->addItems({"All Formats", "LV2", "CLAP", "VST3"});
+
         m_category = new QComboBox(this);
-        m_category->setMinimumWidth(155);
+        m_category->setMinimumWidth(140);
+
         m_resultCount = new QLabel(this);
-        m_resultCount->setStyleSheet("color: #9d9da8; font-size: 11px;");
+        m_resultCount->setStyleSheet("color: #00b0ff; font-size: 11px; font-weight: bold; padding-left: 4px;");
+
         filterRow->addWidget(m_search, 1);
+        filterRow->addWidget(m_formatFilter);
         filterRow->addWidget(m_category);
         filterRow->addWidget(m_resultCount);
-        layout->addLayout(filterRow);
+        mainLayout->addLayout(filterRow);
 
+        // Split Body: Left List + Right Details Pane
+        auto* splitLayout = new QHBoxLayout();
+        splitLayout->setSpacing(14);
+
+        // Left Container: Plugin List
         m_list = new QListWidget(this);
-        m_list->setSpacing(5);
+        m_list->setSpacing(4);
         m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-        layout->addWidget(m_list, 1);
+        splitLayout->addWidget(m_list, 5);
 
+        // Right Container: Enhanced Details Pane
+        m_detailsPane = new QWidget(this);
+        m_detailsPane->setStyleSheet("QWidget#detailsPane { background: #1f1f26; border: 1px solid #2e2e38; border-radius: 8px; }");
+        m_detailsPane->setObjectName("detailsPane");
+        
+        auto* detailsLayout = new QVBoxLayout(m_detailsPane);
+        detailsLayout->setContentsMargins(16, 16, 16, 16);
+        detailsLayout->setSpacing(12);
+
+        auto* headerLayout = new QHBoxLayout();
+        headerLayout->setSpacing(12);
+
+        m_detailIconLabel = new QLabel(m_detailsPane);
+        m_detailIconLabel->setFixedSize(48, 48);
+        m_detailIconLabel->setAlignment(Qt::AlignCenter);
+        headerLayout->addWidget(m_detailIconLabel);
+
+        auto* titleBox = new QVBoxLayout();
+        titleBox->setSpacing(2);
+        m_detailNameLabel = new QLabel("Select a plugin", m_detailsPane);
+        m_detailNameLabel->setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff; border: none;");
+        m_detailBrandLabel = new QLabel("", m_detailsPane);
+        m_detailBrandLabel->setStyleSheet("font-size: 11px; color: #8a8a98; border: none;");
+        titleBox->addWidget(m_detailNameLabel);
+        titleBox->addWidget(m_detailBrandLabel);
+        headerLayout->addLayout(titleBox, 1);
+        detailsLayout->addLayout(headerLayout);
+
+        // Badges Row
+        auto* badgeRow = new QHBoxLayout();
+        badgeRow->setSpacing(6);
+        m_detailFormatBadge = new QLabel(m_detailsPane);
+        m_detailFormatBadge->setStyleSheet("background: #00b0ff; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        m_detailCategoryBadge = new QLabel(m_detailsPane);
+        m_detailCategoryBadge->setStyleSheet("background: #2e303c; color: #e0e0e0; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        m_detailAudioBadge = new QLabel(m_detailsPane);
+        m_detailAudioBadge->setStyleSheet("background: #1c2b36; color: #38c5ff; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        m_detailGuiBadge = new QLabel(m_detailsPane);
+        m_detailGuiBadge->setStyleSheet("background: #1b3022; color: #4caf50; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+
+        badgeRow->addWidget(m_detailFormatBadge);
+        badgeRow->addWidget(m_detailCategoryBadge);
+        badgeRow->addWidget(m_detailAudioBadge);
+        badgeRow->addWidget(m_detailGuiBadge);
+        badgeRow->addStretch();
+        detailsLayout->addLayout(badgeRow);
+
+        // Graphical Preview Card (Modgui / Thumbnail Skin Preview)
+        m_detailPreviewLabel = new QLabel(m_detailsPane);
+        m_detailPreviewLabel->setObjectName("detailPreview");
+        m_detailPreviewLabel->setFixedHeight(140);
+        m_detailPreviewLabel->setAlignment(Qt::AlignCenter);
+        m_detailPreviewLabel->setStyleSheet("QLabel#detailPreview { background: #141419; border: 1px solid #2a2a35; border-radius: 6px; padding: 4px; }");
+        detailsLayout->addWidget(m_detailPreviewLabel);
+
+        auto* divider = new QFrame(m_detailsPane);
+        divider->setFrameShape(QFrame::HLine);
+        divider->setStyleSheet("color: #2e2e38;");
+        detailsLayout->addWidget(divider);
+
+        // Metadata Fields
+        auto* formLayout = new QFormLayout();
+        formLayout->setSpacing(8);
+        formLayout->setLabelAlignment(Qt::AlignLeft);
+
+        m_detailUriLabel = new QLabel(m_detailsPane);
+        m_detailUriLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        m_detailUriLabel->setStyleSheet("font-size: 11px; color: #7b93a4; border: none;");
+        m_detailUriLabel->setWordWrap(true);
+
+        m_detailPathLabel = new QLabel(m_detailsPane);
+        m_detailPathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        m_detailPathLabel->setStyleSheet("font-size: 11px; color: #7b93a4; border: none;");
+        m_detailPathLabel->setWordWrap(true);
+
+        m_detailParamsLabel = new QLabel(m_detailsPane);
+        m_detailParamsLabel->setStyleSheet("font-size: 11px; color: #e0e0e0; border: none;");
+
+        m_detailTagsLabel = new QLabel(m_detailsPane);
+        m_detailTagsLabel->setStyleSheet("font-size: 11px; color: #00b0ff; border: none;");
+        m_detailTagsLabel->setWordWrap(true);
+
+        formLayout->addRow("<b style='color:#a0a0b0;'>URI / Identifier:</b>", m_detailUriLabel);
+        formLayout->addRow("<b style='color:#a0a0b0;'>Path / Location:</b>", m_detailPathLabel);
+        formLayout->addRow("<b style='color:#a0a0b0;'>Control Parameters:</b>", m_detailParamsLabel);
+        formLayout->addRow("<b style='color:#a0a0b0;'>Features & Tags:</b>", m_detailTagsLabel);
+        detailsLayout->addLayout(formLayout);
+
+        detailsLayout->addStretch();
+
+        // Details Footer Action Row
+        auto* detailActions = new QHBoxLayout();
+        m_detailFavoriteBtn = new QToolButton(m_detailsPane);
+        m_detailFavoriteBtn->setText("☆ Favorite");
+        m_detailFavoriteBtn->setStyleSheet(
+            "QToolButton { background: #262730; color: #ffc857; font-weight: bold; border-radius: 4px; padding: 6px 10px; font-size: 11px; border: 1px solid #3d3e4d; }"
+            "QToolButton:hover { background: #323440; }"
+        );
+        detailActions->addWidget(m_detailFavoriteBtn);
+        detailActions->addStretch();
+        detailsLayout->addLayout(detailActions);
+
+        splitLayout->addWidget(m_detailsPane, 4);
+        mainLayout->addLayout(splitLayout, 1);
+
+        // Bottom Actions Bar
         auto* actions = new QHBoxLayout();
-        auto* hint = new QLabel("Enter or double-click to add. Star plugins for quick access.", this);
-        hint->setStyleSheet("color: #9898a2; font-size: 11px;");
+        auto* hint = new QLabel("Tip: Double-click a plugin to quickly add it to your board.", this);
+        hint->setStyleSheet("color: #7d7d8a; font-size: 11px;");
         auto* cancel = new QPushButton("Cancel", this);
-        cancel->setStyleSheet("QPushButton { background: #35353c; } QPushButton:hover { background: #464650; }");
-        auto* add = new QPushButton("Add Plugin", this);
+        cancel->setStyleSheet("QPushButton { background: #2c2c34; } QPushButton:hover { background: #3a3a44; }");
+        auto* add = new QPushButton("➕ Add Plugin to Board", this);
         actions->addWidget(hint, 1);
         actions->addWidget(cancel);
         actions->addWidget(add);
-        layout->addLayout(actions);
+        mainLayout->addLayout(actions);
 
+        // Populate Category Filter Combo (Filter out format strings)
         QSet<QString> categories;
-        for (const auto& plugin : m_plugins) categories.insert(plugin.category);
+        for (const auto& plugin : m_plugins) {
+            if (!plugin.category.isEmpty() && !plugin.category.contains("Plugin")) {
+                categories.insert(plugin.category);
+            }
+        }
         m_category->addItem("All Categories");
         m_category->addItem("Favorites");
         QStringList categoryList = categories.values();
@@ -359,10 +531,17 @@ public:
 
         connect(m_search, &QLineEdit::textChanged, this, [this] { m_searchTimer->start(120); });
         connect(m_search, &QLineEdit::returnPressed, this, [this] { acceptSelection(); });
+        connect(m_formatFilter, &QComboBox::currentTextChanged, this, [this] { refreshResults(); });
         connect(m_category, &QComboBox::currentTextChanged, this, [this] { refreshResults(); });
         connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
         connect(add, &QPushButton::clicked, this, [this] { acceptSelection(); });
         connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) { acceptSelection(); });
+        connect(m_list, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current, QListWidgetItem*) {
+            if (current) {
+                updateDetailsPane(current->data(Qt::UserRole).toString());
+            }
+        });
+
         refreshResults();
         m_search->setFocus();
     }
@@ -370,12 +549,107 @@ public:
     QString selectedUri() const { return m_selectedUri; }
 
 private:
+    void updateDetailsPane(const QString& uri) {
+        auto it = std::find_if(m_plugins.begin(), m_plugins.end(), [&](const PickerPluginInfo& p) {
+            return p.uri == uri;
+        });
+        if (it == m_plugins.end()) return;
+
+        const PickerPluginInfo& plugin = *it;
+        const bool isFav = m_favorites->contains(plugin.uri);
+
+        m_detailNameLabel->setText(plugin.name);
+        m_detailBrandLabel->setText(plugin.brand.isEmpty() ? "Unknown Vendor" : plugin.brand);
+
+        // Format Badge Styling
+        if (plugin.format == "LV2") {
+            m_detailFormatBadge->setText("LV2");
+            m_detailFormatBadge->setStyleSheet("background: #00B0FF; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        } else if (plugin.format == "CLAP") {
+            m_detailFormatBadge->setText("CLAP");
+            m_detailFormatBadge->setStyleSheet("background: #AB47BC; color: #FFF; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        } else {
+            m_detailFormatBadge->setText("VST3");
+            m_detailFormatBadge->setStyleSheet("background: #FFA726; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        }
+
+        m_detailCategoryBadge->setText(plugin.category.toUpper());
+        m_detailUriLabel->setText(plugin.uri);
+        m_detailPathLabel->setText(plugin.path.isEmpty() ? (plugin.thumbnailPath.isEmpty() ? "Standard Plugin Bundle" : plugin.thumbnailPath) : plugin.path);
+
+        // Audio I/O Layout Badge
+        if (plugin.audioInputs == 2 && plugin.audioOutputs == 2) {
+            m_detailAudioBadge->setText("🔊 Stereo (2x2)");
+        } else if (plugin.audioInputs == 1 && plugin.audioOutputs == 1) {
+            m_detailAudioBadge->setText("🔉 Mono (1x1)");
+        } else {
+            m_detailAudioBadge->setText(QString("🔊 Audio (%1 In / %2 Out)").arg(plugin.audioInputs).arg(plugin.audioOutputs));
+        }
+
+        // GUI Badge
+        if (plugin.hasNativeGUI) {
+            m_detailGuiBadge->setText("🎨 Native UI");
+            m_detailGuiBadge->setStyleSheet("background: #1b3022; color: #4caf50; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        } else {
+            m_detailGuiBadge->setText("⚙️ Parameters");
+            m_detailGuiBadge->setStyleSheet("background: #252830; color: #90a0b0; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
+        }
+
+        // Parameter Ports & Features
+        if (plugin.controlPorts > 0) {
+            m_detailParamsLabel->setText(QString("%1 Parameters").arg(plugin.controlPorts));
+        } else {
+            m_detailParamsLabel->setText("Dynamic / Standard Ports");
+        }
+
+        if (!plugin.features.isEmpty()) {
+            m_detailTagsLabel->setText(plugin.features.join(", "));
+        } else {
+            m_detailTagsLabel->setText("Standard " + plugin.format + " Effect");
+        }
+
+        m_currentThumbnailPath = plugin.thumbnailPath;
+        if (!plugin.thumbnailPath.isEmpty() && QFileInfo::exists(plugin.thumbnailPath)) {
+            QPixmap fullPixmap(plugin.thumbnailPath);
+            if (!fullPixmap.isNull()) {
+                m_detailPreviewLabel->setPixmap(fullPixmap.scaled(340, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                m_detailPreviewLabel->show();
+            } else {
+                m_detailPreviewLabel->hide();
+            }
+        } else {
+            m_detailPreviewLabel->hide();
+        }
+
+        const bool hasThumbnail = !plugin.thumbnailPath.isEmpty() && m_thumbnailCache.contains(plugin.thumbnailPath);
+        if (hasThumbnail) {
+            m_detailIconLabel->setPixmap(m_thumbnailCache.value(plugin.thumbnailPath).scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        } else {
+            m_detailIconLabel->setText(pluginCategoryGlyph(plugin.category));
+            m_detailIconLabel->setStyleSheet("background: #123348; color: #38c5ff; border-radius: 6px; font-weight: bold; font-size: 12px;");
+        }
+
+        m_detailFavoriteBtn->setText(isFav ? "★ Favorited" : "☆ Add Favorite");
+        m_detailFavoriteBtn->disconnect();
+        connect(m_detailFavoriteBtn, &QToolButton::clicked, this, [this, plugin] {
+            if (m_favorites->contains(plugin.uri)) m_favorites->remove(plugin.uri);
+            else m_favorites->insert(plugin.uri);
+            m_favoritesChanged();
+            updateDetailsPane(plugin.uri);
+            if (m_category->currentText() == "Favorites") {
+                refreshResults();
+            }
+        });
+    }
+
     void refreshResults() {
         const QString query = m_search->text().trimmed().toLower();
+        const QString formatFilter = m_formatFilter->currentText();
         const QString category = m_category->currentText();
         std::vector<PickerPluginInfo> results;
         for (const auto& plugin : m_plugins) {
             const bool favorite = m_favorites->contains(plugin.uri);
+            if (formatFilter != "All Formats" && plugin.format != formatFilter) continue;
             if (category == "Favorites" && !favorite) continue;
             if (category != "All Categories" && category != "Favorites" && plugin.category != category) continue;
             if (!query.isEmpty() && !plugin.searchable.contains(query)) continue;
@@ -396,7 +670,7 @@ private:
             item->setData(Qt::UserRole, plugin.uri);
             item->setSizeHint(QSize(0, hasThumbnail ? 54 : 40));
             auto* row = new QWidget(m_list);
-            row->setStyleSheet("QWidget { background: #242429; border: 1px solid #303038; border-radius: 5px; } QWidget:hover { background: #2c2c33; border-color: #00a8e8; }");
+            row->setStyleSheet("QWidget { background: #202026; border: 1px solid #2e2e38; border-radius: 5px; } QWidget:hover { background: #282832; border-color: #00a8e8; }");
             auto* rowLayout = new QHBoxLayout(row);
             rowLayout->setContentsMargins(6, 4, 6, 4);
             rowLayout->setSpacing(7);
@@ -415,27 +689,39 @@ private:
             auto* name = new QLabel(plugin.name, row);
             name->setStyleSheet("font-weight: bold; color: #f3f3f6; border: none;");
             rowLayout->addWidget(name, 1);
+
             const QString metadata = plugin.brand.isEmpty()
                 ? plugin.category + " · " + plugin.format
                 : plugin.brand + " · " + plugin.category + " · " + plugin.format;
             auto* metadataLabel = new QLabel(metadata, row);
-            metadataLabel->setStyleSheet("font-size: 10px; color: #9d9da8; border: none;");
+            metadataLabel->setStyleSheet("font-size: 10px; color: #8a8a98; border: none;");
             rowLayout->addWidget(metadataLabel);
 
             auto* favorite = new QToolButton(row);
             favorite->setText(m_favorites->contains(plugin.uri) ? "★" : "☆");
             favorite->setToolTip("Toggle favorite");
             favorite->setFixedSize(28, 28);
-            connect(favorite, &QToolButton::clicked, this, [this, plugin] {
-                if (m_favorites->contains(plugin.uri)) m_favorites->remove(plugin.uri);
-                else m_favorites->insert(plugin.uri);
+            connect(favorite, &QToolButton::clicked, this, [this, favorite, plugin] {
+                if (m_favorites->contains(plugin.uri)) {
+                    m_favorites->remove(plugin.uri);
+                    favorite->setText("☆");
+                } else {
+                    m_favorites->insert(plugin.uri);
+                    favorite->setText("★");
+                }
                 m_favoritesChanged();
-                refreshResults();
+                updateDetailsPane(plugin.uri);
+                if (m_category->currentText() == "Favorites") {
+                    refreshResults();
+                }
             });
             rowLayout->addWidget(favorite);
             m_list->setItemWidget(item, row);
         }
-        if (m_list->count()) m_list->setCurrentRow(0);
+        if (m_list->count()) {
+            m_list->setCurrentRow(0);
+            updateDetailsPane(m_list->item(0)->data(Qt::UserRole).toString());
+        }
     }
 
     void acceptSelection() {
@@ -449,12 +735,30 @@ private:
     QSet<QString>* m_favorites;
     std::function<void()> m_favoritesChanged;
     QLineEdit* m_search = nullptr;
+    QComboBox* m_formatFilter = nullptr;
     QComboBox* m_category = nullptr;
     QListWidget* m_list = nullptr;
     QLabel* m_resultCount = nullptr;
     QTimer* m_searchTimer = nullptr;
     QHash<QString, QPixmap> m_thumbnailCache;
     QString m_selectedUri;
+    QString m_currentThumbnailPath;
+
+    // Enhanced Details Pane Widgets
+    QWidget* m_detailsPane = nullptr;
+    QLabel* m_detailIconLabel = nullptr;
+    QLabel* m_detailNameLabel = nullptr;
+    QLabel* m_detailBrandLabel = nullptr;
+    QLabel* m_detailFormatBadge = nullptr;
+    QLabel* m_detailCategoryBadge = nullptr;
+    QLabel* m_detailAudioBadge = nullptr;
+    QLabel* m_detailGuiBadge = nullptr;
+    QLabel* m_detailPreviewLabel = nullptr;
+    QLabel* m_detailUriLabel = nullptr;
+    QLabel* m_detailPathLabel = nullptr;
+    QLabel* m_detailParamsLabel = nullptr;
+    QLabel* m_detailTagsLabel = nullptr;
+    QToolButton* m_detailFavoriteBtn = nullptr;
 };
 }
 
@@ -840,6 +1144,10 @@ void MainWindow::setupUI() {
     topBar->addWidget(m_slotPlusBtn);
 
     // Global Keyboard Shortcuts
+    auto* zoomResetSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_0), this);
+    connect(zoomResetSc, &QShortcut::activated, m_canvas, &NodeCanvas::resetZoom);
+
+    // Global Keyboard Shortcuts
     auto* saveSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_S), this);
     connect(saveSc, &QShortcut::activated, this, &MainWindow::onSavePreset);
 
@@ -1170,6 +1478,59 @@ void MainWindow::scanPlugins() {
         }
         
         info.isLV2 = true;
+
+        // Extract LV2 port details & bundle path
+        LilvNode* audioPortClass = lilv_new_uri(m_lilvWorld, LILV_URI_AUDIO_PORT);
+        LilvNode* inputPortClass = lilv_new_uri(m_lilvWorld, LILV_URI_INPUT_PORT);
+        LilvNode* outputPortClass = lilv_new_uri(m_lilvWorld, LILV_URI_OUTPUT_PORT);
+        LilvNode* controlPortClass = lilv_new_uri(m_lilvWorld, LILV_URI_CONTROL_PORT);
+
+        uint32_t numPorts = lilv_plugin_get_num_ports(p);
+        info.audioInputs = 0;
+        info.audioOutputs = 0;
+        info.controlPorts = 0;
+        for (uint32_t portIdx = 0; portIdx < numPorts; ++portIdx) {
+            const LilvPort* port = lilv_plugin_get_port_by_index(p, portIdx);
+            if (lilv_port_is_a(p, port, audioPortClass)) {
+                if (lilv_port_is_a(p, port, inputPortClass)) info.audioInputs++;
+                else if (lilv_port_is_a(p, port, outputPortClass)) info.audioOutputs++;
+            } else if (lilv_port_is_a(p, port, controlPortClass)) {
+                info.controlPorts++;
+            }
+        }
+
+        const LilvNode* bundleUri = lilv_plugin_get_bundle_uri(p);
+        if (bundleUri) {
+            if (char* bundlePath = lilv_file_uri_parse(lilv_node_as_uri(bundleUri), nullptr)) {
+                info.path = bundlePath;
+                lilv_free(bundlePath);
+            }
+        }
+
+        // Fallback: resolve modgui thumbnail from bundle directory if not set by Lilv property
+        if (info.thumbnailPath.isEmpty() && !info.path.empty()) {
+            QString pathStr = QString::fromStdString(info.path);
+            if (pathStr.endsWith('/')) pathStr.chop(1);
+            QDir modguiDir(pathStr + "/modgui");
+            if (modguiDir.exists()) {
+                QStringList filters = {"*thumb*.png", "*Thumb*.png", "*screenshot*.png", "*icon*.png", "*.png", "*.jpg"};
+                for (const auto& filter : filters) {
+                    QStringList files = modguiDir.entryList({filter}, QDir::Files);
+                    if (!files.isEmpty()) {
+                        info.thumbnailPath = modguiDir.filePath(files.first());
+                        break;
+                    }
+                }
+            }
+        }
+
+        const LilvUIs* uis = lilv_plugin_get_uis(p);
+        info.hasNativeGUI = (uis && lilv_uis_size(uis) > 0);
+
+        lilv_node_free(audioPortClass);
+        lilv_node_free(inputPortClass);
+        lilv_node_free(outputPortClass);
+        lilv_node_free(controlPortClass);
         
         // Extract category
         const LilvPluginClass* pclass = lilv_plugin_get_class(p);
@@ -1209,7 +1570,14 @@ void MainWindow::scanPlugins() {
                     scannedPaths.insert(fullPath);
                     
                     std::string name = entry.path().stem().string();
-                    PluginInfo vstInfo = { name, entry.path().string(), "VST3 Plugins", "", "", false };
+                    std::string category = "Utilities";
+                    std::string lowerName = QString::fromStdString(name).toLower().toStdString();
+                    if (lowerName.find("delay") != std::string::npos) category = "Delays";
+                    else if (lowerName.find("reverb") != std::string::npos) category = "Reverbs";
+                    else if (lowerName.find("amp") != std::string::npos || lowerName.find("gx") != std::string::npos || lowerName.find("guitarix") != std::string::npos) category = "Amplifiers";
+                    else if (lowerName.find("dist") != std::string::npos || lowerName.find("fuzz") != std::string::npos || lowerName.find("drive") != std::string::npos) category = "Distortions";
+                    else if (lowerName.find("eq") != std::string::npos || lowerName.find("filter") != std::string::npos) category = "EQ & Filters";
+                    PluginInfo vstInfo = { name, entry.path().string(), category, "", "", false, 2, 2, 0, "", "", {}, entry.path().string(), true };
                     m_availablePlugins.push_back(vstInfo);
                 }
             }
@@ -1220,11 +1588,11 @@ void MainWindow::scanPlugins() {
     
     // Add VST3 stubs if not found on disk
     if (!scannedPaths.contains("/usr/lib64/vst3/Guitarix.vst3")) {
-        PluginInfo vst3Info1 = { "GxGuitarix", "/usr/lib64/vst3/Guitarix.vst3", "VST3 Plugins", "", "", false };
+        PluginInfo vst3Info1 = { "GxGuitarix", "/usr/lib64/vst3/Guitarix.vst3", "Amplifiers", "", "", false, 2, 2, 0, "", "", {}, "/usr/lib64/vst3/Guitarix.vst3", true };
         m_availablePlugins.push_back(vst3Info1);
     }
     if (!scannedPaths.contains("/usr/lib64/vst3/Multi_Tap_Delay.vst3")) {
-        PluginInfo vst3Info2 = { "Multi Tap Delay", "/usr/lib64/vst3/Multi_Tap_Delay.vst3", "VST3 Plugins", "", "", false };
+        PluginInfo vst3Info2 = { "Multi Tap Delay", "/usr/lib64/vst3/Multi_Tap_Delay.vst3", "Delays", "", "", false, 2, 2, 0, "", "", {}, "/usr/lib64/vst3/Multi_Tap_Delay.vst3", true };
         m_availablePlugins.push_back(vst3Info2);
     }
     
@@ -1232,7 +1600,7 @@ void MainWindow::scanPlugins() {
     auto clapPlugins = CLAPPluginNode::scanStandardPaths();
     for (const auto& clapDesc : clapPlugins) {
         std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
-        std::string category = "CLAP Plugins";
+        std::string category = "Utilities";
         if (!clapDesc.features.empty()) {
             std::string feat = clapDesc.features[0];
             if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
@@ -1240,7 +1608,20 @@ void MainWindow::scanPlugins() {
             else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
             else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
         }
-        PluginInfo clapInfo = { clapDesc.name, uri, category, clapDesc.vendor, "", false };
+        PluginInfo clapInfo = {
+            clapDesc.name,
+            uri,
+            category,
+            clapDesc.vendor,
+            "",
+            false,
+            2, 2, 0,
+            clapDesc.version,
+            clapDesc.description,
+            clapDesc.features,
+            clapDesc.pluginPath,
+            true
+        };
         m_availablePlugins.push_back(clapInfo);
     }
 
@@ -1467,24 +1848,7 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
 
 void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol) {
     Q_UNUSED(screenPos);
-    std::vector<PickerPluginInfo> plugins;
-    plugins.reserve(m_availablePlugins.size());
-    for (const auto& info : m_availablePlugins) {
-        QString name = QString::fromStdString(info.name);
-        QString category = QString::fromStdString(info.category);
-        QString brand = QString::fromStdString(info.brand);
-        QString uri = QString::fromStdString(info.uri);
-        QString searchable = (name + " " + category + " " + brand + " " + uri).toLower();
-        plugins.push_back({
-            name,
-            uri,
-            category,
-            brand,
-            info.thumbnailPath,
-            info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3")),
-            searchable
-        });
-    }
+    std::vector<PickerPluginInfo> plugins = buildPickerInfos(m_availablePlugins);
     PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
     if (picker.exec() != QDialog::Accepted) return;
 
@@ -1561,24 +1925,7 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
         m_canvas->removePluginAt(row, col);
         showPluginControls(nullptr);
     } else if (selected == replaceAct) {
-        std::vector<PickerPluginInfo> plugins;
-        plugins.reserve(m_availablePlugins.size());
-        for (const auto& info : m_availablePlugins) {
-            QString name = QString::fromStdString(info.name);
-            QString category = QString::fromStdString(info.category);
-            QString brand = QString::fromStdString(info.brand);
-            QString uri = QString::fromStdString(info.uri);
-            QString searchable = (name + " " + category + " " + brand + " " + uri).toLower();
-            plugins.push_back({
-                name,
-                uri,
-                category,
-                brand,
-                info.thumbnailPath,
-                info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3")),
-                searchable
-            });
-        }
+        std::vector<PickerPluginInfo> plugins = buildPickerInfos(m_availablePlugins);
         PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
         if (picker.exec() == QDialog::Accepted) {
             std::string uri = picker.selectedUri().toStdString();

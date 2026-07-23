@@ -11,6 +11,9 @@
 #include "PortWidget.h"
 
 class PlusButtonWidget;
+class QFrame;
+class QLabel;
+class QToolButton;
 
 class NodeCanvas : public QGraphicsView {
     Q_OBJECT
@@ -107,8 +110,14 @@ public:
     int getHighestOccupiedCol() const;
     void setNumCols(int cols);
     void addCol();
+    double getZoomLevel() const { return m_zoomLevel; }
+    void setZoomLevel(double zoom);
+    void resetZoom();
+    void zoomIn();
+    void zoomOut();
 
 signals:
+    void zoomChanged(double zoom);
     void nodeSelected(std::shared_ptr<AudioNode> node);
     void editPluginUI(std::shared_ptr<AudioNode> node);
     void plusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol);
@@ -118,6 +127,10 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
     void drawBackground(QPainter* painter, const QRectF& rect) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     void clearSceneItems();
@@ -164,6 +177,17 @@ private:
     bool m_routingUpdatePending = false;
     bool m_mainOutputEnabled = true;
     int m_numCols = 6;
+    double m_zoomLevel = 1.0;
+    bool m_isPanning = false;
+    QPoint m_panStartPos;
+
+    QFrame* m_zoomOverlay = nullptr;
+    QLabel* m_zoomOverlayLabel = nullptr;
+    QToolButton* m_zoomOverlayMinusBtn = nullptr;
+    QToolButton* m_zoomOverlayPlusBtn = nullptr;
+    QToolButton* m_zoomOverlayResetBtn = nullptr;
+    void setupZoomOverlay();
+    void updateZoomOverlayPos();
 
     void setItemTargetPos(QGraphicsItem* item, QPointF targetPos, bool animate = true);
 
