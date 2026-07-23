@@ -42,9 +42,23 @@
 
 ---
 
-## 🛠️ Building from Source
+## 🛠️ System Requirements & Building
 
-### Prerequisites
+### 🔊 Audio Engine Requirements
+
+RigRoom uses **PipeWire** or **JACK** for ultra-low-latency real-time guitar audio processing.
+
+- **Ubuntu 22.04 / 24.04 & Debian 12 (PipeWire)**:
+  Modern Ubuntu distros run PipeWire by default. Install PipeWire's JACK compatibility library:
+  ```bash
+  sudo apt install -y pipewire-jack
+  ```
+- **Fedora / Arch Linux / Manjaro**:
+  PipeWire-JACK is included out-of-the-box. Ensure the service is active (`systemctl --user status pipewire`).
+
+---
+
+### Prerequisites for Building from Source
 
 #### **Ubuntu 22.04 / 24.04 & Debian 12**
 ```bash

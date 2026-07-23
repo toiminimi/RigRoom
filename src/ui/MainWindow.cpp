@@ -1857,16 +1857,6 @@ void MainWindow::scanPlugins() {
         }
     }
     
-    // Add VST3 stubs if not found on disk
-    if (!scannedPaths.contains("/usr/lib64/vst3/Guitarix.vst3")) {
-        PluginInfo vst3Info1 = { "GxGuitarix", "/usr/lib64/vst3/Guitarix.vst3", "Amplifiers", "", "", false, 2, 2, 0, "", "", {}, "/usr/lib64/vst3/Guitarix.vst3", true };
-        m_availablePlugins.push_back(vst3Info1);
-    }
-    if (!scannedPaths.contains("/usr/lib64/vst3/Multi_Tap_Delay.vst3")) {
-        PluginInfo vst3Info2 = { "Multi Tap Delay", "/usr/lib64/vst3/Multi_Tap_Delay.vst3", "Delays", "", "", false, 2, 2, 0, "", "", {}, "/usr/lib64/vst3/Multi_Tap_Delay.vst3", true };
-        m_availablePlugins.push_back(vst3Info2);
-    }
-    
     // Scan CLAP plugins
     std::vector<std::string> customClapDirs;
     for (const auto& p : m_customCLAPPaths) {
@@ -1897,11 +1887,7 @@ void MainWindow::scanPlugins() {
                 clapDesc.pluginPath,
                 true
             };
-            m_availablePlugins.push_back(clapInfo);
         }
-
-    PluginInfo bypassInfo = { "Bypass / Pass-through", "builtin:bypass", "Utilities", "", "", false };
-    m_availablePlugins.push_back(bypassInfo);
 }
 
 void MainWindow::refreshPresetList() {

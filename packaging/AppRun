@@ -1,8 +1,20 @@
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="${HERE}/usr/bin:${PATH}"
-export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+
+# Multi-distro library paths (bundled Qt/app libs first, then host PipeWire/JACK paths, then fallback stub for systems without JACK)
+export LD_LIBRARY_PATH="${HERE}/usr/lib:/usr/lib64/pipewire-0.3/jack:/usr/lib/x86_64-linux-gnu/pipewire-0.3/jack:/usr/lib/pipewire-0.3/jack:/usr/lib64:/usr/lib/x86_64-linux-gnu:${HERE}/usr/lib/fallback:${LD_LIBRARY_PATH}"
 export QT_PLUGIN_PATH="${HERE}/usr/plugins:${QT_PLUGIN_PATH}"
 export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS}"
 
+# Set SUIL_MODULE_DIR for LV2 UI wrappers
+if [ -d "${HERE}/usr/lib/suil-0" ]; then
+    export SUIL_MODULE_DIR="${HERE}/usr/lib/suil-0"
+elif [ -d "/usr/lib/x86_64-linux-gnu/suil-0" ]; then
+    export SUIL_MODULE_DIR="/usr/lib/x86_64-linux-gnu/suil-0"
+elif [ -d "/usr/lib64/suil-0" ]; then
+    export SUIL_MODULE_DIR="/usr/lib64/suil-0"
+fi
+
 exec "${HERE}/usr/bin/RigRoom" "$@"
+

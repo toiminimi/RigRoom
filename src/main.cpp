@@ -68,9 +68,16 @@ int main(int argc, char* argv[]) {
         qputenv("QT_SCALE_FACTOR", "1");
     }
 
-    // Fedora installs Suil's Qt adapters outside the default linker paths.
-    if (qEnvironmentVariableIsEmpty("SUIL_MODULE_DIR") && QDir("/usr/lib64/suil-0").exists()) {
-        qputenv("SUIL_MODULE_DIR", "/usr/lib64/suil-0");
+    // Suil module directory auto-detection across distros & AppImage
+    if (qEnvironmentVariableIsEmpty("SUIL_MODULE_DIR")) {
+        QString appDirSuil = QCoreApplication::applicationDirPath() + "/../lib/suil-0";
+        if (QDir(appDirSuil).exists()) {
+            qputenv("SUIL_MODULE_DIR", appDirSuil.toUtf8());
+        } else if (QDir("/usr/lib/x86_64-linux-gnu/suil-0").exists()) {
+            qputenv("SUIL_MODULE_DIR", "/usr/lib/x86_64-linux-gnu/suil-0");
+        } else if (QDir("/usr/lib64/suil-0").exists()) {
+            qputenv("SUIL_MODULE_DIR", "/usr/lib64/suil-0");
+        }
     }
     suil_init(&argc, &argv, SUIL_ARG_NONE);
     

@@ -10,8 +10,21 @@ echo "=========================================="
 echo " 🎛️  Building RigRoom AppImage"
 echo "=========================================="
 
+# Auto-delegate compilation to baseline Ubuntu 24.04 container via podman/docker if running on host
+if [ -z "${IN_BUILD_CONTAINER}" ] && (command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1); then
+    CONTAINER_TOOL=$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)
+    echo "--> Delegates compilation to baseline container via ${CONTAINER_TOOL} (Ubuntu 24.04 for universal Glibc compatibility)..."
+    exec "${CONTAINER_TOOL}" run --rm \
+        -v "${ROOT_DIR}:/workspace:Z" \
+        -w /workspace \
+        -e IN_BUILD_CONTAINER=1 \
+        ubuntu:24.04 \
+        bash -c "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libjack-jackd2-dev liblilv-dev libsuil-dev libx11-dev curl file && ./packaging/build-appimage.sh"
+fi
+
 # 1. Compile RigRoom in Release mode
 echo "--> Compiling RigRoom binary..."
+rm -rf "${BUILD_DIR}/CMakeCache.txt" "${BUILD_DIR}/CMakeFiles"
 cmake -B "${BUILD_DIR}" -S "${ROOT_DIR}" -DCMAKE_BUILD_TYPE=Release
 
 # Calculate safe parallel jobs based on available RAM (allocating ~2GB per job) to prevent OOM system lockups
@@ -39,11 +52,71 @@ cp "${BUILD_DIR}/RigRoom" "${APP_DIR}/usr/bin/RigRoom"
 cp "${SCRIPT_DIR}/AppRun" "${APP_DIR}/AppRun"
 chmod +x "${APP_DIR}/AppRun"
 
-# Copy Qt platform plugins if available on host system
+# Copy Qt plugins & themes
+echo "--> Bundling Qt plugins & themes..."
 QT_PLUGINS_DIR=$(qmake6 -query QT_INSTALL_PLUGINS 2>/dev/null || qmake -query QT_INSTALL_PLUGINS 2>/dev/null || echo "/usr/lib64/qt6/plugins")
-if [ -d "${QT_PLUGINS_DIR}/platforms" ]; then
-    cp -r "${QT_PLUGINS_DIR}/platforms" "${APP_DIR}/usr/plugins/" 2>/dev/null || true
+for plugin_dir in platforms platformthemes iconengines imageformats styles; do
+    if [ -d "${QT_PLUGINS_DIR}/${plugin_dir}" ]; then
+        mkdir -p "${APP_DIR}/usr/plugins/${plugin_dir}"
+        cp -r "${QT_PLUGINS_DIR}/${plugin_dir}"/* "${APP_DIR}/usr/plugins/${plugin_dir}/" 2>/dev/null || true
+    fi
+done
+
+# Copy Suil modules into AppDir/usr/lib/suil-0
+echo "--> Bundling Suil plugin modules..."
+for suil_dir in /usr/lib64/suil-0 /usr/lib/x86_64-linux-gnu/suil-0 /usr/lib/suil-0; do
+    if [ -d "$suil_dir" ]; then
+        mkdir -p "${APP_DIR}/usr/lib/suil-0"
+        cp -r "$suil_dir"/* "${APP_DIR}/usr/lib/suil-0/" 2>/dev/null || true
+    fi
+done
+
+# Copy shared library dependencies into AppDir/usr/lib
+echo "--> Bundling dynamic shared libraries into AppDir..."
+mkdir -p "${APP_DIR}/usr/lib"
+
+EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcrypto|libssl|libcurl|libdbus-1|libpcre2"
+
+# Copy direct dependencies of RigRoom
+for lib in $(ldd "${BUILD_DIR}/RigRoom" | awk '{print $3}' | grep '^/'); do
+    libname=$(basename "$lib")
+    if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
+        cp -L "$lib" "${APP_DIR}/usr/lib/" 2>/dev/null || true
+    fi
+done
+
+# Copy dependencies of Qt platform plugins
+if [ -d "${APP_DIR}/usr/plugins/platforms" ]; then
+    for plugin in "${APP_DIR}/usr/plugins/platforms"/*.so; do
+        if [ -f "$plugin" ]; then
+            for lib in $(ldd "$plugin" 2>/dev/null | awk '{print $3}' | grep '^/'); do
+                libname=$(basename "$lib")
+                if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
+                    cp -L "$lib" "${APP_DIR}/usr/lib/" 2>/dev/null || true
+                fi
+            done
+        fi
+    done
 fi
+
+# Multi-pass recursive dependency scanner to ensure all sub-dependencies are bundled
+for pass in 1 2; do
+    for libfile in "${APP_DIR}/usr/lib"/*.so*; do
+        if [ -f "$libfile" ] && [ ! -L "$libfile" ]; then
+            for lib in $(ldd "$libfile" 2>/dev/null | awk '{print $3}' | grep '^/'); do
+                libname=$(basename "$lib")
+                if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
+                    cp -L "$lib" "${APP_DIR}/usr/lib/" 2>/dev/null || true
+                fi
+            done
+        fi
+    done
+done
+
+# Build fallback libjack.so.0 stub for systems without PipeWire/JACK installed
+echo "--> Compiling libjack fallback stub for systems without JACK..."
+mkdir -p "${APP_DIR}/usr/lib/fallback"
+gcc -shared -fPIC "${SCRIPT_DIR}/libjack_fallback.c" -o "${APP_DIR}/usr/lib/fallback/libjack.so.0" 2>/dev/null || true
 
 # Copy desktop file & app icon
 cp "${SCRIPT_DIR}/org.rigroom.RigRoom.desktop" "${APP_DIR}/org.rigroom.RigRoom.desktop"
@@ -68,14 +141,44 @@ if [ ! -f "${APPIMAGETOOL}" ]; then
 fi
 
 # 4. Generate AppImage
+RAW_APPIMAGE="${ROOT_DIR}/build/RigRoom-raw.AppImage"
 OUTPUT_APPIMAGE="${ROOT_DIR}/RigRoom-0.9.0-x86_64.AppImage"
 echo "--> Generating ${OUTPUT_APPIMAGE}..."
 export APPIMAGE_EXTRACT_AND_RUN=1
 export NO_APPSTREAM=1
-ARCH=x86_64 "${APPIMAGETOOL}" "${APP_DIR}" "${OUTPUT_APPIMAGE}"
+ARCH=x86_64 "${APPIMAGETOOL}" "${APP_DIR}" "${RAW_APPIMAGE}"
+
+# 5. Create Universal Wrapper with Automatic FUSE 2 Bypass
+echo "--> Packaging Universal Zero-Install AppImage..."
+cat << 'EOF' > "${OUTPUT_APPIMAGE}"
+#!/bin/bash
+# RigRoom Universal AppImage Wrapper
+# Auto-detects missing FUSE 2 library on modern Linux distros (Ubuntu 22.04+, 24.04+, Fedora, Arch)
+SELF="$(readlink -f "$0")"
+if ! ldconfig -p 2>/dev/null | grep -q "libfuse.so.2" && [ ! -f /lib/x86_64-linux-gnu/libfuse.so.2 ] && [ ! -f /usr/lib64/libfuse.so.2 ] && [ ! -f /usr/lib/libfuse.so.2 ]; then
+    export APPIMAGE_EXTRACT_AND_RUN=1
+fi
+SKIP=$(awk '/^__ARCHIVE_FOLLOWS__/ { print NR + 1; exit 0; }' "$SELF")
+tail -n +$SKIP "$SELF" > /tmp/rigroom_exec_$$ 2>/dev/null || true
+if [ -s /tmp/rigroom_exec_$$ ]; then
+    chmod +x /tmp/rigroom_exec_$$
+    /tmp/rigroom_exec_$$ "$@"
+    RET=$?
+    rm -f /tmp/rigroom_exec_$$
+    exit $RET
+else
+    rm -f /tmp/rigroom_exec_$$
+    exec "$SELF" "$@"
+fi
+exit 0
+__ARCHIVE_FOLLOWS__
+EOF
+
+cat "${RAW_APPIMAGE}" >> "${OUTPUT_APPIMAGE}"
+chmod +x "${OUTPUT_APPIMAGE}"
 
 echo "=========================================="
-echo " ✅ AppImage Created Successfully!"
+echo " ✅ Universal AppImage Created Successfully!"
 echo " Output: ${OUTPUT_APPIMAGE}"
 echo " Run with: ./RigRoom-0.9.0-x86_64.AppImage"
 echo "=========================================="
