@@ -18,6 +18,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QFileInfo>
+#include <QToolButton>
 
 static QString obfuscateKey(const QString& input) {
     QByteArray data = input.toUtf8();
@@ -153,26 +154,33 @@ void Tone3000Dialog::setupUI() {
     mainLayout->setContentsMargins(16, 16, 16, 16);
     mainLayout->setSpacing(12);
 
-    // API Key Banner
+    // API Key Required Banner
     m_apiKeyBanner = new QWidget(this);
     m_apiKeyBanner->setStyleSheet(
-        "QWidget { background-color: #2b2111; border: 1px solid #d4a373; border-radius: 4px; }"
-        "QLabel { color: #fefae0; font-size: 12px; border: none; background: transparent; }"
-        "QLineEdit { background-color: #1a1c1e; color: #e2e2e6; border: 1px solid #43474a; padding: 4px; font-size: 11px; }"
-        "QPushButton { background-color: #d4a373; color: #1a1c1e; font-weight: bold; border-radius: 3px; padding: 4px 10px; font-size: 11px; }"
-        "QPushButton:hover { background-color: #e9c46a; }"
+        "QWidget { background-color: #171d27; border: 1px solid #00B0FF; border-radius: 6px; }"
+        "QLabel { color: #ECECF0; font-size: 11px; border: none; background: transparent; }"
+        "QLineEdit { background-color: #222834; color: #ffffff; border: 1px solid #384656; padding: 5px; font-size: 11px; border-radius: 4px; }"
+        "QPushButton { background-color: #00B0FF; color: #000000; font-weight: bold; border-radius: 4px; padding: 5px 12px; font-size: 11px; }"
+        "QPushButton:hover { background-color: #38c5ff; }"
     );
     QHBoxLayout* bannerLayout = new QHBoxLayout(m_apiKeyBanner);
-    bannerLayout->setContentsMargins(10, 6, 10, 6);
+    bannerLayout->setContentsMargins(12, 8, 12, 8);
     bannerLayout->setSpacing(10);
     
-    QLabel* warningIcon = new QLabel("⚠️", m_apiKeyBanner);
-    QLabel* bannerText = new QLabel("Using anonymous guest key. Enter your TONE3000 Secret Key (t3k_cs_...) or Legacy API Key for full access:", m_apiKeyBanner);
+    QLabel* warningIcon = new QLabel("🔑", m_apiKeyBanner);
+    warningIcon->setStyleSheet("font-size: 16px;");
+    
+    QLabel* bannerText = new QLabel(
+        "<b>TONE3000 Secret Key Required:</b> Enter your Secret Key (starts with <code>t3k_cs_...</code>) from "
+        "<a href='https://tone3000.com/settings' style='color:#00B0FF;'>tone3000.com/settings</a> -> <b>API & Developer Keys</b>:",
+        m_apiKeyBanner
+    );
+    bannerText->setOpenExternalLinks(true);
     
     QLineEdit* keyInput = new QLineEdit(m_apiKeyBanner);
-    keyInput->setPlaceholderText("Paste API Key here...");
+    keyInput->setPlaceholderText("Paste t3k_cs_... Secret Key");
     keyInput->setEchoMode(QLineEdit::Password);
-    keyInput->setFixedWidth(200);
+    keyInput->setFixedWidth(220);
     
     QPushButton* saveKeyBtn = new QPushButton("Save Key", m_apiKeyBanner);
     
@@ -183,7 +191,7 @@ void Tone3000Dialog::setupUI() {
     
     mainLayout->addWidget(m_apiKeyBanner);
     
-    // Check if key is already saved to decide whether to hide
+    // Hide banner if key is present
     {
         QSettings settings("PedalBoard", "PedalBoard");
         if (!settings.value("tone3000_api_key", "").toString().isEmpty()) {
@@ -646,7 +654,9 @@ void Tone3000Dialog::requestSearch() {
         
         QNetworkRequest request;
         request.setUrl(url);
-        request.setRawHeader("Authorization", ("Bearer " + activeKey).toUtf8());
+        if (!activeKey.isEmpty()) {
+            request.setRawHeader("Authorization", ("Bearer " + activeKey).toUtf8());
+        }
         
         m_currentReply = m_networkManager->get(request);
     }

@@ -116,6 +116,8 @@ private:
     QToolButton* m_xrunButton = nullptr;
     
     QDialog* m_settingsDialog = nullptr;
+    QLineEdit* m_apiKeyEdit = nullptr;
+    std::function<void()> m_updateKeyStatusFunc;
     float m_inputLevelDecay = 0.0f;
     float m_outputLevelDecay = 0.0f;
     int m_inputClipHoldTicks = 0;

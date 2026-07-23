@@ -1229,20 +1229,75 @@ void MainWindow::setupUI() {
     
     dialogLayout->addWidget(ioBox);
     
-    // TONE3000 Integration
+    // TONE3000 Integration & API Key Management
     QGroupBox* toneBox = new QGroupBox("TONE3000 Integration", m_settingsDialog);
     toneBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333333; border-radius: 6px; margin-top: 10px; padding: 15px; }"
+        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 15px; background: #1a1a1f; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
     );
-    QFormLayout* toneFormLayout = new QFormLayout(toneBox);
-    toneFormLayout->setSpacing(10);
-    
+    QVBoxLayout* toneLayout = new QVBoxLayout(toneBox);
+    toneLayout->setSpacing(10);
+
+    QLabel* toneStatusLabel = new QLabel(toneBox);
+    toneStatusLabel->setStyleSheet("font-size: 11px; font-weight: bold; border: none; background: transparent;");
+
+    QHBoxLayout* keyInputLayout = new QHBoxLayout();
+    keyInputLayout->setSpacing(6);
+
     QLineEdit* apiKeyEdit = new QLineEdit(m_settingsDialog);
-    apiKeyEdit->setPlaceholderText("Enter your t3k_cs_... Secret Key or Legacy API Key");
+    apiKeyEdit->setPlaceholderText("Paste t3k_cs_... Secret Key or Legacy API Key");
     apiKeyEdit->setEchoMode(QLineEdit::Password);
-    
-    // Load existing value
+    apiKeyEdit->setStyleSheet("QLineEdit { background: #222228; border: 1px solid #363642; border-radius: 4px; color: #ECECF0; padding: 6px; font-size: 11px; }");
+
+    QToolButton* toggleEyeBtn = new QToolButton(m_settingsDialog);
+    toggleEyeBtn->setText("🔒");
+    toggleEyeBtn->setToolTip("Show / Hide API Key");
+    toggleEyeBtn->setFixedSize(28, 28);
+    toggleEyeBtn->setCursor(Qt::PointingHandCursor);
+    toggleEyeBtn->setStyleSheet(
+        "QToolButton { background-color: #282832; color: #E0E0E0; border: 1px solid #383848; border-radius: 4px; font-size: 12px; }"
+        "QToolButton:hover { background-color: #343442; color: white; border-color: #00B0FF; }"
+    );
+    connect(toggleEyeBtn, &QToolButton::clicked, apiKeyEdit, [apiKeyEdit, toggleEyeBtn]() {
+        if (apiKeyEdit->echoMode() == QLineEdit::Password) {
+            apiKeyEdit->setEchoMode(QLineEdit::Normal);
+            toggleEyeBtn->setText("👁️");
+        } else {
+            apiKeyEdit->setEchoMode(QLineEdit::Password);
+            toggleEyeBtn->setText("🔒");
+        }
+    });
+
+    QPushButton* clearKeyBtn = new QPushButton("🗑️ Clear", m_settingsDialog);
+    clearKeyBtn->setToolTip("Remove stored API key");
+    clearKeyBtn->setCursor(Qt::PointingHandCursor);
+    clearKeyBtn->setStyleSheet(
+        "QPushButton { background: #352528; color: #FF6B6B; font-weight: bold; border: 1px solid #4a3034; border-radius: 4px; padding: 5px 10px; font-size: 11px; }"
+        "QPushButton:hover { background: #4a2d32; color: #FF8787; border-color: #FF5252; }"
+        "QPushButton:disabled { color: #555555; background: #1c1c20; border-color: #28282c; }"
+    );
+
+    keyInputLayout->addWidget(apiKeyEdit, 1);
+    keyInputLayout->addWidget(toggleEyeBtn);
+    keyInputLayout->addWidget(clearKeyBtn);
+
+    auto updateKeyStatus = [apiKeyEdit, toneStatusLabel, clearKeyBtn]() {
+        QString text = apiKeyEdit->text().trimmed();
+        if (text.isEmpty()) {
+            toneStatusLabel->setText("🔑 Secret Key Required: Enter your Secret Key (t3k_cs_...) to enable online searches");
+            toneStatusLabel->setStyleSheet("color: #FFB74D; font-size: 11px; font-weight: bold; border: none;");
+            clearKeyBtn->setEnabled(false);
+        } else {
+            toneStatusLabel->setText("✓ Mode: Secret Key Configured — Full TONE3000 API Access");
+            toneStatusLabel->setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold; border: none;");
+            clearKeyBtn->setEnabled(true);
+        }
+    };
+
+    m_apiKeyEdit = apiKeyEdit;
+    m_updateKeyStatusFunc = updateKeyStatus;
+
+    // Load existing saved value
     {
         QSettings settings("PedalBoard", "PedalBoard");
         QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
@@ -1250,17 +1305,34 @@ void MainWindow::setupUI() {
             apiKeyEdit->setText(deobfuscateKey(savedKeyEnc));
         }
     }
-    
-    connect(apiKeyEdit, &QLineEdit::textChanged, this, [](const QString& text) {
+    updateKeyStatus();
+
+    connect(apiKeyEdit, &QLineEdit::textChanged, this, [updateKeyStatus](const QString& text) {
         QSettings settings("PedalBoard", "PedalBoard");
         if (text.trimmed().isEmpty()) {
             settings.remove("tone3000_api_key");
         } else {
             settings.setValue("tone3000_api_key", obfuscateKey(text.trimmed()));
         }
+        updateKeyStatus();
     });
-    
-    toneFormLayout->addRow("API Key:", apiKeyEdit);
+
+    connect(clearKeyBtn, &QPushButton::clicked, this, [apiKeyEdit]() {
+        apiKeyEdit->clear();
+        QSettings settings("PedalBoard", "PedalBoard");
+        settings.remove("tone3000_api_key");
+    });
+
+    QLabel* helpLabel = new QLabel(
+        "<b>Which key is needed?</b> Copy your <b>Secret Key</b> (starts with <code>t3k_cs_...</code>) from your TONE3000 account.<br>"
+        "<span style='color:#a0a4b8;'>Path: <b>tone3000.com</b> → <b>Settings</b> → <b>API & Developer Keys</b> → <b>Secret Key</b></span><br>"
+        "<a href='https://tone3000.com/settings' style='color:#00B0FF; font-weight:bold;'>🔗 Open tone3000.com/settings in browser</a>", toneBox);
+    helpLabel->setStyleSheet("font-size: 11px; color: #CCCCCC; border: none; padding-top: 4px;");
+    helpLabel->setOpenExternalLinks(true);
+
+    toneLayout->addWidget(toneStatusLabel);
+    toneLayout->addLayout(keyInputLayout);
+    toneLayout->addWidget(helpLabel);
     dialogLayout->addWidget(toneBox);
     
     QHBoxLayout* btnLayout = new QHBoxLayout();
@@ -1344,6 +1416,12 @@ void MainWindow::setupUI() {
     QPushButton* settingsBtn = new QPushButton("Settings", this);
     settingsBtn->setToolTip("Open audio input/output and buffer settings");
     connect(settingsBtn, &QPushButton::clicked, this, [this]() {
+        QSettings settings("PedalBoard", "PedalBoard");
+        QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
+        if (m_apiKeyEdit) {
+            m_apiKeyEdit->setText(savedKeyEnc.isEmpty() ? "" : deobfuscateKey(savedKeyEnc));
+            if (m_updateKeyStatusFunc) m_updateKeyStatusFunc();
+        }
         m_settingsDialog->exec();
     });
     topBar->addWidget(settingsBtn);

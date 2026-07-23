@@ -16,7 +16,7 @@
 - [x] **Plugin Browser Format Filtering & Rich Details**: Separate LV2 / CLAP / VST3 format filter tabs from categories, and display an enhanced plugin metadata detail panel (format, vendor, channel layout, URI, parameters).
 
 ## 🔵 Priority 3: Settings & TONE3000 Integration
-- [ ] **Settings API Key Management**: Add "Clear API Key" button, confirmation indication on save, and helpful guide/links on acquiring a TONE3000 API key.
+- [x] **Settings API Key Management**: Add "Clear API Key" button, confirmation indication on save, and helpful guide/links on acquiring a TONE3000 API key.
 - [ ] **TONE3000 Prompt Dismissal & Feature Gating**: Allow dismissing API key suggestions and hide API-dependent features when no key is set.
 - [ ] **Custom Plugin Paths & Type Toggles**: Allow users to specify custom VST3/CLAP/LV2 search directories and toggle specific plugin formats on/off.
 
