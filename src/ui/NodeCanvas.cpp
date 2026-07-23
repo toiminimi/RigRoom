@@ -318,6 +318,7 @@ void NodeCanvas::insertPluginBefore(int row, int col, std::shared_ptr<AudioNode>
 void NodeCanvas::removePluginAt(int row, int col) {
     if (row < 0 || row >= NUM_ROWS || col < 0 || col >= NUM_COLS) return;
     if (m_rows[row].plugins[col]) {
+        emit nodeAboutToBeRemoved(m_rows[row].plugins[col].get());
         const std::string removedId = m_rows[row].plugins[col]->uniqueId;
         m_engine->removeNode(removedId);
         m_rows[row].plugins[col] = nullptr;
@@ -328,6 +329,7 @@ void NodeCanvas::removePluginAt(int row, int col) {
 void NodeCanvas::replacePluginAt(int row, int col, std::shared_ptr<AudioNode> newNode) {
     if (row < 0 || row >= NUM_ROWS || col < 0 || col >= NUM_COLS) return;
     if (m_rows[row].plugins[col]) {
+        emit nodeAboutToBeRemoved(m_rows[row].plugins[col].get());
         const std::string removedId = m_rows[row].plugins[col]->uniqueId;
         m_engine->removeNode(removedId);
         if (row == MAIN_ROW) {
@@ -373,6 +375,7 @@ void NodeCanvas::movePlugin(int fromRow, int fromCol, int toRow, int toCol) {
 }
 
 void NodeCanvas::clearCanvas() {
+    emit canvasAboutToBeCleared();
     for (int r = 0; r < NUM_ROWS; ++r) {
         for (int c = 0; c < NUM_COLS; ++c)
             m_rows[r].plugins[c] = nullptr;

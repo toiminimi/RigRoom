@@ -75,6 +75,10 @@ public:
     float getOutputGainDB() const;
     float getInputPeak() { return m_inputPeak.exchange(0.0f, std::memory_order_relaxed); }
     float getOutputPeak() { return m_outputPeak.exchange(0.0f, std::memory_order_relaxed); }
+    uint32_t getXRunCount() const { return m_xrunCount.load(std::memory_order_relaxed); }
+    void resetXRunCount() { m_xrunCount.store(0, std::memory_order_relaxed); }
+    bool hasInputClipped() { return m_inputClipped.exchange(false, std::memory_order_relaxed); }
+    bool hasOutputClipped() { return m_outputClipped.exchange(false, std::memory_order_relaxed); }
 
     // Setup execution order topologically (safe to call from main thread, triggers atomic swap)
     void rebuildGraph();
@@ -90,6 +94,7 @@ private:
     static int processCallback(jack_nframes_t nframes, void* arg);
     static void shutdownCallback(void* arg);
     static int bufferSizeCallback(jack_nframes_t nframes, void* arg);
+    static int xrunCallback(void* arg);
     
     void processAudio(int numFrames);
     void topologicalSort(std::vector<AudioNode*>& sorted);
@@ -115,6 +120,9 @@ private:
     std::atomic<float> m_outputGain{1.0f};
     std::atomic<float> m_inputPeak{0.0f};
     std::atomic<float> m_outputPeak{0.0f};
+    std::atomic<uint32_t> m_xrunCount{0};
+    std::atomic<bool> m_inputClipped{false};
+    std::atomic<bool> m_outputClipped{false};
     
     // Graph representation
     std::vector<std::shared_ptr<AudioNode>> m_nodes;

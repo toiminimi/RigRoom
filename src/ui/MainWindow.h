@@ -18,6 +18,8 @@
 #include "NodeCanvas.h"
 #include <lilv/lilv.h>
 
+class ExternalPluginUIWindow;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
     friend class ExternalPluginUIWindow;
@@ -54,6 +56,11 @@ private slots:
     void showRoutingNodeControls(int row, bool isSplit);
 
 private:
+    void closeAllPluginUIs();
+    void closePluginUIForNode(AudioNode* node);
+    bool raisePluginUIForNode(AudioNode* node);
+    void registerExternalUI(ExternalPluginUIWindow* uiWin);
+    void unregisterExternalUI(ExternalPluginUIWindow* uiWin);
     void setupUI();
     void scanPlugins();
     void savePresetToFile(const QString& path);
@@ -89,12 +96,17 @@ private:
     QProgressBar* m_outputMeter = nullptr;
     QProgressBar* m_inputPopupMeter = nullptr;
     QProgressBar* m_outputPopupMeter = nullptr;
-    QProgressBar* m_cpuBar = nullptr;
+    QToolButton* m_dspCpuButton = nullptr;
     QLabel* m_statusLabel = nullptr;
+    QToolButton* m_xrunButton = nullptr;
     
     QDialog* m_settingsDialog = nullptr;
     float m_inputLevelDecay = 0.0f;
     float m_outputLevelDecay = 0.0f;
+    int m_inputClipHoldTicks = 0;
+    int m_outputClipHoldTicks = 0;
+    float m_smoothedCpuLoad = 0.0f;
+    float m_peakCpuLoad = 0.0f;
     
     QWidget* m_paramContainer = nullptr;
     QVBoxLayout* m_paramLayout = nullptr;
@@ -107,6 +119,7 @@ private:
     std::vector<ParameterControlBinding> m_parameterControlBindings;
     std::string m_activePluginPresetNodeId;
     QString m_activePluginPresetName;
+    std::unordered_map<std::string, QString> m_nodeActivePresets;
     
     QTimer* m_statusTimer = nullptr;
     QTimer* m_audioPortTimer = nullptr;
@@ -133,4 +146,5 @@ private:
     };
     std::vector<PluginInfo> m_availablePlugins;
     QSet<QString> m_favoritePluginUris;
+    QList<ExternalPluginUIWindow*> m_externalUiWindows;
 };

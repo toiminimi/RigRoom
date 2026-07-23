@@ -18,6 +18,8 @@ signals:
     void routingChanged();
     void branchSelected(int row);
     void routingNodeSelected(int row, bool isSplit);
+    void canvasAboutToBeCleared();
+    void nodeAboutToBeRemoved(AudioNode* node);
 public:
     explicit NodeCanvas(AudioEngine* engine, QWidget* parent = nullptr);
     ~NodeCanvas() override;

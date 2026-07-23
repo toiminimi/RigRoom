@@ -67,6 +67,7 @@ bool AudioEngine::init(const std::string& clientName) {
     
     jack_set_process_callback(m_jackClient, processCallback, this);
     jack_set_buffer_size_callback(m_jackClient, bufferSizeCallback, this);
+    jack_set_xrun_callback(m_jackClient, xrunCallback, this);
     jack_on_shutdown(m_jackClient, shutdownCallback, this);
     
     m_sysInputNode->prepare(m_sampleRate, 1024);
@@ -451,6 +452,14 @@ int AudioEngine::bufferSizeCallback(jack_nframes_t nframes, void* arg) {
     return 0;
 }
 
+int AudioEngine::xrunCallback(void* arg) {
+    auto* engine = static_cast<AudioEngine*>(arg);
+    if (engine) {
+        engine->m_xrunCount.fetch_add(1, std::memory_order_relaxed);
+    }
+    return 0;
+}
+
 void AudioEngine::shutdownCallback(void* arg) {
     std::cerr << "JACK server shut down!" << std::endl;
 }
@@ -491,6 +500,9 @@ void AudioEngine::processAudio(int numFrames) {
         } else if (dst) {
             std::memset(dst, 0, numFrames * sizeof(float));
         }
+    }
+    if (inPeak >= 1.0f) {
+        m_inputClipped.store(true, std::memory_order_relaxed);
     }
     float previousInputPeak = m_inputPeak.load(std::memory_order_relaxed);
     while (inPeak > previousInputPeak &&
@@ -551,6 +563,9 @@ void AudioEngine::processAudio(int numFrames) {
                 if (absVal > outPeak) outPeak = absVal;
             }
         }
+    }
+    if (outPeak >= 1.0f) {
+        m_outputClipped.store(true, std::memory_order_relaxed);
     }
     float previousOutputPeak = m_outputPeak.load(std::memory_order_relaxed);
     while (outPeak > previousOutputPeak &&

@@ -566,6 +566,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_canvas, &NodeCanvas::nodeContextMenuRequested, this, &MainWindow::onNodeContextMenuRequested);
     connect(m_canvas, &NodeCanvas::branchSelected, this, &MainWindow::showBranchControls);
     connect(m_canvas, &NodeCanvas::routingNodeSelected, this, &MainWindow::showRoutingNodeControls);
+    connect(m_canvas, &NodeCanvas::canvasAboutToBeCleared, this, &MainWindow::closeAllPluginUIs);
+    connect(m_canvas, &NodeCanvas::nodeAboutToBeRemoved, this, &MainWindow::closePluginUIForNode);
     connect(m_canvas, &NodeCanvas::routingChanged, this, [this]() {
         if (!m_isLoadingPreset) {
             setUnsavedChanges(true);
@@ -882,6 +884,7 @@ void MainWindow::setupUI() {
         [this] { saveConfigSettings(); }, this);
     m_inputPopupMeter = inputPopover->meter();
     connect(m_inputGainLabel, &QToolButton::clicked, this, [inputPopover, this] {
+        m_inputClipHoldTicks = 0;
         inputPopover->showBelow(m_inputGainLabel);
     });
     
@@ -912,6 +915,7 @@ void MainWindow::setupUI() {
         [this] { saveConfigSettings(); }, this);
     m_outputPopupMeter = outputPopover->meter();
     connect(m_outputGainLabel, &QToolButton::clicked, this, [outputPopover, this] {
+        m_outputClipHoldTicks = 0;
         outputPopover->showBelow(m_outputGainLabel);
     });
     
@@ -926,16 +930,7 @@ void MainWindow::setupUI() {
     topBar->addWidget(settingsBtn);
 
     topBar->addSpacing(15);
-    
-    // CPU load meter
-    topBar->addWidget(new QLabel("DSP CPU:", this));
-    m_cpuBar = new QProgressBar(this);
-    m_cpuBar->setRange(0, 100);
-    m_cpuBar->setValue(0);
-    m_cpuBar->setMaximumWidth(100);
-    m_cpuBar->setFixedHeight(16);
-    topBar->addWidget(m_cpuBar);
-    
+
     mainLayout->addWidget(topBarWidget);
     
     // --- WORKSPACE SPLITTER ---
@@ -982,11 +977,50 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(midSplitter);
     
     // --- STATUS BAR ---
+    QWidget* statusBarContainer = new QWidget(this);
+    statusBarContainer->setFixedHeight(24);
+    statusBarContainer->setStyleSheet("background-color: #18181B; border-top: 1px solid #29292D;");
+    QHBoxLayout* statusLayout = new QHBoxLayout(statusBarContainer);
+    statusLayout->setContentsMargins(8, 0, 8, 0);
+
     m_statusLabel = new QLabel("Ready | JACK Latency: " + QString::number(currentSize * 1000.0 / m_engine.getSampleRate(), 'f', 2) + " ms", this);
-    m_statusLabel->setFixedHeight(24);
-    m_statusLabel->setContentsMargins(8, 0, 8, 0);
-    m_statusLabel->setStyleSheet("color: #888888; font-size: 11px; background-color: #18181B; border-top: 1px solid #29292D;");
-    mainLayout->addWidget(m_statusLabel);
+    m_statusLabel->setStyleSheet("color: #888888; font-size: 11px;");
+    statusLayout->addWidget(m_statusLabel);
+    statusLayout->addStretch();
+
+    m_dspCpuButton = new QToolButton(this);
+    m_dspCpuButton->setText("DSP 0%");
+    m_dspCpuButton->setToolTip("DSP CPU Load. Click to reset peak load memory.");
+    m_dspCpuButton->setCursor(Qt::PointingHandCursor);
+    m_dspCpuButton->setStyleSheet(
+        "QToolButton { background-color: #263238; color: #80CBC4; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+        "QToolButton:hover { background-color: #37474F; }"
+    );
+    connect(m_dspCpuButton, &QToolButton::clicked, this, [this]() {
+        m_peakCpuLoad = m_smoothedCpuLoad;
+    });
+    statusLayout->addWidget(m_dspCpuButton);
+    statusLayout->addSpacing(8);
+
+    m_xrunButton = new QToolButton(this);
+    m_xrunButton->setText("XRuns: 0");
+    m_xrunButton->setToolTip("Click to reset XRun dropout counter");
+    m_xrunButton->setCursor(Qt::PointingHandCursor);
+    m_xrunButton->setStyleSheet(
+        "QToolButton { background-color: #263238; color: #80CBC4; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+        "QToolButton:hover { background-color: #37474F; }"
+    );
+    connect(m_xrunButton, &QToolButton::clicked, this, [this]() {
+        m_engine.resetXRunCount();
+        m_xrunButton->setText("XRuns: 0");
+        m_xrunButton->setStyleSheet(
+            "QToolButton { background-color: #263238; color: #80CBC4; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+            "QToolButton:hover { background-color: #37474F; }"
+        );
+    });
+    statusLayout->addWidget(m_xrunButton);
+
+    mainLayout->addWidget(statusBarContainer);
 }
 
 void MainWindow::scanPlugins() {
@@ -1236,6 +1270,7 @@ bool MainWindow::savePluginPreset(const std::shared_ptr<AudioNode>& node, const 
     file.write(QJsonDocument(preset).toJson());
     m_activePluginPresetNodeId = node->uniqueId;
     m_activePluginPresetName = name.trimmed();
+    m_nodeActivePresets[node->uniqueId] = name.trimmed();
     return true;
 }
 
@@ -1310,6 +1345,7 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
     syncParameterControls();
     m_activePluginPresetNodeId = node->uniqueId;
     m_activePluginPresetName = name;
+    m_nodeActivePresets[node->uniqueId] = name;
     setUnsavedChanges(true);
     QTimer::singleShot(0, this, [this, node]() {
         if (m_parameterControlNode == node) showPluginControls(node);
@@ -1521,6 +1557,7 @@ bool MainWindow::promptUnsavedChanges() {
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (promptUnsavedChanges()) {
         saveConfigSettings();
+        closeAllPluginUIs();
         event->accept();
     } else {
         event->ignore();
@@ -1903,12 +1940,45 @@ void MainWindow::updateCPUStatus() {
         parameterTickCounter = 0;
         syncParameterControls();
     }
-    // Update CPU load less frequently (every 15 ticks, i.e., ~450ms) to prevent erratic jumping
+    // Update CPU load with Exponential Moving Average (EMA) smoothing to eliminate visual jitter
     static int cpuTickCounter = 0;
-    if (cpuTickCounter++ >= 15) {
+    if (cpuTickCounter++ >= 5) {
         cpuTickCounter = 0;
-        float cpu = m_engine.getCPULoad();
-        m_cpuBar->setValue(static_cast<int>(cpu));
+        float rawCpu = m_engine.getCPULoad();
+        m_smoothedCpuLoad = 0.15f * rawCpu + 0.85f * m_smoothedCpuLoad;
+        if (m_smoothedCpuLoad > m_peakCpuLoad) {
+            m_peakCpuLoad = m_smoothedCpuLoad;
+        }
+
+        const int displayCpu = qRound(m_smoothedCpuLoad);
+        if (m_dspCpuButton) {
+            if (displayCpu >= 85) {
+                m_dspCpuButton->setText(QString("🔴 DSP %1% BOTTLENECK").arg(displayCpu));
+                m_dspCpuButton->setStyleSheet(
+                    "QToolButton { background-color: #D32F2F; color: white; font-weight: bold; border-radius: 4px; padding: 2px 8px; border: none; }"
+                    "QToolButton:hover { background-color: #F44336; }"
+                );
+            } else if (displayCpu >= 70) {
+                m_dspCpuButton->setText(QString("⚠️ DSP %1%").arg(displayCpu));
+                m_dspCpuButton->setStyleSheet(
+                    "QToolButton { background-color: #FBC02D; color: #18181B; font-weight: bold; border-radius: 4px; padding: 2px 8px; border: none; }"
+                    "QToolButton:hover { background-color: #FDD835; }"
+                );
+            } else {
+                m_dspCpuButton->setText(QString("DSP %1%").arg(displayCpu));
+                m_dspCpuButton->setStyleSheet(
+                    "QToolButton { background-color: #263238; color: #80CBC4; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+                    "QToolButton:hover { background-color: #37474F; }"
+                );
+            }
+            m_dspCpuButton->setToolTip(
+                QString("DSP CPU Load: %1%\nPeak Load: %2%\nBuffer: %3 frames @ %4 Hz\nClick to reset peak")
+                    .arg(displayCpu)
+                    .arg(qRound(m_peakCpuLoad))
+                    .arg(m_engine.getBufferSize())
+                    .arg(static_cast<int>(m_engine.getSampleRate()))
+            );
+        }
     }
     
     // Update Input and Output peak level meters (linear peak 0..100) with smooth decay
@@ -1939,6 +2009,68 @@ void MainWindow::updateCPUStatus() {
     m_outputMeter->setValue(outputValue);
     if (m_inputPopupMeter && m_inputPopupMeter->isVisible()) m_inputPopupMeter->setValue(inputValue);
     if (m_outputPopupMeter && m_outputPopupMeter->isVisible()) m_outputPopupMeter->setValue(outputValue);
+
+    // Update XRun count
+    const uint32_t xruns = m_engine.getXRunCount();
+    if (m_xrunButton) {
+        m_xrunButton->setText(QString("XRuns: %1").arg(xruns));
+        if (xruns > 0) {
+            m_xrunButton->setStyleSheet(
+                "QToolButton { background-color: #D32F2F; color: white; font-weight: bold; border-radius: 4px; padding: 2px 8px; border: none; }"
+                "QToolButton:hover { background-color: #F44336; }"
+            );
+        } else {
+            m_xrunButton->setStyleSheet(
+                "QToolButton { background-color: #263238; color: #80CBC4; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+                "QToolButton:hover { background-color: #37474F; }"
+            );
+        }
+    }
+
+    // Check clipping with hold decay (holds for ~1.5s after clipping stops)
+    if (m_engine.hasInputClipped() || inPeak >= 1.0f) {
+        m_inputClipHoldTicks = 50;
+    } else if (m_inputClipHoldTicks > 0) {
+        m_inputClipHoldTicks--;
+    }
+
+    if (m_engine.hasOutputClipped() || outPeak >= 1.0f) {
+        m_outputClipHoldTicks = 50;
+    } else if (m_outputClipHoldTicks > 0) {
+        m_outputClipHoldTicks--;
+    }
+
+    if (m_inputGainLabel) {
+        if (m_inputClipHoldTicks > 0) {
+            m_inputGainLabel->setStyleSheet(
+                "QToolButton { background-color: rgba(211, 47, 47, 0.35); border: 1px solid #FF5252; color: #FF8A80; font-weight: bold; border-radius: 4px; padding: 4px; }"
+                "QToolButton:hover { background-color: rgba(211, 47, 47, 0.5); }"
+            );
+            m_inputGainLabel->setToolTip("Input is CLIPPING (> 0 dB)! Click to clear");
+        } else {
+            m_inputGainLabel->setStyleSheet(
+                "QToolButton { background: transparent; border: none; color: #b8b8c0; padding: 4px; }"
+                "QToolButton:hover { color: white; background: #29292f; border-radius: 4px; }"
+            );
+            m_inputGainLabel->setToolTip("Open input gain fader");
+        }
+    }
+
+    if (m_outputGainLabel) {
+        if (m_outputClipHoldTicks > 0) {
+            m_outputGainLabel->setStyleSheet(
+                "QToolButton { background-color: rgba(211, 47, 47, 0.35); border: 1px solid #FF5252; color: #FF8A80; font-weight: bold; border-radius: 4px; padding: 4px; }"
+                "QToolButton:hover { background-color: rgba(211, 47, 47, 0.5); }"
+            );
+            m_outputGainLabel->setToolTip("Output is CLIPPING (> 0 dB)! Click to clear");
+        } else {
+            m_outputGainLabel->setStyleSheet(
+                "QToolButton { background: transparent; border: none; color: #b8b8c0; padding: 4px; }"
+                "QToolButton:hover { color: white; background: #29292f; border-radius: 4px; }"
+            );
+            m_outputGainLabel->setToolTip("Open output gain fader");
+        }
+    }
 }
 
 void MainWindow::onInputGainChanged(int value) {
@@ -2002,6 +2134,10 @@ void MainWindow::savePresetToFile(const QString& path) {
                     }
                 }
                 nodeObj["parameters"] = paramsArray;
+                auto presetIt = m_nodeActivePresets.find(node->uniqueId);
+                if (presetIt != m_nodeActivePresets.end() && !presetIt->second.isEmpty()) {
+                    nodeObj["presetName"] = presetIt->second;
+                }
                 nodesArray.append(nodeObj);
             }
         }
@@ -2060,6 +2196,7 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     m_parameterControlBindings.clear();
     m_activePluginPresetNodeId.clear();
     m_activePluginPresetName.clear();
+    m_nodeActivePresets.clear();
     showPluginControls(nullptr);
     
     QJsonObject presetObj = doc.object();
@@ -2119,6 +2256,9 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         if (node) {
             node->uniqueId = id;
             node->setBypassed(bypassed);
+            if (nObj.contains("presetName")) {
+                m_nodeActivePresets[id] = nObj["presetName"].toString();
+            }
             
             QString modelFilePath = nObj["model_file_path"].toString();
             if (!modelFilePath.isEmpty()) {
@@ -2306,9 +2446,15 @@ public:
             {x11Ui ? "--x11-ui-helper" : "--gtk-ui-helper", m_serverName, QString::fromStdString(node->getPluginURI()),
              QString::fromUtf8(lilv_node_as_uri(lilv_ui_get_uri(ui))), QString::number(m_parentWindow)});
         m_valid = m_process->waitForStarted(3000);
+        if (MainWindow* mw = qobject_cast<MainWindow*>(parent)) {
+            mw->registerExternalUI(this);
+        }
     }
 
     ~ExternalPluginUIWindow() override {
+        if (MainWindow* mw = qobject_cast<MainWindow*>(parent())) {
+            mw->unregisterExternalUI(this);
+        }
         m_syncTimer.stop();
         if (m_process && m_process->state() != QProcess::NotRunning) {
             m_process->terminate();
@@ -2319,6 +2465,7 @@ public:
     }
 
     bool isValid() const { return m_valid; }
+    AudioNode* getNode() const { return m_node; }
 
 private:
     void sendPortValues() {
@@ -2477,6 +2624,8 @@ public:
             XCloseDisplay(m_dpy);
         }
     }
+
+    AudioNode* getNode() const { return m_node; }
     
 protected:
     void resizeEvent(QResizeEvent* event) override {
@@ -2683,6 +2832,8 @@ public:
         }
         m_dpy = nullptr;
     }
+
+    AudioNode* getNode() const { return m_node; }
 
     void updateChildWindows(uint32_t width, uint32_t height) {
         if (!m_dpy || !m_x11Container) return;
@@ -2981,6 +3132,8 @@ public:
         }
     }
 
+    AudioNode* getNode() const { return m_node; }
+
     void resizeUi(int width, int height) {
         QMetaObject::invokeMethod(this, [this, width, height]() {
             if (width <= 0 || height <= 0) return;
@@ -3177,7 +3330,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         auto* presetCombo = new QComboBox(presetRow);
         presetCombo->setToolTip("Select or load a saved preset for this plugin");
         presetCombo->setStyleSheet("QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #333438; border-radius: 4px; padding: 4px 8px; font-weight: bold; }");
-        const QString activePreset = node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{};
+        auto it = m_nodeActivePresets.find(node->uniqueId);
+        const QString activePreset = (it != m_nodeActivePresets.end()) ? it->second : (node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{});
         refreshPluginPresetList(node, presetCombo, activePreset);
         presetLayout->addWidget(presetCombo);
 
@@ -3257,6 +3411,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     return;
                 }
                 if (QFile::rename(oldPath, newPath)) {
+                    m_nodeActivePresets[node->uniqueId] = newName.trimmed();
                     if (m_activePluginPresetNodeId == node->uniqueId && m_activePluginPresetName == currentPreset) {
                         m_activePluginPresetName = newName.trimmed();
                     }
@@ -3268,6 +3423,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 if (QMessageBox::question(this, "Delete Plugin Preset", QString("Delete preset '%1'?").arg(currentPreset), QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
                     const QString dir = pluginPresetDirectory(*node);
                     QFile::remove(QDir(dir).filePath(currentPreset + ".json"));
+                    m_nodeActivePresets.erase(node->uniqueId);
                     if (m_activePluginPresetNodeId == node->uniqueId && m_activePluginPresetName == currentPreset) {
                         m_activePluginPresetName.clear();
                     }
@@ -3333,6 +3489,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             m_paramLayout->addWidget(uiBtn);
             
             connect(uiBtn, &QPushButton::clicked, this, [this, lv2Node, uiToOpen, isGtkUi, isX11Ui]() {
+                if (raisePluginUIForNode(lv2Node)) return;
                 if (isGtkUi || isX11Ui) {
                     auto* uiWin = new ExternalPluginUIWindow(lv2Node, uiToOpen, isX11Ui, winId(), this);
                     if (!uiWin->isValid()) {
@@ -3364,6 +3521,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         m_paramLayout->addWidget(uiBtn);
         
         connect(uiBtn, &QPushButton::clicked, this, [this, vst3Node]() {
+            if (raisePluginUIForNode(vst3Node)) return;
             auto* uiWin = new VST3PluginUIWindow(vst3Node, this);
             uiWin->show();
         });
@@ -3385,6 +3543,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         m_paramLayout->addWidget(uiBtn);
         
         connect(uiBtn, &QPushButton::clicked, this, [this, clapNode]() {
+            if (raisePluginUIForNode(clapNode)) return;
             auto* uiWin = new CLAPPluginUIWindow(clapNode, this);
             uiWin->show();
         });
@@ -3793,9 +3952,103 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     }
 }
 
+void MainWindow::registerExternalUI(ExternalPluginUIWindow* uiWin) {
+    if (uiWin && !m_externalUiWindows.contains(uiWin)) {
+        m_externalUiWindows.append(uiWin);
+    }
+}
+
+void MainWindow::unregisterExternalUI(ExternalPluginUIWindow* uiWin) {
+    m_externalUiWindows.removeAll(uiWin);
+}
+
+void MainWindow::closeAllPluginUIs() {
+    m_parameterControlNode.reset();
+    m_parameterControlBindings.clear();
+    m_activePluginPresetNodeId.clear();
+    m_activePluginPresetName.clear();
+    showPluginControls(nullptr);
+
+    const auto dialogs = findChildren<QDialog*>();
+    for (QDialog* dialog : dialogs) {
+        if (dynamic_cast<PluginUIWindow*>(dialog) ||
+            dynamic_cast<VST3PluginUIWindow*>(dialog) ||
+            dynamic_cast<CLAPPluginUIWindow*>(dialog)) {
+            dialog->setAttribute(Qt::WA_DeleteOnClose, false);
+            dialog->close();
+            delete dialog;
+        }
+    }
+
+    while (!m_externalUiWindows.isEmpty()) {
+        delete m_externalUiWindows.takeLast();
+    }
+}
+
+void MainWindow::closePluginUIForNode(AudioNode* node) {
+    if (!node) return;
+
+    if (m_parameterControlNode.get() == node) {
+        m_parameterControlNode.reset();
+        m_parameterControlBindings.clear();
+        m_activePluginPresetNodeId.clear();
+        m_activePluginPresetName.clear();
+        showPluginControls(nullptr);
+    }
+
+    const auto dialogs = findChildren<QDialog*>();
+    for (QDialog* dialog : dialogs) {
+        AudioNode* winNode = nullptr;
+        if (auto* win = dynamic_cast<PluginUIWindow*>(dialog)) winNode = win->getNode();
+        else if (auto* win = dynamic_cast<VST3PluginUIWindow*>(dialog)) winNode = win->getNode();
+        else if (auto* win = dynamic_cast<CLAPPluginUIWindow*>(dialog)) winNode = win->getNode();
+
+        if (winNode == node) {
+            dialog->setAttribute(Qt::WA_DeleteOnClose, false);
+            dialog->close();
+            delete dialog;
+        }
+    }
+
+    for (int i = m_externalUiWindows.size() - 1; i >= 0; --i) {
+        if (m_externalUiWindows[i]->getNode() == node) {
+            delete m_externalUiWindows.takeAt(i);
+        }
+    }
+}
+
+bool MainWindow::raisePluginUIForNode(AudioNode* node) {
+    if (!node) return false;
+
+    const auto dialogs = findChildren<QDialog*>();
+    for (QDialog* dialog : dialogs) {
+        AudioNode* winNode = nullptr;
+        if (auto* win = dynamic_cast<PluginUIWindow*>(dialog)) winNode = win->getNode();
+        else if (auto* win = dynamic_cast<VST3PluginUIWindow*>(dialog)) winNode = win->getNode();
+        else if (auto* win = dynamic_cast<CLAPPluginUIWindow*>(dialog)) winNode = win->getNode();
+
+        if (winNode == node) {
+            dialog->raise();
+            dialog->activateWindow();
+            return true;
+        }
+    }
+
+    for (ExternalPluginUIWindow* extUi : m_externalUiWindows) {
+        if (extUi && extUi->getNode() == node) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void MainWindow::onPluginDoubleClicked(std::shared_ptr<AudioNode> node) {
     if (!node) return;
     showPluginControls(node);
+
+    if (raisePluginUIForNode(node.get())) {
+        return;
+    }
 
     if (auto* lv2Node = dynamic_cast<LV2PluginNode*>(node.get())) {
         if (lv2Node->getLilvPlugin()) {
