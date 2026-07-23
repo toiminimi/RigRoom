@@ -33,6 +33,7 @@ public:
     void setParameter(uint32_t index, float value);
     float getParameter(uint32_t index) const;
 
+    bool isMissing() const override { return m_plugin == nullptr; }
     bool hasGUI() const;
     const clap_plugin_t* getClapPlugin() const { return m_plugin; }
     const clap_plugin_gui_t* getClapGuiExtension() const { return m_extGui; }

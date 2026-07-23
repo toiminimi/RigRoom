@@ -1,7 +1,7 @@
 # PedalBoard TODO & Roadmap
 
 ## 🔴 Priority 0: Critical Bugs
-- [ ] **If plugin is missing app crashes**: If plugin which was earlier available is missing, make it recover and load the pedalboards but highlight that plugin block so that user know it's missing. make sure that info about plugin is saved so that once plugin comes back available is possible to load again
+- [x] **If plugin is missing app crashes**: If plugin which was earlier available is missing, make it recover and load the pedalboards but highlight that plugin block so that user know it's missing. make sure that info about plugin is saved so that once plugin comes back available is possible to load again
 - [x] **Plugin GUI Preset Switch Crash**: App crashes when switching pedalboard presets while external plugin GUIs are open.
 
 ## 🟠 Priority 1: Core Audio & DSP Engine

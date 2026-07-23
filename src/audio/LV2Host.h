@@ -27,6 +27,7 @@ public:
     std::string getName() const override { return m_name; }
     std::string getPluginURI() const override { return m_uri; }
     NodeType getType() const override { return NodeType::LV2Plugin; }
+    bool isMissing() const override { return m_plugin == nullptr; }
     
     void prepare(double sampleRate, int maxBlockSize) override;
     void process(int numFrames) override;

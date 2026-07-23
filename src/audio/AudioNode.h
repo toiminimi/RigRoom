@@ -45,6 +45,8 @@ public:
     virtual std::string getName() const = 0;
     virtual std::string getPluginURI() const { return ""; }
     virtual NodeType getType() const = 0;
+    virtual bool isMissing() const { return false; }
+    virtual std::string getMissingURI() const { return ""; }
     
     virtual void prepare(double sampleRate, int maxBlockSize) = 0;
     virtual void process(int numFrames) = 0;

@@ -2,6 +2,7 @@
 #include "../audio/LV2Host.h"
 #include "../audio/VST3Host.h"
 #include "../audio/CLAPHost.h"
+#include "../audio/MissingPluginNode.h"
 #include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "../audio/BypassNode.h"
@@ -3056,15 +3057,33 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         std::shared_ptr<AudioNode> node;
         
         if (typeStr == "LV2Plugin") {
-            const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
-            LILV_FOREACH(plugins, j, plugins) {
-                const LilvPlugin* p = lilv_plugins_get(plugins, j);
-                const LilvNode* uriNode = lilv_plugin_get_uri(p);
-                std::string puri = lilv_node_as_string(uriNode);
-                if (puri == uri) {
-                    node = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
-                    break;
+            if (m_lilvWorld) {
+                const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
+                if (plugins) {
+                    LILV_FOREACH(plugins, j, plugins) {
+                        const LilvPlugin* p = lilv_plugins_get(plugins, j);
+                        const LilvNode* uriNode = lilv_plugin_get_uri(p);
+                        std::string puri = lilv_node_as_string(uriNode);
+                        if (puri == uri) {
+                            node = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
+                            break;
+                        }
+                    }
                 }
+            }
+            if (!node || node->isMissing()) {
+                std::string origName = nObj.contains("name") ? nObj["name"].toString().toStdString() : uri;
+                if (origName == uri) {
+                    auto lastSlash = uri.rfind('/');
+                    auto lastHash = uri.rfind('#');
+                    size_t namePos = std::string::npos;
+                    if (lastHash != std::string::npos) namePos = lastHash + 1;
+                    else if (lastSlash != std::string::npos) namePos = lastSlash + 1;
+                    if (namePos != std::string::npos && namePos < uri.length()) {
+                        origName = uri.substr(namePos);
+                    }
+                }
+                node = std::make_shared<MissingPluginNode>(NodeType::LV2Plugin, uri, origName);
             }
         } else if (typeStr == "CLAPPlugin") {
             std::string path = uri;
@@ -3074,7 +3093,13 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                 idx = std::stoul(path.substr(colonPos + 1));
                 path = path.substr(0, colonPos);
             }
-            node = std::make_shared<CLAPPluginNode>(path, idx);
+            auto clapNode = std::make_shared<CLAPPluginNode>(path, idx);
+            if (clapNode->isMissing()) {
+                std::string origName = nObj.contains("name") ? nObj["name"].toString().toStdString() : std::filesystem::path(path).stem().string();
+                node = std::make_shared<MissingPluginNode>(NodeType::CLAPPlugin, uri, origName);
+            } else {
+                node = clapNode;
+            }
         } else if (typeStr == "VST3Plugin") {
             if (uri == "builtin:bypass") {
                 node = std::make_shared<BypassNode>();
@@ -3086,9 +3111,21 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                     idx = std::stoul(path.substr(colonPos + 1));
                     path = path.substr(0, colonPos);
                 }
-                node = std::make_shared<CLAPPluginNode>(path, idx);
+                auto clapNode = std::make_shared<CLAPPluginNode>(path, idx);
+                if (clapNode->isMissing()) {
+                    std::string origName = nObj.contains("name") ? nObj["name"].toString().toStdString() : std::filesystem::path(path).stem().string();
+                    node = std::make_shared<MissingPluginNode>(NodeType::CLAPPlugin, uri, origName);
+                } else {
+                    node = clapNode;
+                }
             } else {
-                node = std::make_shared<VST3PluginNode>(uri);
+                auto vstNode = std::make_shared<VST3PluginNode>(uri);
+                if (vstNode->isMissing()) {
+                    std::string origName = nObj.contains("name") ? nObj["name"].toString().toStdString() : std::filesystem::path(uri).stem().string();
+                    node = std::make_shared<MissingPluginNode>(NodeType::VST3Plugin, uri, origName);
+                } else {
+                    node = vstNode;
+                }
             }
         }
         
@@ -4151,6 +4188,34 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     }
 
     m_noParamLabel->hide();
+
+    if (node->isMissing()) {
+        auto* missingBox = new QFrame(m_paramContainer);
+        missingBox->setStyleSheet("QFrame { background-color: #2A1717; border: 1px solid #FF5252; border-radius: 6px; padding: 12px; }");
+        auto* missingLayout = new QVBoxLayout(missingBox);
+        
+        auto* titleLabel = new QLabel("⚠️ Plugin Missing", missingBox);
+        titleLabel->setStyleSheet("font-weight: bold; color: #FF5252; font-size: 14px;");
+        missingLayout->addWidget(titleLabel);
+
+        auto* nameLabel = new QLabel(QString("<b>Name:</b> %1").arg(QString::fromStdString(node->getName())), missingBox);
+        nameLabel->setStyleSheet("color: #ECECF0; font-size: 12px; margin-top: 4px;");
+        missingLayout->addWidget(nameLabel);
+
+        auto* uriLabel = new QLabel(QString("<b>URI / Path:</b><br><code style='color:#FF8A80;'>%1</code>").arg(QString::fromStdString(node->getPluginURI())), missingBox);
+        uriLabel->setStyleSheet("color: #CCCCCC; font-size: 11px; margin-top: 4px;");
+        uriLabel->setWordWrap(true);
+        missingLayout->addWidget(uriLabel);
+
+        auto* infoLabel = new QLabel("Audio is automatically passed through without processing. Once this plugin is restored or reinstalled, click <b>Rescan Plugins Now</b> in Settings to activate it.", missingBox);
+        infoLabel->setStyleSheet("color: #A0A0B0; font-size: 11px; margin-top: 8px;");
+        infoLabel->setWordWrap(true);
+        missingLayout->addWidget(infoLabel);
+
+        m_paramLayout->addWidget(missingBox);
+        return;
+    }
+
     bool isPluginNode = (node->getType() == NodeType::LV2Plugin ||
                          node->getType() == NodeType::VST3Plugin ||
                          node->getType() == NodeType::CLAPPlugin);

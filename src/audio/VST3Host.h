@@ -17,6 +17,7 @@ public:
     std::string getName() const override { return m_name; }
     std::string getPluginURI() const override { return m_path; }
     NodeType getType() const override { return NodeType::VST3Plugin; }
+    bool isMissing() const override { return m_component == nullptr; }
     
     void prepare(double sampleRate, int maxBlockSize) override;
     void process(int numFrames) override;

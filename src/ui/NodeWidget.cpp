@@ -180,15 +180,18 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     
     bool bypass = m_audioNode->isBypassed();
     bool selected = isSelected();
+    bool isMissing = m_audioNode->isMissing();
     bool isSystemNode = m_audioNode->getType() == NodeType::SystemInput || m_audioNode->getType() == NodeType::SystemOutput;
     
     // 1. Draw card background
-    QColor cardBg = bypass ? QColor(36, 36, 40) : QColor(24, 24, 28);
+    QColor cardBg = isMissing ? QColor(42, 20, 20) : (bypass ? QColor(36, 36, 40) : QColor(24, 24, 28));
     
     QPen borderPen;
     if (m_dragging) {
         borderPen = QPen(QColor(0, 200, 255), 2);
         cardBg = QColor(20, 40, 55);
+    } else if (isMissing) {
+        borderPen = QPen(selected ? QColor(255, 82, 82) : QColor(211, 47, 47), selected ? 2 : 1.5, Qt::DashLine);
     } else {
         borderPen = QPen(selected ? QColor(0, 176, 255) : QColor(60, 60, 68), selected ? 2 : 1);
     }
@@ -200,7 +203,8 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     // 2. Draw Header bar background
     EffectIcon iconType = effectIconFor(m_audioNode);
     QColor headerColor;
-    if (m_audioNode->getType() == NodeType::SystemInput) headerColor = QColor(142, 36, 170); // Purple
+    if (isMissing) headerColor = QColor(183, 28, 28); // Red
+    else if (m_audioNode->getType() == NodeType::SystemInput) headerColor = QColor(142, 36, 170); // Purple
     else if (m_audioNode->getType() == NodeType::SystemOutput) headerColor = QColor(46, 125, 50); // Green
     else if (m_dragging) headerColor = QColor(0, 130, 160);
     else if (bypass) headerColor = QColor(50, 50, 56);
@@ -245,7 +249,8 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     painter->setPen(QColor(255, 255, 255, 230));
     qreal catX = isSystemNode ? 6 : 22;
     qreal catW = isSystemNode ? m_width - 12 : m_width - 38;
-    painter->drawText(QRectF(catX, 0, catW, 22), Qt::AlignCenter, categoryNameFor(m_audioNode));
+    QString catName = isMissing ? "⚠️ MISSING" : categoryNameFor(m_audioNode);
+    painter->drawText(QRectF(catX, 0, catW, 22), Qt::AlignCenter, catName);
 
     // 4. Main Body: Display FULL Plugin Name (larger, bold 11-12px white text)
     QString title = QString::fromStdString(m_audioNode->getName());
@@ -259,7 +264,7 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     else titleFont.setPixelSize(12.0);
 
     painter->setFont(titleFont);
-    painter->setPen(bypass ? QColor(160, 160, 165) : QColor(255, 255, 255));
+    painter->setPen(isMissing ? QColor(255, 138, 128) : (bypass ? QColor(160, 160, 165) : QColor(255, 255, 255)));
 
     QRectF titleRect(8, 22, m_width - 16, m_height - 36);
     QTextOption optionText;
@@ -270,7 +275,7 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     // 5. Footer Row: Category Icon + STEREO/MONO Badge
     drawEffectIcon(painter, iconType, QPointF(14, m_height - 10));
 
-    QString channelLabel = m_isStereo ? "STEREO" : "MONO";
+    QString channelLabel = isMissing ? "MISSING" : (m_isStereo ? "STEREO" : "MONO");
     QFont badgeFont = painter->font();
     badgeFont.setBold(true);
     badgeFont.setPixelSize(7);
@@ -279,7 +284,7 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     qreal badgeWidth = badgeMetrics.horizontalAdvance(channelLabel) + 8;
     QRectF badgeRect(m_width - badgeWidth - 6, m_height - 15, badgeWidth, 11);
     painter->setPen(Qt::NoPen);
-    painter->setBrush(m_isStereo ? QColor(0, 137, 123) : QColor(69, 90, 100));
+    painter->setBrush(isMissing ? QColor(211, 47, 47) : (m_isStereo ? QColor(0, 137, 123) : QColor(69, 90, 100)));
     painter->drawRoundedRect(badgeRect, 3, 3);
     painter->setPen(QColor(255, 255, 255, 230));
     painter->drawText(badgeRect, Qt::AlignCenter, channelLabel);
