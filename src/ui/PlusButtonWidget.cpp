@@ -13,7 +13,7 @@ PlusButtonWidget::PlusButtonWidget(int row, int col, Style style)
 }
 
 QRectF PlusButtonWidget::boundingRect() const {
-    qreal r = (m_style == Style::Full) ? 18.0 : 13.0;
+    qreal r = 20.0;
     return QRectF(-r, -r, r * 2, r * 2);
 }
 

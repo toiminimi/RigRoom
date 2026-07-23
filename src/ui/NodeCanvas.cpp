@@ -60,7 +60,7 @@ public:
         setAcceptHoverEvents(true);
         setCursor(Qt::OpenHandCursor);
         setZValue(30);
-        setToolTip("Drag onto a connection point in any active lane to create a Split Section.");
+        setToolTip("Drag onto any gap between blocks or on a path line to create a Split Section.");
     }
 
     bool isLimitReached() const {
@@ -117,25 +117,33 @@ protected:
 
     void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override {
         if (!m_dragging) return;
-        PlusButtonWidget* target = nearestTarget(event->scenePos());
-        setTarget(target);
-        if (target) setPos(target->scenePos().x() - boundingRect().width() / 2.0,
-                           event->scenePos().y() - boundingRect().height() / 2.0);
-        else setPos(event->scenePos() - QPointF(boundingRect().width() / 2.0, boundingRect().height() / 2.0));
+        TargetGap target = findTargetGap(event->scenePos());
+        m_activeTarget = target;
+        updatePlusHighlights(target.parentRow, target.gapIndex);
+
+        if (target.parentRow >= 0 && target.gapIndex >= 0) {
+            setPos(target.snapX - boundingRect().width() / 2.0,
+                   target.snapY - boundingRect().height() / 2.0);
+        } else {
+            setPos(event->scenePos() - QPointF(boundingRect().width() / 2.0, boundingRect().height() / 2.0));
+        }
+        update();
         event->accept();
     }
 
     void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override {
         if (!m_dragging) return;
         m_dragging = false;
-        PlusButtonWidget* target = m_target ? m_target : nearestTarget(event->scenePos());
-        const int gap = target ? target->getCol() : -1;
-        const int parentRow = target ? target->getRow() : -1;
-        setTarget(nullptr);
+        TargetGap target = m_activeTarget.parentRow >= 0 ? m_activeTarget : findTargetGap(event->scenePos());
+        m_activeTarget = TargetGap{};
+        updatePlusHighlights(-1, -1);
         setCursor(Qt::OpenHandCursor);
         update();
-        if (parentRow >= 0 && gap >= 0) {
+
+        if (target.parentRow >= 0 && target.gapIndex >= 0) {
             NodeCanvas* canvas = m_canvas;
+            int parentRow = target.parentRow;
+            int gap = target.gapIndex;
             QTimer::singleShot(0, canvas, [canvas, parentRow, gap] {
                 canvas->createSplitAtPathGap(parentRow, gap);
             });
@@ -153,7 +161,7 @@ protected:
             setToolTip("Maximum split limit reached. Delete an existing split section to create a new one.");
         } else {
             setCursor(Qt::OpenHandCursor);
-            setToolTip("Drag onto a connection point in any active lane to create a Split Section.");
+            setToolTip("Drag onto any gap between blocks or on a path line to create a Split Section.");
         }
         update();
         event->accept();
@@ -167,41 +175,93 @@ protected:
     }
 
 private:
-    PlusButtonWidget* nearestTarget(const QPointF& scenePoint) const {
-        PlusButtonWidget* nearest = nullptr;
-        qreal distance = 100.0;
-        for (QGraphicsItem* item : scene()->items()) {
-            auto* plus = dynamic_cast<PlusButtonWidget*>(item);
-            if (!plus) continue;
-            const int row = plus->getRow();
-            if (row == NodeCanvas::MAIN_ROW) {
-                if (m_canvas->hasSplitSection(1) && m_canvas->hasSplitSection(3)) continue;
-            } else if (row == 1) {
-                if (!m_canvas->hasSplitSection(1) || m_canvas->hasSplitSection(0)) continue;
-            } else if (row == 3) {
-                if (!m_canvas->hasSplitSection(3) || m_canvas->hasSplitSection(4)) continue;
-            } else {
-                continue;
+    struct TargetGap {
+        int parentRow = -1;
+        int gapIndex = -1;
+        qreal snapX = 0.0;
+        qreal snapY = 0.0;
+    };
+
+    bool isValidSplitGap(int pRow, int gapIndex) const {
+        if (!m_canvas || pRow < 0 || pRow >= NodeCanvas::NUM_ROWS || gapIndex < 0) return false;
+        
+        int numCols = m_canvas->getNumCols();
+        if (gapIndex >= numCols) return false;
+
+        if (pRow != NodeCanvas::MAIN_ROW) {
+            int parentSplitCol = m_canvas->getSplitCol(pRow);
+            if (parentSplitCol >= 0 && gapIndex <= parentSplitCol + 1) {
+                return false; // Must be at least 1 slot after parent branch split point
             }
-            const QPointF delta = plus->scenePos() - scenePoint;
-            const qreal candidate = std::hypot(delta.x(), delta.y());
-            if (candidate < distance) {
-                distance = candidate;
-                nearest = plus;
+            int parentMergeCol = m_canvas->getMergeCol(pRow);
+            if (parentMergeCol >= 0 && gapIndex >= parentMergeCol) {
+                return false; // Must be strictly before parent branch merge point
             }
         }
-        return nearest;
+
+        int maxAllowedGap = numCols - 1;
+        if (pRow != NodeCanvas::MAIN_ROW) {
+            int mCol = m_canvas->getMergeCol(pRow);
+            if (mCol >= 0) {
+                maxAllowedGap = std::min(maxAllowedGap, mCol - 1);
+            }
+        }
+        
+        if (gapIndex > maxAllowedGap) {
+            return false;
+        }
+
+        return true;
     }
 
-    void setTarget(PlusButtonWidget* target) {
-        if (m_target == target) return;
-        if (m_target) m_target->setRoutingTarget(false);
-        m_target = target;
-        if (m_target) m_target->setRoutingTarget(true);
+    TargetGap findTargetGap(const QPointF& scenePoint) const {
+        TargetGap best;
+        if (!m_canvas) return best;
+
+        qreal minDistance = 140.0;
+
+        std::vector<int> eligibleParents;
+        if (!m_canvas->hasSplitSection(1) || !m_canvas->hasSplitSection(3)) {
+            eligibleParents.push_back(NodeCanvas::MAIN_ROW);
+        }
+        if (m_canvas->hasSplitSection(1) && !m_canvas->hasSplitSection(0)) {
+            eligibleParents.push_back(1);
+        }
+        if (m_canvas->hasSplitSection(3) && !m_canvas->hasSplitSection(4)) {
+            eligibleParents.push_back(3);
+        }
+
+        for (int pRow : eligibleParents) {
+            qreal rY = m_canvas->getRowCenterY(pRow);
+            for (int k = 0; k <= m_canvas->getNumCols(); ++k) {
+                if (!isValidSplitGap(pRow, k)) continue;
+
+                qreal gX = m_canvas->getGapX(k);
+                qreal dist = std::hypot(gX - scenePoint.x(), rY - scenePoint.y());
+                if (dist < minDistance) {
+                    minDistance = dist;
+                    best.parentRow = pRow;
+                    best.gapIndex = k;
+                    best.snapX = gX;
+                    best.snapY = rY;
+                }
+            }
+        }
+        return best;
+    }
+
+    void updatePlusHighlights(int activeRow, int activeGap) {
+        if (!scene()) return;
+        for (QGraphicsItem* item : scene()->items()) {
+            if (auto* plus = dynamic_cast<PlusButtonWidget*>(item)) {
+                bool match = (plus->getRow() == activeRow && (plus->getCol() == activeGap || plus->getCol() == activeGap - 1));
+                plus->setRoutingTarget(match);
+            }
+        }
     }
 
     NodeCanvas* m_canvas;
-    PlusButtonWidget* m_target = nullptr;
+    TargetGap m_activeTarget;
     bool m_hovered = false;
     bool m_dragging = false;
 };

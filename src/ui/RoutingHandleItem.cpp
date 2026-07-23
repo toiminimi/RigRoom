@@ -224,9 +224,10 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         qreal currentMouseX = event->scenePos().x();
         int parentRow = m_canvas->getSplitParentRow(m_branchRow);
 
+        int activeCols = m_canvas->getNumCols();
         int plusIndex = 0;
         qreal minDist = 999999.0;
-        for (int k = 0; k <= NodeCanvas::NUM_COLS; ++k) {
+        for (int k = 0; k <= activeCols; ++k) {
             qreal dist = std::abs(currentMouseX - m_canvas->getGapX(k));
             if (dist < minDist) {
                 minDist = dist;
@@ -252,7 +253,7 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
 
         int firstPluginCol = 999;
         int lastPluginCol = -1;
-        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+        for (int c = 0; c < activeCols; ++c) {
             if (m_canvas->getPluginAt(m_branchRow, c)) {
                 firstPluginCol = std::min(firstPluginCol, c);
                 lastPluginCol = std::max(lastPluginCol, c);
@@ -260,7 +261,7 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         }
 
         int candidateSplitCol = plusIndex - 1;
-        int candidateMergeCol = (plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex;
+        int candidateMergeCol = (plusIndex >= activeCols) ? -1 : plusIndex;
 
         int candidateSplitGap = plusIndex;
         int candidateMergeGap = plusIndex;
@@ -268,15 +269,18 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         int parentSplitGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getSplitCol(parentRow) >= 0)
             ? (m_canvas->getSplitCol(parentRow) + 1) : 0;
         int parentMergeGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getMergeCol(parentRow) >= 0)
-            ? m_canvas->getMergeCol(parentRow) : NodeCanvas::NUM_COLS;
+            ? m_canvas->getMergeCol(parentRow) : activeCols;
 
         int ownSplitGap = (m_canvas->getSplitCol(m_branchRow) >= 0) ? (m_canvas->getSplitCol(m_branchRow) + 1) : 0;
-        int ownMergeGap = (m_canvas->getMergeCol(m_branchRow) >= 0) ? m_canvas->getMergeCol(m_branchRow) : NodeCanvas::NUM_COLS;
+        int ownMergeGap = (m_canvas->getMergeCol(m_branchRow) >= 0) ? m_canvas->getMergeCol(m_branchRow) : activeCols;
 
         bool isValid = true;
         QString invalidReason;
         if (m_isSplit) {
-            if (firstPluginCol < 999 && candidateSplitCol >= firstPluginCol) {
+            if (candidateSplitGap >= activeCols) {
+                isValid = false;
+                invalidReason = "Cannot split after last configured slot";
+            } else if (firstPluginCol < 999 && candidateSplitCol >= firstPluginCol) {
                 isValid = false;
                 invalidReason = "Cannot split after plugins on this path";
             } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateSplitGap < parentSplitGap) {
@@ -290,7 +294,10 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
                 invalidReason = "Cannot split at or after branch merge point";
             }
         } else {
-            if (lastPluginCol >= 0 && candidateMergeCol != -1 && candidateMergeCol <= lastPluginCol) {
+            if (candidateMergeGap > activeCols) {
+                isValid = false;
+                invalidReason = "Cannot merge after last configured slot";
+            } else if (lastPluginCol >= 0 && candidateMergeCol != -1 && candidateMergeCol <= lastPluginCol) {
                 isValid = false;
                 invalidReason = "Cannot merge before plugins on this path";
             } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateMergeGap > parentMergeGap) {
@@ -316,11 +323,11 @@ void RoutingHandleItem::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
             m_previewText->setBrush(QColor(255, 220, 100));
             QString text;
             if (m_isSplit) {
-                auto prevPlug = (plusIndex > 0 && plusIndex - 1 < NodeCanvas::NUM_COLS) ? m_canvas->getPluginAt(parentRow, plusIndex - 1) : nullptr;
+                auto prevPlug = (plusIndex > 0 && plusIndex - 1 < activeCols) ? m_canvas->getPluginAt(parentRow, plusIndex - 1) : nullptr;
                 text = prevPlug ? ("Split after " + QString::fromStdString(prevPlug->getName())) : (plusIndex == 0 ? "Split from System Input" : "Split point");
             } else {
-                auto nextPlug = (plusIndex >= 0 && plusIndex < NodeCanvas::NUM_COLS) ? m_canvas->getPluginAt(parentRow, plusIndex) : nullptr;
-                text = nextPlug ? ("Merge before " + QString::fromStdString(nextPlug->getName())) : (plusIndex >= NodeCanvas::NUM_COLS ? "Merge to System Output" : "Merge point");
+                auto nextPlug = (plusIndex >= 0 && plusIndex < activeCols) ? m_canvas->getPluginAt(parentRow, plusIndex) : nullptr;
+                text = nextPlug ? ("Merge before " + QString::fromStdString(nextPlug->getName())) : (plusIndex >= activeCols ? "Merge to System Output" : "Merge point");
             }
             m_previewText->setText(text);
         }
@@ -342,9 +349,10 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         qreal currentMouseX = event->scenePos().x();
         int targetParentRow = m_canvas->getSplitParentRow(m_branchRow);
 
+        int activeCols = m_canvas->getNumCols();
         int plusIndex = 0;
         qreal minDist = 999999.0;
-        for (int k = 0; k <= NodeCanvas::NUM_COLS; ++k) {
+        for (int k = 0; k <= activeCols; ++k) {
             qreal dist = std::abs(currentMouseX - m_canvas->getGapX(k));
             if (dist < minDist) {
                 minDist = dist;
@@ -352,11 +360,11 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
             }
         }
 
-        int targetColumn = m_isSplit ? (plusIndex - 1) : ((plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex);
+        int targetColumn = m_isSplit ? (plusIndex - 1) : ((plusIndex >= activeCols) ? -1 : plusIndex);
 
         int firstPluginCol = 999;
         int lastPluginCol = -1;
-        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+        for (int c = 0; c < activeCols; ++c) {
             if (m_canvas->getPluginAt(m_branchRow, c)) {
                 firstPluginCol = std::min(firstPluginCol, c);
                 lastPluginCol = std::max(lastPluginCol, c);
@@ -365,7 +373,7 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
 
         int parentRow = m_canvas->getSplitParentRow(m_branchRow);
         int candidateSplitCol = plusIndex - 1;
-        int candidateMergeCol = (plusIndex >= NodeCanvas::NUM_COLS) ? -1 : plusIndex;
+        int candidateMergeCol = (plusIndex >= activeCols) ? -1 : plusIndex;
 
         int candidateSplitGap = plusIndex;
         int candidateMergeGap = plusIndex;
@@ -373,14 +381,16 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         int parentSplitGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getSplitCol(parentRow) >= 0)
             ? (m_canvas->getSplitCol(parentRow) + 1) : 0;
         int parentMergeGap = (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && m_canvas->getMergeCol(parentRow) >= 0)
-            ? m_canvas->getMergeCol(parentRow) : NodeCanvas::NUM_COLS;
+            ? m_canvas->getMergeCol(parentRow) : activeCols;
 
         int ownSplitGap = (m_canvas->getSplitCol(m_branchRow) >= 0) ? (m_canvas->getSplitCol(m_branchRow) + 1) : 0;
-        int ownMergeGap = (m_canvas->getMergeCol(m_branchRow) >= 0) ? m_canvas->getMergeCol(m_branchRow) : NodeCanvas::NUM_COLS;
+        int ownMergeGap = (m_canvas->getMergeCol(m_branchRow) >= 0) ? m_canvas->getMergeCol(m_branchRow) : activeCols;
 
         bool isValid = true;
         if (m_isSplit) {
-            if (firstPluginCol < 999 && targetColumn >= firstPluginCol) {
+            if (candidateSplitGap >= activeCols) {
+                isValid = false;
+            } else if (firstPluginCol < 999 && targetColumn >= firstPluginCol) {
                 isValid = false;
             } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateSplitGap < parentSplitGap) {
                 isValid = false;
@@ -390,7 +400,9 @@ void RoutingHandleItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
                 isValid = false;
             }
         } else {
-            if (lastPluginCol >= 0 && targetColumn != -1 && targetColumn <= lastPluginCol) {
+            if (candidateMergeGap > activeCols) {
+                isValid = false;
+            } else if (lastPluginCol >= 0 && targetColumn != -1 && targetColumn <= lastPluginCol) {
                 isValid = false;
             } else if (parentRow >= 0 && parentRow != NodeCanvas::MAIN_ROW && candidateMergeGap > parentMergeGap) {
                 isValid = false;

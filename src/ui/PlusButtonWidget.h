@@ -20,7 +20,13 @@ public:
     int getRow() const { return m_row; }
     int getCol() const { return m_col; }
     Style getStyle() const { return m_style; }
-    void setRoutingTarget(bool target) { m_routingTarget = target; update(); }
+    void setRoutingTarget(bool target) {
+        if (m_routingTarget != target) {
+            prepareGeometryChange();
+            m_routingTarget = target;
+            update();
+        }
+    }
     void setIsSecondOfCol(bool second) { m_isSecondOfCol = second; }
     bool isSecondOfCol() const { return m_isSecondOfCol; }
     
