@@ -17,10 +17,10 @@
 #include <functional>
 
 // ─── Dimensions ───────────────────────────────────────────────────────────────
-static constexpr qreal SYS_NODE_W  = 120.0;
-static constexpr qreal SYS_NODE_H  = 54.0;
-static constexpr qreal PLUG_NODE_W = 120.0;
-static constexpr qreal PLUG_NODE_H = 54.0;
+static constexpr qreal SYS_NODE_W  = 136.0;
+static constexpr qreal SYS_NODE_H  = 58.0;
+static constexpr qreal PLUG_NODE_W = 136.0;
+static constexpr qreal PLUG_NODE_H = 58.0;
 static constexpr qreal MARGIN_X    = 14.0;
 static constexpr qreal MARGIN_Y    = 30.0;
 // Width of the small '+' slot between nodes
@@ -855,7 +855,8 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
                 m_nodeWidgets[r][c] = new NodeWidget(row.plugins[c]);
                 m_scene->addItem(m_nodeWidgets[r][c]);
             }
-            m_nodeWidgets[r][c]->setPos(snapToGrid(getColX(c)), cy - PLUG_NODE_H / 2.0);
+            qreal nodeH = m_nodeWidgets[r][c]->height();
+            m_nodeWidgets[r][c]->setPos(snapToGrid(getColX(c)), cy - nodeH / 2.0);
         }
     }
 

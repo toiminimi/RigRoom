@@ -39,6 +39,8 @@ private slots:
     void onDeletePreset();
     void onPresetComboActivated(int index);
     void onLoadPreset();
+    void onPrevPreset();
+    void onNextPreset();
     void onBufferSizeChanged(int index);
     void onNodeSelected(std::shared_ptr<AudioNode> node);
     void updateCPUStatus();
@@ -85,6 +87,12 @@ private:
     // UI Elements
     NodeCanvas* m_canvas = nullptr;
     QComboBox* m_presetCombo = nullptr;
+    QPushButton* m_savePresetButton = nullptr;
+    QToolButton* m_prevPresetBtn = nullptr;
+    QToolButton* m_nextPresetBtn = nullptr;
+    QTimer* m_saveFeedbackTimer = nullptr;
+    void updatePresetNavigationButtons();
+    void triggerSaveFeedback();
     QComboBox* m_bufferSizeCombo = nullptr;
     QComboBox* m_hwInputModeCombo = nullptr;
     QComboBox* m_hwInputCombo = nullptr;

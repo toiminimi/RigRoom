@@ -85,6 +85,23 @@ static void drawEffectIcon(QPainter* painter, EffectIcon icon, const QPointF& ce
     painter->restore();
 }
 
+static QString categoryNameFor(const std::shared_ptr<AudioNode>& node) {
+    if (node->getType() == NodeType::SystemInput) return "SYSTEM IN";
+    if (node->getType() == NodeType::SystemOutput) return "SYSTEM OUT";
+    EffectIcon icon = effectIconFor(node);
+    switch (icon) {
+    case EffectIcon::Input: return "SYSTEM IN";
+    case EffectIcon::Output: return "SYSTEM OUT";
+    case EffectIcon::Dynamics: return "DYNAMICS";
+    case EffectIcon::Delay: return "DELAY";
+    case EffectIcon::Reverb: return "REVERB";
+    case EffectIcon::Modulation: return "MODULATION";
+    case EffectIcon::Amp: return "AMP";
+    case EffectIcon::Utility: return "UTILITY";
+    }
+    return "PLUGIN";
+}
+
 NodeWidget::NodeWidget(std::shared_ptr<AudioNode> audioNode)
     : m_audioNode(audioNode) {
     setFlags(QGraphicsItem::ItemIsSelectable);
@@ -125,17 +142,33 @@ NodeWidget::NodeWidget(std::shared_ptr<AudioNode> audioNode)
     
     // Compute box height dynamically based on port count
     int maxPorts = std::max(inCount, outCount);
-    m_height = std::max(54, 34 + maxPorts * 24);
+    m_height = std::max(58, 36 + (maxPorts - 1) * 22);
     
-    // Position port pins along edges
-    for (size_t i = 0; i < m_inputPorts.size(); ++i) {
-        m_inputPorts[i]->setPos(0, 34 + i * 24);
+    // Position port pins symmetrically centered vertically along node height
+    const float midY = m_height / 2.0f;
+    if (!m_inputPorts.empty()) {
+        float inSpacing = 20.0f;
+        float inStartY = midY - ((m_inputPorts.size() - 1) * inSpacing / 2.0f);
+        for (size_t i = 0; i < m_inputPorts.size(); ++i) {
+            m_inputPorts[i]->setPos(0, inStartY + i * inSpacing);
+        }
     }
-    for (size_t i = 0; i < m_outputPorts.size(); ++i) {
-        m_outputPorts[i]->setPos(m_width, 34 + i * 24);
+    if (!m_outputPorts.empty()) {
+        float outSpacing = 20.0f;
+        float outStartY = midY - ((m_outputPorts.size() - 1) * outSpacing / 2.0f);
+        for (size_t i = 0; i < m_outputPorts.size(); ++i) {
+            m_outputPorts[i]->setPos(m_width, outStartY + i * outSpacing);
+        }
     }
     
-    m_bypassRect = QRectF(8, 7, 16, 16);
+    m_bypassRect = QRectF(4, 3, 16, 16);
+
+    // Rich tooltip for complete info
+    setToolTip(QString("Name: %1\nCategory: %2\nMode: %3\nURI: %4")
+        .arg(QString::fromStdString(audioNode->getName()))
+        .arg(categoryNameFor(audioNode))
+        .arg(m_isStereo ? "Stereo" : "Mono")
+        .arg(QString::fromStdString(audioNode->getPluginURI())));
 }
 
 QRectF NodeWidget::boundingRect() const {
@@ -147,61 +180,95 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     
     bool bypass = m_audioNode->isBypassed();
     bool selected = isSelected();
+    bool isSystemNode = m_audioNode->getType() == NodeType::SystemInput || m_audioNode->getType() == NodeType::SystemOutput;
     
     // 1. Draw card background
-    QColor cardBg = bypass ? QColor(45, 45, 45) : QColor(32, 32, 32);
+    QColor cardBg = bypass ? QColor(36, 36, 40) : QColor(24, 24, 28);
     
     QPen borderPen;
     if (m_dragging) {
         borderPen = QPen(QColor(0, 200, 255), 2);
         cardBg = QColor(20, 40, 55);
     } else {
-        borderPen = QPen(selected ? QColor(0, 176, 255) : QColor(64, 64, 64), selected ? 2 : 1);
+        borderPen = QPen(selected ? QColor(0, 176, 255) : QColor(60, 60, 68), selected ? 2 : 1);
     }
     
     painter->setPen(borderPen);
     painter->setBrush(cardBg);
-    painter->drawRoundedRect(QRectF(0, 0, m_width, m_height), 8, 8);
+    painter->drawRoundedRect(QRectF(0, 0, m_width, m_height), 6, 6);
     
-    // 2. Draw Title bar background
-    QColor headerColor = m_audioNode->getType() == NodeType::SystemInput ? QColor(100, 30, 30) :
-                         m_audioNode->getType() == NodeType::SystemOutput ? QColor(30, 100, 30) :
-                         m_dragging ? QColor(0, 130, 160) :
-                         bypass ? QColor(58, 58, 58) :
-                         (m_audioNode->getPluginURI() == "builtin:bypass" ? QColor(84, 110, 122) : QColor(0, 150, 136));
+    // 2. Draw Header bar background
+    EffectIcon iconType = effectIconFor(m_audioNode);
+    QColor headerColor;
+    if (m_audioNode->getType() == NodeType::SystemInput) headerColor = QColor(142, 36, 170); // Purple
+    else if (m_audioNode->getType() == NodeType::SystemOutput) headerColor = QColor(46, 125, 50); // Green
+    else if (m_dragging) headerColor = QColor(0, 130, 160);
+    else if (bypass) headerColor = QColor(50, 50, 56);
+    else {
+        switch (iconType) {
+        case EffectIcon::Dynamics: headerColor = QColor(230, 81, 0); break;   // Orange
+        case EffectIcon::Delay: headerColor = QColor(0, 131, 143); break;     // Cyan Dark
+        case EffectIcon::Reverb: headerColor = QColor(0, 105, 92); break;     // Teal
+        case EffectIcon::Modulation: headerColor = QColor(194, 24, 91); break;// Pink
+        case EffectIcon::Amp: headerColor = QColor(216, 67, 21); break;       // Rust
+        default: headerColor = QColor(69, 90, 100); break;                     // Slate
+        }
+    }
+
     painter->setPen(Qt::NoPen);
     painter->setBrush(headerColor);
-    painter->drawRoundedRect(QRectF(0, 0, m_width, 26), 8, 8);
-    painter->drawRect(QRectF(0, 18, m_width, 8));
+    painter->drawRoundedRect(QRectF(0, 0, m_width, 22), 6, 6);
+    painter->drawRect(QRectF(0, 14, m_width, 8));
 
-    // Drag hint: draw a small grab icon (≡ lines) on the right side of header
-    if (m_audioNode->getType() != NodeType::SystemInput && m_audioNode->getType() != NodeType::SystemOutput) {
-        painter->setPen(QPen(QColor(255, 255, 255, 100), 1.5));
-        qreal gx = m_width - 16;
-        painter->drawLine(QPointF(gx, 8), QPointF(gx + 8, 8));
-        painter->drawLine(QPointF(gx, 13), QPointF(gx + 8, 13));
-        painter->drawLine(QPointF(gx, 18), QPointF(gx + 8, 18));
-    }
-    
-    // 3. Draw Title text
-    painter->setPen(QColor(255, 255, 255));
-    QFont font = painter->font();
-    font.setBold(true);
-    painter->setFont(font);
-    bool isSystemNode = m_audioNode->getType() == NodeType::SystemInput || m_audioNode->getType() == NodeType::SystemOutput;
-    qreal titleWidth = isSystemNode ? m_width - 34 : m_width - 48;
-    painter->drawText(QRectF(28, 0, titleWidth, 26), Qt::AlignVCenter | Qt::AlignLeft, QString::fromStdString(m_audioNode->getName()));
-    
-    // 4. Draw Bypass button (Power Switch)
-    if (m_audioNode->getType() != NodeType::SystemInput && m_audioNode->getType() != NodeType::SystemOutput) {
-        painter->setPen(QPen(bypass ? QColor(180, 180, 180) : QColor(255, 52, 52), 2));
+    // 3. Header Bar Controls (Power button + Category Title + Drag handle)
+    if (!isSystemNode) {
+        // Power Switch button
+        painter->setPen(QPen(bypass ? QColor(160, 160, 160) : QColor(255, 60, 60), 1.8));
         painter->setBrush(Qt::NoBrush);
-        painter->drawEllipse(QRectF(7, 7, 12, 12));
-        painter->drawLine(13, 5, 13, 11);
+        painter->drawEllipse(QRectF(6, 5, 10, 10));
+        painter->drawLine(11, 3, 11, 8);
+
+        // Drag hint grab lines (≡)
+        painter->setPen(QPen(QColor(255, 255, 255, 120), 1.2));
+        qreal gx = m_width - 14;
+        painter->drawLine(QPointF(gx, 6), QPointF(gx + 7, 6));
+        painter->drawLine(QPointF(gx, 10), QPointF(gx + 7, 10));
+        painter->drawLine(QPointF(gx, 14), QPointF(gx + 7, 14));
     }
 
-    // The body communicates block type and channel format once, rather than on every socket.
-    drawEffectIcon(painter, effectIconFor(m_audioNode), QPointF(m_width / 2.0, m_height - 14));
+    // Category Label in Header
+    QFont headerFont = painter->font();
+    headerFont.setBold(true);
+    headerFont.setPixelSize(8.5);
+    headerFont.setLetterSpacing(QFont::AbsoluteSpacing, 1.0);
+    painter->setFont(headerFont);
+    painter->setPen(QColor(255, 255, 255, 230));
+    qreal catX = isSystemNode ? 6 : 22;
+    qreal catW = isSystemNode ? m_width - 12 : m_width - 38;
+    painter->drawText(QRectF(catX, 0, catW, 22), Qt::AlignCenter, categoryNameFor(m_audioNode));
+
+    // 4. Main Body: Display FULL Plugin Name (larger, bold 11-12px white text)
+    QString title = QString::fromStdString(m_audioNode->getName());
+    QFont titleFont = painter->font();
+    titleFont.setBold(true);
+    titleFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.0);
+    
+    // Scale font size based on title length so longer titles fit cleanly
+    if (title.length() > 24) titleFont.setPixelSize(10.0);
+    else if (title.length() > 14) titleFont.setPixelSize(11.0);
+    else titleFont.setPixelSize(12.0);
+
+    painter->setFont(titleFont);
+    painter->setPen(bypass ? QColor(160, 160, 165) : QColor(255, 255, 255));
+
+    QRectF titleRect(8, 22, m_width - 16, m_height - 36);
+    QTextOption optionText;
+    optionText.setWrapMode(QTextOption::WordWrap);
+    optionText.setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    painter->drawText(titleRect, title, optionText);
+
+    // 5. Footer Row: Category Icon + STEREO/MONO Badge
+    drawEffectIcon(painter, iconType, QPointF(14, m_height - 10));
 
     QString channelLabel = m_isStereo ? "STEREO" : "MONO";
     QFont badgeFont = painter->font();
@@ -209,19 +276,19 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     badgeFont.setPixelSize(7);
     painter->setFont(badgeFont);
     QFontMetrics badgeMetrics(badgeFont);
-    qreal badgeWidth = badgeMetrics.horizontalAdvance(channelLabel) + 10;
-    QRectF badgeRect(m_width - badgeWidth - 6, m_height - 17, badgeWidth, 12);
+    qreal badgeWidth = badgeMetrics.horizontalAdvance(channelLabel) + 8;
+    QRectF badgeRect(m_width - badgeWidth - 6, m_height - 15, badgeWidth, 11);
     painter->setPen(Qt::NoPen);
-    painter->setBrush(m_isStereo ? QColor(0, 130, 100) : QColor(75, 82, 90));
+    painter->setBrush(m_isStereo ? QColor(0, 137, 123) : QColor(69, 90, 100));
     painter->drawRoundedRect(badgeRect, 3, 3);
-    painter->setPen(QColor(255, 255, 255, 220));
+    painter->setPen(QColor(255, 255, 255, 230));
     painter->drawText(badgeRect, Qt::AlignCenter, channelLabel);
     
-    // 5. Dragging ghost overlay
+    // 6. Dragging ghost overlay
     if (m_dragging) {
         painter->setBrush(QColor(0, 160, 200, 30));
         painter->setPen(Qt::NoPen);
-        painter->drawRoundedRect(QRectF(0, 0, m_width, m_height), 8, 8);
+        painter->drawRoundedRect(QRectF(0, 0, m_width, m_height), 6, 6);
     }
 }
 

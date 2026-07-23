@@ -43,6 +43,7 @@
 #include <QGroupBox>
 #include <QScrollBar>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QStyle>
 #include <QMessageBox>
 #include <QInputDialog>
@@ -724,38 +725,94 @@ void MainWindow::setupUI() {
     
     topBar->addSpacing(30);
     
-    // Preset actions
+    // Preset actions bar
     topBar->addWidget(new QLabel("Preset:", this));
+
+    m_prevPresetBtn = new QToolButton(this);
+    m_prevPresetBtn->setText("◀");
+    m_prevPresetBtn->setToolTip("Previous Pedalboard Preset (Ctrl+PageUp)");
+    m_prevPresetBtn->setFixedSize(26, 26);
+    m_prevPresetBtn->setCursor(Qt::PointingHandCursor);
+    m_prevPresetBtn->setStyleSheet(
+        "QToolButton { background-color: #242528; color: #00B0FF; font-size: 11px; border: 1px solid #333438; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #303236; color: white; }"
+        "QToolButton:disabled { color: #555555; background-color: #1A1A1C; border-color: #252528; }"
+    );
+    connect(m_prevPresetBtn, &QToolButton::clicked, this, &MainWindow::onPrevPreset);
+    topBar->addWidget(m_prevPresetBtn);
+
     m_presetCombo = new QComboBox(this);
-    m_presetCombo->setFixedWidth(130);
+    m_presetCombo->setMinimumWidth(180);
     m_presetCombo->setEditable(false);
+    m_presetCombo->setToolTip("Select pedalboard preset");
+    m_presetCombo->setStyleSheet(
+        "QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #00B0FF; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
+        "QComboBox::drop-down { border: none; width: 20px; }"
+        "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
+    );
     connect(m_presetCombo, &QComboBox::activated, this, &MainWindow::onPresetComboActivated);
     topBar->addWidget(m_presetCombo);
-    
-    QPushButton* saveBtn = new QPushButton("Save", this);
-    saveBtn->setToolTip("Save changes to current preset file");
-    connect(saveBtn, &QPushButton::clicked, this, &MainWindow::onSavePreset);
-    topBar->addWidget(saveBtn);
-    
-    QPushButton* presetMenuBtn = new QPushButton("⋯", this);
-    presetMenuBtn->setToolTip("Preset actions (New, Save As, Rename, Delete)");
-    presetMenuBtn->setFixedWidth(30);
-    
+
+    m_nextPresetBtn = new QToolButton(this);
+    m_nextPresetBtn->setText("▶");
+    m_nextPresetBtn->setToolTip("Next Pedalboard Preset (Ctrl+PageDown)");
+    m_nextPresetBtn->setFixedSize(26, 26);
+    m_nextPresetBtn->setCursor(Qt::PointingHandCursor);
+    m_nextPresetBtn->setStyleSheet(m_prevPresetBtn->styleSheet());
+    connect(m_nextPresetBtn, &QToolButton::clicked, this, &MainWindow::onNextPreset);
+    topBar->addWidget(m_nextPresetBtn);
+
+    m_savePresetButton = new QPushButton("💾 Save", this);
+    m_savePresetButton->setToolTip("Save current preset (Ctrl+S)");
+    m_savePresetButton->setStyleSheet(
+        "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
+        "QPushButton:hover { background-color: #009688; }"
+    );
+    connect(m_savePresetButton, &QPushButton::clicked, this, &MainWindow::onSavePreset);
+    topBar->addWidget(m_savePresetButton);
+
+    QPushButton* newBtn = new QPushButton("➕ New", this);
+    newBtn->setToolTip("Create new empty preset (Ctrl+N)");
+    newBtn->setStyleSheet(
+        "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
+        "QPushButton:hover { background-color: #44444A; }"
+    );
+    connect(newBtn, &QPushButton::clicked, this, &MainWindow::onNewPreset);
+    topBar->addWidget(newBtn);
+
+    QPushButton* presetOptionsBtn = new QPushButton("⚙ Options ▾", this);
+    presetOptionsBtn->setToolTip("Preset actions (Save As, Rename, Delete)");
+    presetOptionsBtn->setStyleSheet(
+        "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
+        "QPushButton:hover { background-color: #44444A; }"
+    );
+
     QMenu* presetMenu = new QMenu(this);
-    QAction* newAct = presetMenu->addAction("New Empty Preset");
-    newAct->setShortcut(QKeySequence::New);
-    presetMenu->addSeparator();
     QAction* saveAsAct = presetMenu->addAction("Save As...");
     QAction* renameAct = presetMenu->addAction("Rename...");
-    QAction* deleteAct = presetMenu->addAction("Delete");
-    
-    connect(newAct, &QAction::triggered, this, &MainWindow::onNewPreset);
+    QAction* deleteAct = presetMenu->addAction("Delete Preset");
+
     connect(saveAsAct, &QAction::triggered, this, &MainWindow::onSavePresetAs);
     connect(renameAct, &QAction::triggered, this, &MainWindow::onRenamePreset);
     connect(deleteAct, &QAction::triggered, this, &MainWindow::onDeletePreset);
-    
-    presetMenuBtn->setMenu(presetMenu);
-    topBar->addWidget(presetMenuBtn);
+
+    connect(presetOptionsBtn, &QPushButton::clicked, this, [this, presetOptionsBtn, presetMenu]() {
+        presetMenu->exec(presetOptionsBtn->mapToGlobal(QPoint(0, presetOptionsBtn->height())));
+    });
+    topBar->addWidget(presetOptionsBtn);
+
+    // Global Keyboard Shortcuts
+    auto* saveSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_S), this);
+    connect(saveSc, &QShortcut::activated, this, &MainWindow::onSavePreset);
+
+    auto* newSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_N), this);
+    connect(newSc, &QShortcut::activated, this, &MainWindow::onNewPreset);
+
+    auto* prevSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_PageUp), this);
+    connect(prevSc, &QShortcut::activated, this, &MainWindow::onPrevPreset);
+
+    auto* nextSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_PageDown), this);
+    connect(nextSc, &QShortcut::activated, this, &MainWindow::onNextPreset);
     
     topBar->addStretch();
     
@@ -1144,6 +1201,7 @@ void MainWindow::refreshPresetList() {
     for (const auto& file : files) {
         m_presetCombo->addItem(file.left(file.length() - 5));
     }
+    updatePresetNavigationButtons();
 }
 
 void MainWindow::loadFavoritePlugins() {
@@ -1517,17 +1575,40 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
 void MainWindow::setUnsavedChanges(bool unsaved) {
     m_unsavedChanges = unsaved;
     
-    QString title = "PedalBoard - Guitar Multieffects host";
-    if (m_unsavedChanges) {
-        title += " *";
-    }
-    
     QString currentPreset = m_presetCombo->currentText();
-    if (!currentPreset.isEmpty()) {
-        title += " [" + currentPreset + "]";
-    }
+    if (currentPreset.isEmpty()) currentPreset = "Untitled";
     
+    QString title = "PedalBoard - Guitar Multieffects host [" + currentPreset + (m_unsavedChanges ? " *" : "") + "]";
     setWindowTitle(title);
+
+    if (m_unsavedChanges) {
+        m_presetCombo->setStyleSheet(
+            "QComboBox { background-color: #2D2214; color: #FFE0B2; border: 1px solid #FF9800; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
+            "QComboBox::drop-down { border: none; width: 20px; }"
+            "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
+        );
+        if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
+            m_savePresetButton->setText("💾 Save *");
+            m_savePresetButton->setStyleSheet(
+                "QPushButton { background-color: #F57C00; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
+                "QPushButton:hover { background-color: #FF9800; }"
+            );
+        }
+    } else {
+        m_presetCombo->setStyleSheet(
+            "QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #00B0FF; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
+            "QComboBox::drop-down { border: none; width: 20px; }"
+            "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
+        );
+        if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
+            m_savePresetButton->setText("💾 Save");
+            m_savePresetButton->setStyleSheet(
+                "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
+                "QPushButton:hover { background-color: #009688; }"
+            );
+        }
+    }
+    updatePresetNavigationButtons();
 }
 
 bool MainWindow::promptUnsavedChanges() {
@@ -1615,6 +1696,7 @@ void MainWindow::onSavePreset() {
     QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + presetName + ".json";
     savePresetToFile(fullPath);
     setUnsavedChanges(false);
+    triggerSaveFeedback();
     saveConfigSettings();
 }
 
@@ -1660,6 +1742,7 @@ void MainWindow::onSavePresetAs() {
         m_presetCombo->setCurrentText(presetName);
         m_currentPresetIndex = m_presetCombo->currentIndex();
         setUnsavedChanges(false);
+        triggerSaveFeedback();
         saveConfigSettings();
     }
 }
@@ -1753,6 +1836,58 @@ void MainWindow::onLoadPreset() {
     loadPresetFromFile(fullPath);
     m_currentPresetIndex = m_presetCombo->currentIndex();
     setUnsavedChanges(false);
+}
+
+void MainWindow::onPrevPreset() {
+    if (!m_presetCombo || m_presetCombo->count() == 0) return;
+    int curr = m_presetCombo->currentIndex();
+    if (curr > 0) {
+        if (!promptUnsavedChanges()) return;
+        m_presetCombo->setCurrentIndex(curr - 1);
+        onPresetComboActivated(curr - 1);
+    }
+}
+
+void MainWindow::onNextPreset() {
+    if (!m_presetCombo || m_presetCombo->count() == 0) return;
+    int curr = m_presetCombo->currentIndex();
+    if (curr < m_presetCombo->count() - 1) {
+        if (!promptUnsavedChanges()) return;
+        m_presetCombo->setCurrentIndex(curr + 1);
+        onPresetComboActivated(curr + 1);
+    }
+}
+
+void MainWindow::updatePresetNavigationButtons() {
+    if (!m_presetCombo || !m_prevPresetBtn || !m_nextPresetBtn) return;
+    int curr = m_presetCombo->currentIndex();
+    int count = m_presetCombo->count();
+    m_prevPresetBtn->setEnabled(curr > 0);
+    m_nextPresetBtn->setEnabled(curr >= 0 && curr < count - 1);
+}
+
+void MainWindow::triggerSaveFeedback() {
+    if (!m_savePresetButton) return;
+
+    if (!m_saveFeedbackTimer) {
+        m_saveFeedbackTimer = new QTimer(this);
+        m_saveFeedbackTimer->setSingleShot(true);
+        connect(m_saveFeedbackTimer, &QTimer::timeout, this, [this]() {
+            setUnsavedChanges(m_unsavedChanges);
+        });
+    }
+
+    m_savePresetButton->setText("✓ Saved!");
+    m_savePresetButton->setStyleSheet(
+        "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
+        "QPushButton:hover { background-color: #66BB6A; }"
+    );
+    m_saveFeedbackTimer->start(1500);
+
+    if (m_statusLabel) {
+        QString currentPreset = m_presetCombo->currentText();
+        m_statusLabel->setText(QString("Preset '%1' saved successfully!").arg(currentPreset));
+    }
 }
 
 void MainWindow::onBufferSizeChanged(int index) {

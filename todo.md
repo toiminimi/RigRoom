@@ -10,8 +10,8 @@
 
 ## 🟡 Priority 2: Canvas & UI/UX Improvements
 - [x] **Disable Split Drag when Lanes Full**: Prevent dragging split nodes when maximum lane capacity is reached.
-- [ ] **Pedalboard Preset Handling & Canvas Display**: Better handling and UI for pedalboard presets (e.g. showing active pedalboard preset selector directly on the canvas/top header).
-- [ ] **Nicer Plugin Blocks**: Upgrade visual design, shadows, icons, and signal flow aesthetics of plugin blocks on canvas.
+- [x] **Pedalboard Preset Handling & Canvas Display**: Better handling and UI for pedalboard presets (e.g. showing active pedalboard preset selector directly on the canvas/top header).
+- [x] **Nicer Plugin Blocks**: Upgrade visual design, shadows, icons, and signal flow aesthetics of plugin blocks on canvas.
 - [ ] **Canvas Zoom**: Add zoom controls / wheel zoom to navigate complex pedalboard signal trees.
 - [ ] **Plugin Browser Format Filtering**: Separate LV2 / CLAP / VST3 format filters from categories in the plugin browser.
 
