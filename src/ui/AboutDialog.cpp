@@ -1,4 +1,5 @@
 #include "AboutDialog.h"
+#include "Version.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -38,7 +39,7 @@ void AboutWidget::setupUI() {
     auto* nameVerLayout = new QHBoxLayout();
     auto* titleLabel = new QLabel("PedalBoard", container);
     titleLabel->setStyleSheet("font-size: 19px; font-weight: 800; color: #ffffff;");
-    auto* verLabel = new QLabel("v1.0.0", container);
+    auto* verLabel = new QLabel(QString("v") + PEDALBOARD_VERSION_STRING, container);
     verLabel->setStyleSheet("font-size: 10px; font-weight: bold; color: #00e5ff; background-color: rgba(0, 229, 255, 0.12); padding: 2px 7px; border-radius: 4px;");
     nameVerLayout->addWidget(titleLabel);
     nameVerLayout->addWidget(verLabel);

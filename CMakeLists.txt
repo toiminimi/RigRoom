@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(PedalBoard VERSION 1.0.0 LANGUAGES CXX)
+project(PedalBoard VERSION 0.9.0 LANGUAGES CXX)
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/Version.h
+)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,7 +59,7 @@ add_executable(PedalBoard
     src/ui/AboutDialog.h
 )
 
-target_include_directories(PedalBoard PRIVATE src src/audio)
+target_include_directories(PedalBoard PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(PedalBoard PRIVATE -g -rdynamic)
 target_link_options(PedalBoard PRIVATE -rdynamic)
 target_link_libraries(PedalBoard PRIVATE
