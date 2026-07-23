@@ -1,19 +1,19 @@
-# PedalBoard TODO & Roadmap
+# RigRoom TODO & Roadmap
 
 ## 🔴 Priority 0: Critical Bugs
-- [x] **If plugin is missing app crashes**: If plugin which was earlier available is missing, make it recover and load the pedalboards but highlight that plugin block so that user know it's missing. make sure that info about plugin is saved so that once plugin comes back available is possible to load again
-- [x] **Plugin GUI Preset Switch Crash**: App crashes when switching pedalboard presets while external plugin GUIs are open.
+- [x] **If plugin is missing app crashes**: If plugin which was earlier available is missing, make it recover and load the rigrooms but highlight that plugin block so that user know it's missing. make sure that info about plugin is saved so that once plugin comes back available is possible to load again
+- [x] **Plugin GUI Preset Switch Crash**: App crashes when switching rigroom presets while external plugin GUIs are open.
 
 ## 🟠 Priority 1: Core Audio & DSP Engine
-- [x] **Plugin Preset State Sync**: When loading a pedalboard preset, automatically reflect the loaded plugin preset in the Inspector dropdown.
+- [x] **Plugin Preset State Sync**: When loading a rigroom preset, automatically reflect the loaded plugin preset in the Inspector dropdown.
 - [x] **In/Out Peak & Clipping Indicators**: Add visual audio peak meters and clipping warnings for master input and output.
 - [x] **XRun Detection**: Monitor and display audio buffer xruns/dropouts in the status bar/meter.
 
 ## 🟡 Priority 2: Canvas & UI/UX Improvements
 - [x] **Disable Split Drag when Lanes Full**: Prevent dragging split nodes when maximum lane capacity is reached.
-- [x] **Pedalboard Preset Handling & Canvas Display**: Better handling and UI for pedalboard presets (e.g. showing active pedalboard preset selector directly on the canvas/top header).
+- [x] **Pedalboard Preset Handling & Canvas Display**: Better handling and UI for rigroom presets (e.g. showing active rigroom preset selector directly on the canvas/top header).
 - [x] **Nicer Plugin Blocks**: Upgrade visual design, shadows, icons, and signal flow aesthetics of plugin blocks on canvas.
-- [x] **Canvas Zoom**: Add zoom controls / wheel zoom to navigate complex pedalboard signal trees.
+- [x] **Canvas Zoom**: Add zoom controls / wheel zoom to navigate complex rigroom signal trees.
 - [x] **Plugin Browser Format Filtering & Rich Details**: Separate LV2 / CLAP / VST3 format filter tabs from categories, and display an enhanced plugin metadata detail panel (format, vendor, channel layout, URI, parameters).
 
 ## 🔵 Priority 3: Settings & TONE3000 Integration

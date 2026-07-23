@@ -1,10 +1,10 @@
-# PedalBoard Release & Versioning Guidelines
+# RigRoom Release & Versioning Guidelines
 
 This project follows [Semantic Versioning (SemVer 2.0.0)](https://semver.org/).
 
 ## Current Development State: `v0.9.0-dev`
 
-PedalBoard is currently in active pre-release development. All development builds display `v0.9.0-dev`.
+RigRoom is currently in active pre-release development. All development builds display `v0.9.0-dev`.
 
 ---
 
@@ -21,7 +21,7 @@ PedalBoard is currently in active pre-release development. All development build
 The version is centrally defined in **`CMakeLists.txt`**:
 
 ```cmake
-project(PedalBoard VERSION 0.9.0 LANGUAGES CXX)
+project(RigRoom VERSION 0.9.0 LANGUAGES CXX)
 ```
 
 During build configuration, CMake generates `Version.h` from `src/Version.h.in`, automatically updating:
@@ -50,6 +50,6 @@ When the project owner decides to issue a release:
 2. **Remove `-dev` flag in `Version.h.in`** for tag build.
 3. **Tag release in Git**:
    ```bash
-   git tag -a v1.0.0 -m "PedalBoard v1.0.0 - Initial Public Release"
+   git tag -a v1.0.0 -m "RigRoom v1.0.0 - Initial Public Release"
    git push origin v1.0.0
    ```

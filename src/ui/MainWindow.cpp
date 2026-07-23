@@ -769,7 +769,7 @@ private:
 
 static QString obfuscateKey(const QString& input) {
     QByteArray data = input.toUtf8();
-    const char key[] = "PedalBoardSecureKey123";
+    const char key[] = "RigRoomSecureKey123";
     int keyLen = sizeof(key) - 1;
     for (int i = 0; i < data.size(); ++i) {
         data[i] = data[i] ^ key[i % keyLen];
@@ -779,7 +779,7 @@ static QString obfuscateKey(const QString& input) {
 
 static QString deobfuscateKey(const QString& input) {
     QByteArray data = QByteArray::fromBase64(input.toLatin1());
-    const char key[] = "PedalBoardSecureKey123";
+    const char key[] = "RigRoomSecureKey123";
     int keyLen = sizeof(key) - 1;
     for (int i = 0; i < data.size(); ++i) {
         data[i] = data[i] ^ key[i % keyLen];
@@ -788,17 +788,36 @@ static QString deobfuscateKey(const QString& input) {
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("PedalBoard - Guitar Multieffects host");
+    setWindowTitle("RigRoom - Guitar Multieffects host");
     resize(1200, 800);
     
     m_networkManager = new QNetworkAccessManager(this);
     
-    // Create configs dir
-    QDir().mkpath(QDir::homePath() + "/.config/PedalBoard/presets");
+    // Create configs dir and automatically migrate legacy PedalBoard settings & presets
+    QString newConfigDir = QDir::homePath() + "/.config/RigRoom";
+    QString oldConfigDir = QDir::homePath() + "/.config/PedalBoard";
+    QDir().mkpath(newConfigDir + "/presets");
+
+    if (QDir(oldConfigDir).exists()) {
+        if (!QFile::exists(newConfigDir + "/config.json") && QFile::exists(oldConfigDir + "/config.json")) {
+            QFile::copy(oldConfigDir + "/config.json", newConfigDir + "/config.json");
+        }
+        if (!QFile::exists(newConfigDir + "/plugin-favorites.json") && QFile::exists(oldConfigDir + "/plugin-favorites.json")) {
+            QFile::copy(oldConfigDir + "/plugin-favorites.json", newConfigDir + "/plugin-favorites.json");
+        }
+        QDir oldPresetsDir(oldConfigDir + "/presets");
+        if (oldPresetsDir.exists()) {
+            for (const QString& fileName : oldPresetsDir.entryList(QStringList() << "*.json", QDir::Files)) {
+                if (!QFile::exists(newConfigDir + "/presets/" + fileName)) {
+                    QFile::copy(oldPresetsDir.filePath(fileName), newConfigDir + "/presets/" + fileName);
+                }
+            }
+        }
+    }
     loadFavoritePlugins();
     
     // Initialize audio engine
-    if (!m_engine.init("PedalBoard")) {
+    if (!m_engine.init("RigRoom")) {
         std::cerr << "JACK engine failed to initialize!" << std::endl;
     }
     
@@ -811,7 +830,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     float savedInputGain = 0.0f;
     float savedOutputGain = 0.0f;
     
-    QFile configFile(QDir::homePath() + "/.config/PedalBoard/config.json");
+    QFile configFile(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFile.open(QFile::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(configFile.readAll());
         if (doc.isObject()) {
@@ -910,7 +929,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // Autoload the last used preset if it was saved in config
     QString lastPresetName;
-    QFile configFileCheck(QDir::homePath() + "/.config/PedalBoard/config.json");
+    QFile configFileCheck(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFileCheck.open(QFile::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(configFileCheck.readAll());
         if (doc.isObject()) {
@@ -930,7 +949,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         if (idx != -1) {
             m_presetCombo->setCurrentIndex(idx);
             m_currentPresetIndex = idx;
-            QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + lastPresetName + ".json";
+            QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + lastPresetName + ".json";
             if (QFile::exists(fullPath)) {
                 loadPresetFromFile(fullPath);
                 setUnsavedChanges(false);
@@ -1046,7 +1065,7 @@ void MainWindow::setupUI() {
     QHBoxLayout* topBar = new QHBoxLayout(topBarWidget);
     topBar->setContentsMargins(0, 0, 0, 0);
     
-    QLabel* logo = new QLabel("PEDALBOARD", this);
+    QLabel* logo = new QLabel("RIGROOM", this);
     logo->setStyleSheet("font-size: 20px; font-weight: bold; color: #00B0FF; letter-spacing: 2px;");
     topBar->addWidget(logo);
     
@@ -1442,7 +1461,7 @@ void MainWindow::setupUI() {
 
     // Load existing saved value
     {
-        QSettings settings("PedalBoard", "PedalBoard");
+        QSettings settings("RigRoom", "RigRoom");
         QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
         if (!savedKeyEnc.isEmpty()) {
             apiKeyEdit->setText(deobfuscateKey(savedKeyEnc));
@@ -1451,7 +1470,7 @@ void MainWindow::setupUI() {
     updateKeyStatus();
 
     connect(apiKeyEdit, &QLineEdit::textChanged, this, [updateKeyStatus](const QString& text) {
-        QSettings settings("PedalBoard", "PedalBoard");
+        QSettings settings("RigRoom", "RigRoom");
         if (text.trimmed().isEmpty()) {
             settings.remove("tone3000_api_key");
         } else {
@@ -1462,7 +1481,7 @@ void MainWindow::setupUI() {
 
     connect(clearKeyBtn, &QPushButton::clicked, this, [apiKeyEdit]() {
         apiKeyEdit->clear();
-        QSettings settings("PedalBoard", "PedalBoard");
+        QSettings settings("RigRoom", "RigRoom");
         settings.remove("tone3000_api_key");
     });
 
@@ -1566,7 +1585,7 @@ void MainWindow::setupUI() {
     QPushButton* settingsBtn = new QPushButton("Settings", this);
     settingsBtn->setToolTip("Open audio input/output and buffer settings");
     connect(settingsBtn, &QPushButton::clicked, this, [this]() {
-        QSettings settings("PedalBoard", "PedalBoard");
+        QSettings settings("RigRoom", "RigRoom");
         QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
         if (m_apiKeyEdit) {
             m_apiKeyEdit->setText(savedKeyEnc.isEmpty() ? "" : deobfuscateKey(savedKeyEnc));
@@ -1887,7 +1906,7 @@ void MainWindow::scanPlugins() {
 
 void MainWindow::refreshPresetList() {
     m_presetCombo->clear();
-    QDir presetsDir(QDir::homePath() + "/.config/PedalBoard/presets");
+    QDir presetsDir(QDir::homePath() + "/.config/RigRoom/presets");
     QStringList files = presetsDir.entryList({"*.json"}, QDir::Files);
     for (const auto& file : files) {
         m_presetCombo->addItem(file.left(file.length() - 5));
@@ -1896,7 +1915,7 @@ void MainWindow::refreshPresetList() {
 }
 
 void MainWindow::loadFavoritePlugins() {
-    QFile file(QDir::homePath() + "/.config/PedalBoard/plugin-favorites.json");
+    QFile file(QDir::homePath() + "/.config/RigRoom/plugin-favorites.json");
     if (!file.open(QFile::ReadOnly)) return;
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
     for (const QJsonValue& value : document.array()) {
@@ -1909,7 +1928,7 @@ void MainWindow::saveFavoritePlugins() const {
     QStringList values = m_favoritePluginUris.values();
     values.sort();
     for (const QString& value : values) favorites.append(value);
-    QFile file(QDir::homePath() + "/.config/PedalBoard/plugin-favorites.json");
+    QFile file(QDir::homePath() + "/.config/RigRoom/plugin-favorites.json");
     if (file.open(QFile::WriteOnly | QFile::Truncate)) {
         file.write(QJsonDocument(favorites).toJson());
     }
@@ -1918,7 +1937,7 @@ void MainWindow::saveFavoritePlugins() const {
 QString MainWindow::pluginPresetDirectory(const AudioNode& node) const {
     const QByteArray identifier = QByteArray::fromStdString(node.getPluginURI().empty() ? node.getName() : node.getPluginURI());
     const QString pluginId = QString::fromLatin1(QCryptographicHash::hash(identifier, QCryptographicHash::Sha256).toHex());
-    return QDir::homePath() + "/.config/PedalBoard/plugin-presets/" + pluginId;
+    return QDir::homePath() + "/.config/RigRoom/plugin-presets/" + pluginId;
 }
 
 bool MainWindow::isValidPluginPresetName(const QString& name) const {
@@ -2235,7 +2254,7 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
     QString currentPreset = m_presetCombo->currentText();
     if (currentPreset.isEmpty()) currentPreset = "Untitled";
     
-    QString title = "PedalBoard - Guitar Multieffects host [" + currentPreset + (m_unsavedChanges ? " *" : "") + "]";
+    QString title = "RigRoom - Guitar Multieffects host [" + currentPreset + (m_unsavedChanges ? " *" : "") + "]";
     setWindowTitle(title);
 
     if (m_unsavedChanges) {
@@ -2350,7 +2369,7 @@ void MainWindow::onSavePreset() {
         return;
     }
     
-    QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + presetName + ".json";
+    QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
     savePresetToFile(fullPath);
     setUnsavedChanges(false);
     triggerSaveFeedback();
@@ -2419,7 +2438,7 @@ void MainWindow::onSavePresetAs() {
         presetName.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
         if (presetName.isEmpty()) return;
         
-        QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + presetName + ".json";
+        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
         
         if (QFile::exists(fullPath)) {
             QMessageBox::StandardButton reply = QMessageBox::question(this, "Overwrite Preset?",
@@ -2451,8 +2470,8 @@ void MainWindow::onRenamePreset() {
         newPresetName.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
         if (newPresetName.isEmpty() || newPresetName == oldPresetName) return;
         
-        QString oldPath = QDir::homePath() + "/.config/PedalBoard/presets/" + oldPresetName + ".json";
-        QString newPath = QDir::homePath() + "/.config/PedalBoard/presets/" + newPresetName + ".json";
+        QString oldPath = QDir::homePath() + "/.config/RigRoom/presets/" + oldPresetName + ".json";
+        QString newPath = QDir::homePath() + "/.config/RigRoom/presets/" + newPresetName + ".json";
         
         if (QFile::exists(newPath)) {
             QMessageBox::critical(this, "Error", "A preset named \"" + newPresetName + "\" already exists.");
@@ -2479,7 +2498,7 @@ void MainWindow::onDeletePreset() {
                                        "Are you sure you want to delete the preset \"" + presetName + "\"?\nThis cannot be undone.",
                                        QMessageBox::Yes|QMessageBox::No);
     if (reply == QMessageBox::Yes) {
-        QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + presetName + ".json";
+        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
         if (QFile::remove(fullPath)) {
             setUnsavedChanges(false);
             m_canvas->clearCanvas();
@@ -2511,7 +2530,7 @@ void MainWindow::onPresetComboActivated(int index) {
     if (promptUnsavedChanges()) {
         m_presetCombo->setCurrentIndex(index);
         QString presetName = m_presetCombo->itemText(index);
-        QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + presetName + ".json";
+        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
         loadPresetFromFile(fullPath);
         m_currentPresetIndex = index;
         setUnsavedChanges(false);
@@ -2523,7 +2542,7 @@ void MainWindow::onLoadPreset() {
     QString presetName = m_presetCombo->currentText();
     if (presetName.isEmpty()) return;
     
-    QString fullPath = QDir::homePath() + "/.config/PedalBoard/presets/" + presetName + ".json";
+    QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
     loadPresetFromFile(fullPath);
     m_currentPresetIndex = m_presetCombo->currentIndex();
     setUnsavedChanges(false);
@@ -2720,7 +2739,7 @@ void MainWindow::onOutputHardwareChanged(int index) {
 void MainWindow::saveConfigSettings() {
     QJsonObject configObj;
     
-    QFile configFileRead(QDir::homePath() + "/.config/PedalBoard/config.json");
+    QFile configFileRead(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFileRead.open(QFile::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(configFileRead.readAll());
         if (doc.isObject()) {
@@ -2753,7 +2772,7 @@ void MainWindow::saveConfigSettings() {
         configObj["lastPreset"] = "";
     }
     
-    QFile configFileWrite(QDir::homePath() + "/.config/PedalBoard/config.json");
+    QFile configFileWrite(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFileWrite.open(QFile::WriteOnly)) {
         QJsonDocument doc(configObj);
         configFileWrite.write(doc.toJson());
@@ -3303,7 +3322,7 @@ class ExternalPluginUIWindow : public QObject {
 public:
     ExternalPluginUIWindow(LV2PluginNode* node, const LilvUI* ui, bool x11Ui, WId parentWindow, QObject* parent = nullptr)
         : QObject(parent), m_node(node), m_parentWindow(parentWindow) {
-        m_serverName = "PedalBoard-external-ui-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        m_serverName = "RigRoom-external-ui-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
         if (!m_server.listen(m_serverName)) return;
 
         connect(&m_server, &QLocalServer::newConnection, this, [this]() {
@@ -5224,14 +5243,14 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
         safeName += ".nam";
     }
 
-    QString cacheDir = QDir::homePath() + "/.cache/PedalBoard/tone3000";
+    QString cacheDir = QDir::homePath() + "/.cache/RigRoom/tone3000";
     QDir().mkpath(cacheDir);
     QString localFilePath = cacheDir + "/" + safeName;
 
     if (!combo.isNull()) combo->setEnabled(false);
     if (!fileLabel.isNull()) fileLabel->setText("Downloading variant: 0%...");
 
-    QSettings settings("PedalBoard", "PedalBoard");
+    QSettings settings("RigRoom", "RigRoom");
     QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
     bool useOfficial = !savedKeyEnc.isEmpty();
 

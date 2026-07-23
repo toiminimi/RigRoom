@@ -14,7 +14,7 @@ extern "C" int XInitThreads(void);
 
 static void crash_handler(int sig) {
     std::ofstream log("crash_debug.txt");
-    log << "PedalBoard crashed with signal: " << sig << std::endl;
+    log << "RigRoom crashed with signal: " << sig << std::endl;
     
     void* array[50];
     size_t size = backtrace(array, 50);
@@ -27,7 +27,7 @@ static void crash_handler(int sig) {
     free(symbols);
     log.close();
     
-    std::cerr << "PedalBoard crashed with signal " << sig << ". Backtrace saved to crash_debug.txt." << std::endl;
+    std::cerr << "RigRoom crashed with signal " << sig << ". Backtrace saved to crash_debug.txt." << std::endl;
     
     std::signal(sig, SIG_DFL);
     std::raise(sig);

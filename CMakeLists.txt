@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(PedalBoard VERSION 0.9.0 LANGUAGES CXX)
+project(RigRoom VERSION 0.9.0 LANGUAGES CXX)
 
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in
@@ -23,7 +23,7 @@ pkg_check_modules(SUIL REQUIRED IMPORTED_TARGET suil-0)
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
 
 # Main executable target
-add_executable(PedalBoard
+add_executable(RigRoom
     src/main.cpp
     src/audio/AudioEngine.cpp
     src/audio/AudioEngine.h
@@ -59,10 +59,10 @@ add_executable(PedalBoard
     src/ui/AboutDialog.h
 )
 
-target_include_directories(PedalBoard PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
-target_compile_options(PedalBoard PRIVATE -g -rdynamic)
-target_link_options(PedalBoard PRIVATE -rdynamic)
-target_link_libraries(PedalBoard PRIVATE
+target_include_directories(RigRoom PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_options(RigRoom PRIVATE -g -rdynamic)
+target_link_options(RigRoom PRIVATE -rdynamic)
+target_link_libraries(RigRoom PRIVATE
     Qt6::Widgets
     Qt6::Network
     PkgConfig::JACK

@@ -7,11 +7,11 @@ BUILD_DIR="${ROOT_DIR}/build"
 APP_DIR="${ROOT_DIR}/build/AppDir"
 
 echo "=========================================="
-echo " 🎛️  Building PedalBoard AppImage"
+echo " 🎛️  Building RigRoom AppImage"
 echo "=========================================="
 
-# 1. Compile PedalBoard in Release mode
-echo "--> Compiling PedalBoard binary..."
+# 1. Compile RigRoom in Release mode
+echo "--> Compiling RigRoom binary..."
 cmake -B "${BUILD_DIR}" -S "${ROOT_DIR}" -DCMAKE_BUILD_TYPE=Release
 
 # Calculate safe parallel jobs based on available RAM (allocating ~2GB per job) to prevent OOM system lockups
@@ -35,7 +35,7 @@ mkdir -p "${APP_DIR}/usr/plugins/platforms"
 mkdir -p "${APP_DIR}/usr/share/applications"
 
 # Copy binary & launcher
-cp "${BUILD_DIR}/PedalBoard" "${APP_DIR}/usr/bin/PedalBoard"
+cp "${BUILD_DIR}/RigRoom" "${APP_DIR}/usr/bin/RigRoom"
 cp "${SCRIPT_DIR}/AppRun" "${APP_DIR}/AppRun"
 chmod +x "${APP_DIR}/AppRun"
 
@@ -46,13 +46,17 @@ if [ -d "${QT_PLUGINS_DIR}/platforms" ]; then
 fi
 
 # Copy desktop file & app icon
-cp "${SCRIPT_DIR}/org.pedalboard.PedalBoard.desktop" "${APP_DIR}/org.pedalboard.PedalBoard.desktop"
-cp "${SCRIPT_DIR}/org.pedalboard.PedalBoard.desktop" "${APP_DIR}/usr/share/applications/org.pedalboard.PedalBoard.desktop"
-if [ -f "${SCRIPT_DIR}/org.pedalboard.PedalBoard.png" ]; then
-    cp "${SCRIPT_DIR}/org.pedalboard.PedalBoard.png" "${APP_DIR}/org.pedalboard.PedalBoard.png"
+cp "${SCRIPT_DIR}/org.rigroom.RigRoom.desktop" "${APP_DIR}/org.rigroom.RigRoom.desktop"
+cp "${SCRIPT_DIR}/org.rigroom.RigRoom.desktop" "${APP_DIR}/usr/share/applications/org.rigroom.RigRoom.desktop"
+if [ -f "${SCRIPT_DIR}/org.rigroom.RigRoom.png" ]; then
+    cp "${SCRIPT_DIR}/org.rigroom.RigRoom.png" "${APP_DIR}/org.rigroom.RigRoom.png"
     mkdir -p "${APP_DIR}/usr/share/icons/hicolor/256x256/apps"
-    cp "${SCRIPT_DIR}/org.pedalboard.PedalBoard.png" "${APP_DIR}/usr/share/icons/hicolor/256x256/apps/org.pedalboard.PedalBoard.png"
-    ln -sf "org.pedalboard.PedalBoard.png" "${APP_DIR}/.DirIcon"
+    cp "${SCRIPT_DIR}/org.rigroom.RigRoom.png" "${APP_DIR}/usr/share/icons/hicolor/256x256/apps/org.rigroom.RigRoom.png"
+    ln -sf "org.rigroom.RigRoom.png" "${APP_DIR}/.DirIcon"
+fi
+if [ -f "${SCRIPT_DIR}/org.rigroom.RigRoom.appdata.xml" ]; then
+    mkdir -p "${APP_DIR}/usr/share/metainfo"
+    cp "${SCRIPT_DIR}/org.rigroom.RigRoom.appdata.xml" "${APP_DIR}/usr/share/metainfo/org.rigroom.RigRoom.appdata.xml"
 fi
 
 # 3. Fetch appimagetool if not available
@@ -64,13 +68,14 @@ if [ ! -f "${APPIMAGETOOL}" ]; then
 fi
 
 # 4. Generate AppImage
-OUTPUT_APPIMAGE="${ROOT_DIR}/PedalBoard-0.9.0-x86_64.AppImage"
+OUTPUT_APPIMAGE="${ROOT_DIR}/RigRoom-0.9.0-x86_64.AppImage"
 echo "--> Generating ${OUTPUT_APPIMAGE}..."
 export APPIMAGE_EXTRACT_AND_RUN=1
+export NO_APPSTREAM=1
 ARCH=x86_64 "${APPIMAGETOOL}" "${APP_DIR}" "${OUTPUT_APPIMAGE}"
 
 echo "=========================================="
 echo " ✅ AppImage Created Successfully!"
 echo " Output: ${OUTPUT_APPIMAGE}"
-echo " Run with: ./PedalBoard-0.9.0-x86_64.AppImage"
+echo " Run with: ./RigRoom-0.9.0-x86_64.AppImage"
 echo "=========================================="

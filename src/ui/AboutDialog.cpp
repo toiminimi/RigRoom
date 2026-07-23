@@ -37,9 +37,9 @@ void AboutWidget::setupUI() {
     titleLayout->setSpacing(2);
     
     auto* nameVerLayout = new QHBoxLayout();
-    auto* titleLabel = new QLabel("PedalBoard", container);
+    auto* titleLabel = new QLabel("RigRoom", container);
     titleLabel->setStyleSheet("font-size: 19px; font-weight: 800; color: #ffffff;");
-    auto* verLabel = new QLabel(QString("v") + PEDALBOARD_VERSION_STRING, container);
+    auto* verLabel = new QLabel(QString("v") + RIGROOM_VERSION_STRING, container);
     verLabel->setStyleSheet("font-size: 10px; font-weight: bold; color: #00e5ff; background-color: rgba(0, 229, 255, 0.12); padding: 2px 7px; border-radius: 4px;");
     nameVerLayout->addWidget(titleLabel);
     nameVerLayout->addWidget(verLabel);
@@ -51,7 +51,7 @@ void AboutWidget::setupUI() {
     titleLayout->addWidget(tagline);
 
     auto* repoLabel = new QLabel(
-        "<a href=\"https://github.com/placeholder/PedalBoard\" style=\"color: #00e5ff; text-decoration: none;\">https://github.com/placeholder/PedalBoard</a>",
+        "<a href=\"https://github.com/placeholder/RigRoom\" style=\"color: #00e5ff; text-decoration: none;\">https://github.com/placeholder/RigRoom</a>",
         container
     );
     repoLabel->setOpenExternalLinks(true);
@@ -75,7 +75,7 @@ void AboutWidget::setupUI() {
 
     auto* featList = new QLabel(
         "• <b>Multi-Format Plugin Hosting:</b> Native LV2, VST3, CLAP, and Neural Amp Modeler (NAM) support.<br>"
-        "• <b>Flexible Routing Canvas:</b> Drag-and-drop pedalboard layout with parallel split & mix branches.<br>"
+        "• <b>Flexible Routing Canvas:</b> Drag-and-drop signal flow layout with parallel split & mix branches.<br>"
         "• <b>TONE3000 Integration:</b> Search and load neural amp models directly inside the application.<br>"
         "• <b>Low-Latency Engine:</b> Real-time JACK Audio Connection Kit and PipeWire support.<br>"
         "• <b>Open License:</b> Released under the GNU General Public License v3.0 (GPLv3).",
@@ -125,7 +125,7 @@ void AboutWidget::setupUI() {
 
 AboutDialog::AboutDialog(QWidget* parent)
     : QDialog(parent) {
-    setWindowTitle("About PedalBoard");
+    setWindowTitle("About RigRoom");
     resize(560, 440);
     setMinimumSize(500, 380);
 

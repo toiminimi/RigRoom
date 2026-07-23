@@ -1,10 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=PedalBoard
+Name=RigRoom
 GenericName=Guitar & Bass Multieffects Host
 Comment=High-performance open-source guitar and bass multieffects host and real-time audio plugin router
-Exec=PedalBoard
-Icon=org.pedalboard.PedalBoard
+Exec=RigRoom
+Icon=org.rigroom.RigRoom
 Categories=AudioVideo;Audio;Mixer;Qt;
 Terminal=false
-StartupWMClass=PedalBoard
+StartupWMClass=RigRoom
+

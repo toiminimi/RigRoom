@@ -1,4 +1,4 @@
-# 🎛️ PedalBoard
+# 🎛️ RigRoom
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Build System](https://img.shields.io/badge/Build-CMake_3.20%2B-brightgreen.svg)](CMakeLists.txt)
@@ -6,7 +6,7 @@
 [![Audio Engine](https://img.shields.io/badge/Audio-JACK_%7C_PipeWire-orange.svg)](https://jackaudio.org)
 [![Plugin Formats](https://img.shields.io/badge/Formats-LV2_%7C_VST3_%7C_CLAP_%7C_NAM-purple.svg)](#features)
 
-**PedalBoard** is an open-source guitar and bass multieffects host and real-time audio plugin router for Linux.
+**RigRoom** is an open-source guitar and bass multieffects host and real-time audio plugin router for Linux.
 
 ---
 
@@ -36,7 +36,7 @@
 - **Branch Gain Controls**: Individual row volume, main mix level, panning, and polarity invert per branch.
 
 ### 💾 Preset Management
-- **Pedalboard Presets**: Save, load, rename, and delete pedalboard configurations.
+- **Pedalboard Presets**: Save, load, rename, and delete rigroom configurations.
 - **Top Bar Quick Selector**: Active preset bar with prev/next navigation arrows.
 - **Parameter Synchronization**: Automatic parameter and preset state sync upon loading presets.
 
@@ -72,12 +72,12 @@ sudo zypper install -y gcc-c++ cmake pkg-config \
     libqt6-qtbase-devel lilv-devel suil-devel libjack-devel libX11-devel
 ```
 
-### Compiling PedalBoard
+### Compiling RigRoom
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/placeholder/PedalBoard.git
-cd PedalBoard
+git clone https://github.com/placeholder/RigRoom.git
+cd RigRoom
 
 # 2. Configure build with CMake
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -85,8 +85,8 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 # 3. Build executable
 cmake --build build -j$(nproc)
 
-# 4. Run PedalBoard
-./build/PedalBoard
+# 4. Run RigRoom
+./build/RigRoom
 ```
 
 ---
@@ -108,7 +108,7 @@ cmake --build build -j$(nproc)
 
 ## ⚖️ License & Open Source Credits
 
-PedalBoard is open-source software released under the **GNU General Public License v3.0 (GPLv3)**. See [LICENSE](LICENSE) for details.
+RigRoom is open-source software released under the **GNU General Public License v3.0 (GPLv3)**. See [LICENSE](LICENSE) for details.
 
 ### Third-Party Acknowledgments
 - **Qt 6 Framework** ([LGPLv3](https://www.qt.io/)) — GUI & event loop
