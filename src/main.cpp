@@ -70,7 +70,6 @@ int main(int argc, char* argv[]) {
     suil_init(&argc, &argv, SUIL_ARG_NONE);
     
     QApplication app(argc, argv);
-    app.setDesktopFileName("org.rigroom.RigRoom");
     app.setWindowIcon(QIcon(":/branding/rigroom-icon.png"));
     
     MainWindow window;

@@ -1187,7 +1187,9 @@ void MainWindow::setupUI() {
 
     // Global Keyboard Shortcuts
     auto* zoomResetSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_0), this);
-    connect(zoomResetSc, &QShortcut::activated, m_canvas, &NodeCanvas::resetZoom);
+    connect(zoomResetSc, &QShortcut::activated, this, [this]() {
+        if (m_canvas) m_canvas->resetZoom();
+    });
 
     // Global Keyboard Shortcuts
     auto* saveSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_S), this);
@@ -3182,6 +3184,19 @@ void MainWindow::loadPresetFromFile(const QString& path) {
             node->uniqueId = id;
             node->setBypassed(bypassed);
             QString modelFilePath = nObj["model_file_path"].toString();
+            const QString legacyCachePrefix = QDir::homePath() + "/.cache/PedalBoard/";
+            const QString rigRoomCachePrefix = QDir::homePath() + "/.cache/RigRoom/";
+            const auto migrateModelPath = [&legacyCachePrefix, &rigRoomCachePrefix](const QString& path) {
+                if (!path.startsWith(legacyCachePrefix)) return path;
+
+                const QString migratedPath = rigRoomCachePrefix + path.mid(legacyCachePrefix.size());
+                if (!QFile::exists(migratedPath) && QFile::exists(path)) {
+                    QDir().mkpath(QFileInfo(migratedPath).absolutePath());
+                    QFile::copy(path, migratedPath);
+                }
+                return QFile::exists(migratedPath) ? migratedPath : path;
+            };
+            modelFilePath = migrateModelPath(modelFilePath);
             if (!modelFilePath.isEmpty()) {
                 m_engine.suspendProcessing();
                 node->loadModelFile(modelFilePath.toStdString());
@@ -3211,7 +3226,7 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                 AudioNode::ModelVariant var;
                 var.name = vObj["name"].toString().toStdString();
                 var.url = vObj["url"].toString().toStdString();
-                var.localPath = vObj["local_path"].toString().toStdString();
+                var.localPath = migrateModelPath(vObj["local_path"].toString()).toStdString();
                 vars.push_back(var);
             }
             node->setModelVariants(vars);
