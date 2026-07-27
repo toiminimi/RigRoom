@@ -15,11 +15,15 @@
 
   <url type="homepage">https://github.com/toiminimi/RigRoom</url>
 
-  <developer>
+  <developer id="org.rigroom">
     <name>RigRoom Open Source Contributors</name>
   </developer>
 
   <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.9.0" date="2026-07-27" />
+  </releases>
 
   <launchable type="desktop-id">org.rigroom.RigRoom.desktop</launchable>
   <provides>

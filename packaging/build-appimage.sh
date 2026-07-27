@@ -54,15 +54,20 @@ cp "${BUILD_DIR}/RigRoom" "${APP_DIR}/usr/bin/RigRoom"
 cp "${SCRIPT_DIR}/AppRun" "${APP_DIR}/AppRun"
 chmod +x "${APP_DIR}/AppRun"
 cp "${ROOT_DIR}/LICENSE" "${APP_DIR}/usr/share/licenses/RigRoom/LICENSE"
+cp "${ROOT_DIR}/COPYRIGHT" "${APP_DIR}/usr/share/licenses/RigRoom/COPYRIGHT"
 cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${APP_DIR}/usr/share/licenses/RigRoom/THIRD_PARTY_NOTICES.md"
 
 # Copy Qt plugins & themes
 echo "--> Bundling Qt plugins & themes..."
 QT_PLUGINS_DIR=$(qmake6 -query QT_INSTALL_PLUGINS 2>/dev/null || qmake -query QT_INSTALL_PLUGINS 2>/dev/null || echo "/usr/lib64/qt6/plugins")
+if [ ! -d "${QT_PLUGINS_DIR}/platforms" ]; then
+    echo "ERROR: Qt platform plugins were not found in ${QT_PLUGINS_DIR}." >&2
+    exit 1
+fi
 for plugin_dir in platforms platformthemes iconengines imageformats styles; do
     if [ -d "${QT_PLUGINS_DIR}/${plugin_dir}" ]; then
         mkdir -p "${APP_DIR}/usr/plugins/${plugin_dir}"
-        cp -r "${QT_PLUGINS_DIR}/${plugin_dir}"/* "${APP_DIR}/usr/plugins/${plugin_dir}/" 2>/dev/null || true
+        cp -r "${QT_PLUGINS_DIR}/${plugin_dir}"/* "${APP_DIR}/usr/plugins/${plugin_dir}/"
     fi
 done
 
@@ -71,7 +76,7 @@ echo "--> Bundling Suil plugin modules..."
 for suil_dir in /usr/lib64/suil-0 /usr/lib/x86_64-linux-gnu/suil-0 /usr/lib/suil-0; do
     if [ -d "$suil_dir" ]; then
         mkdir -p "${APP_DIR}/usr/lib/suil-0"
-        cp -r "$suil_dir"/* "${APP_DIR}/usr/lib/suil-0/" 2>/dev/null || true
+        cp -r "$suil_dir"/* "${APP_DIR}/usr/lib/suil-0/"
     fi
 done
 
@@ -85,7 +90,7 @@ EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so
 for lib in $(ldd "${BUILD_DIR}/RigRoom" | awk '{print $3}' | grep '^/'); do
     libname=$(basename "$lib")
     if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
-        cp -L "$lib" "${APP_DIR}/usr/lib/" 2>/dev/null || true
+        cp -L "$lib" "${APP_DIR}/usr/lib/"
     fi
 done
 
@@ -96,7 +101,7 @@ if [ -d "${APP_DIR}/usr/plugins/platforms" ]; then
             for lib in $(ldd "$plugin" 2>/dev/null | awk '{print $3}' | grep '^/'); do
                 libname=$(basename "$lib")
                 if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
-                    cp -L "$lib" "${APP_DIR}/usr/lib/" 2>/dev/null || true
+                    cp -L "$lib" "${APP_DIR}/usr/lib/"
                 fi
             done
         fi
@@ -110,7 +115,7 @@ for pass in 1 2; do
             for lib in $(ldd "$libfile" 2>/dev/null | awk '{print $3}' | grep '^/'); do
                 libname=$(basename "$lib")
                 if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
-                    cp -L "$lib" "${APP_DIR}/usr/lib/" 2>/dev/null || true
+                    cp -L "$lib" "${APP_DIR}/usr/lib/"
                 fi
             done
         fi
@@ -120,7 +125,7 @@ done
 # Build fallback libjack.so.0 stub for systems without PipeWire/JACK installed
 echo "--> Compiling libjack fallback stub for systems without JACK..."
 mkdir -p "${APP_DIR}/usr/lib/fallback"
-gcc -shared -fPIC "${SCRIPT_DIR}/libjack_fallback.c" -o "${APP_DIR}/usr/lib/fallback/libjack.so.0" 2>/dev/null || true
+gcc -shared -fPIC "${SCRIPT_DIR}/libjack_fallback.c" -o "${APP_DIR}/usr/lib/fallback/libjack.so.0"
 
 # Copy desktop file & app icon
 cp "${SCRIPT_DIR}/org.rigroom.RigRoom.desktop" "${APP_DIR}/org.rigroom.RigRoom.desktop"
@@ -168,7 +173,7 @@ if ! ldconfig -p 2>/dev/null | grep -q "libfuse.so.2" && [ ! -f /lib/x86_64-linu
     export APPIMAGE_EXTRACT_AND_RUN=1
 fi
 SKIP=$(awk '/^__ARCHIVE_FOLLOWS__/ { print NR + 1; exit 0; }' "$SELF")
-tail -n +$SKIP "$SELF" > /tmp/rigroom_exec_$$ 2>/dev/null || true
+tail -n +$SKIP "$SELF" > /tmp/rigroom_exec_$$
 if [ -s /tmp/rigroom_exec_$$ ]; then
     chmod +x /tmp/rigroom_exec_$$
     /tmp/rigroom_exec_$$ "$@"
