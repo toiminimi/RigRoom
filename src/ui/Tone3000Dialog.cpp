@@ -469,6 +469,11 @@ void Tone3000Dialog::setInitialSearchQuery(const QString& query) {
     }
 }
 
+void Tone3000Dialog::setInitialTone(const QString& sourceUrl, const QString& captureName) {
+    m_initialToneUrl = sourceUrl;
+    setInitialSearchQuery(captureName);
+}
+
 void Tone3000Dialog::keyPressEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) {
         if (m_currentTones.isEmpty()) return;
@@ -834,6 +839,19 @@ void Tone3000Dialog::onSearchFinished(QNetworkReply* reply) {
 
     m_hasNextPage = m_totalPages > 0 ? page < m_totalPages : tonesArray.size() == PAGE_SIZE;
     rebuildCards();
+    if (!m_initialToneUrl.isEmpty()) {
+        const QString requestedUrl = QUrl(m_initialToneUrl).adjusted(QUrl::RemoveFragment | QUrl::RemoveQuery | QUrl::StripTrailingSlash).toString();
+        for (int i = 0; i < m_currentTones.size(); ++i) {
+            QString toneUrl = m_currentTones[i].toObject()["url"].toString();
+            if (toneUrl.startsWith('/')) toneUrl.prepend("https://www.tone3000.com");
+            toneUrl = QUrl(toneUrl).adjusted(QUrl::RemoveFragment | QUrl::RemoveQuery | QUrl::StripTrailingSlash).toString();
+            if (toneUrl == requestedUrl) {
+                m_initialToneUrl.clear();
+                selectTone(i);
+                break;
+            }
+        }
+    }
     m_pageLabel->setText(m_totalPages > 0 ? QString("Page %1 of %2").arg(m_currentPage).arg(m_totalPages) : QString("Page %1").arg(m_currentPage));
     m_statusLabel->setText(m_totalResults > 0 ? QString("Showing %1 of %2 profiles.").arg(m_currentTones.size()).arg(m_totalResults) : QString("Showing %1 profiles.").arg(m_currentTones.size()));
 }

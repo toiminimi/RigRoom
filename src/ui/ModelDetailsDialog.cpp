@@ -44,12 +44,20 @@ void ModelDetailsDialog::setupUI() {
     size_t slash = m_filePath.toStdString().find_last_of("/\\");
     std::string filename = (slash != std::string::npos) ? m_filePath.toStdString().substr(slash + 1) : m_filePath.toStdString();
     const std::string& displayName = m_node ? m_node->getModelDisplayName() : "";
-    QString titleStr = QString::fromStdString(m_meta.toneTitle.empty() ? (displayName.empty() ? filename : displayName) : m_meta.toneTitle);
+    QString titleStr = QString::fromStdString(displayName.empty() ? (m_meta.toneTitle.empty() ? filename : m_meta.toneTitle) : displayName);
 
     QLabel* titleLabel = new QLabel(titleStr, headerCard);
     titleLabel->setWordWrap(true);
     titleLabel->setStyleSheet("font-size: 17px; font-weight: bold; color: #FFFFFF; background: transparent; border: none;");
     headerLayout->addWidget(titleLabel);
+
+    const QString captureName = QString::fromStdString(m_meta.toneTitle);
+    if (!captureName.isEmpty() && captureName != titleStr) {
+        auto* captureLabel = new QLabel(QString("Capture: %1").arg(captureName.toHtmlEscaped()), headerCard);
+        captureLabel->setWordWrap(true);
+        captureLabel->setStyleSheet("font-size: 12px; color: #B0BEC5; background: transparent; border: none;");
+        headerLayout->addWidget(captureLabel);
+    }
 
     // Badges Row
     QHBoxLayout* badgeLayout = new QHBoxLayout();
@@ -250,7 +258,9 @@ void ModelDetailsDialog::setupUI() {
 
 void ModelDetailsDialog::onOpenTone3000Browser() {
     Tone3000Dialog dialog(m_node.get(), m_engine, this);
-    if (!m_meta.toneTitle.empty()) {
+    if (!m_sourceUrl.isEmpty() && !m_meta.toneTitle.empty()) {
+        dialog.setInitialTone(m_sourceUrl, QString::fromStdString(m_meta.toneTitle));
+    } else if (!m_meta.toneTitle.empty()) {
         dialog.setInitialSearchQuery(QString::fromStdString(m_meta.toneTitle));
     }
     if (dialog.exec() == QDialog::Accepted) {

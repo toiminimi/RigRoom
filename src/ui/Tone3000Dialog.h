@@ -40,6 +40,7 @@ public:
     AudioNode::ModelMetadata getDownloadedMetadata() const { return m_downloadedMetadata; }
     std::vector<AudioNode::ModelVariant> getDownloadedVariants() const { return m_downloadedVariants; }
     void setInitialSearchQuery(const QString& query);
+    void setInitialTone(const QString& sourceUrl, const QString& captureName);
     void reject() override;
 
 private slots:
@@ -147,6 +148,7 @@ private:
     QSet<int> m_favoriteToneIds;
     bool m_isPopulatingModels = false;
     quint64 m_searchGeneration = 0;
+    QString m_initialToneUrl;
     QTimer* m_searchDebounceTimer;
     std::string m_downloadedModelPath;
     QString m_downloadedToneName;
