@@ -85,6 +85,7 @@ private:
     
     AudioEngine m_engine;
     LilvWorld* m_lilvWorld = nullptr;
+    std::vector<LilvWorld*> m_retiredLilvWorlds;
     
     // UI Elements
     NodeCanvas* m_canvas = nullptr;

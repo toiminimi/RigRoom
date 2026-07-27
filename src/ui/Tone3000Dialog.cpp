@@ -64,6 +64,18 @@ static QString deobfuscateLegacyKey(const QString& input) {
     return QString::fromUtf8(data);
 }
 
+static QString tone3000ConfigDir() {
+    return QDir::homePath() + "/.config/RigRoom";
+}
+
+static QString tone3000CacheDir() {
+    return QDir::homePath() + "/.cache/RigRoom/tone3000";
+}
+
+static QString tone3000FavoritesPath() {
+    return tone3000ConfigDir() + "/favorites.json";
+}
+
 static void migrateLegacyTone3000ApiKey() {
     QSettings settings("RigRoom", "RigRoom");
     if (!settings.value("tone3000_api_key").toString().isEmpty()) return;
@@ -73,6 +85,20 @@ static void migrateLegacyTone3000ApiKey() {
     if (!legacyKey.isEmpty()) {
         settings.setValue("tone3000_api_key", obfuscateKey(deobfuscateLegacyKey(legacyKey)));
         legacySettings.remove("tone3000_api_key");
+    }
+}
+
+static void migrateLegacyTone3000Data() {
+    const QString legacyConfigDir = QDir::homePath() + "/.config/PedalBoard";
+    const QString configDir = tone3000ConfigDir();
+    QDir().mkpath(configDir);
+
+    for (const QString& filename : {"favorites.json", "browser_settings.json"}) {
+        const QString source = legacyConfigDir + "/" + filename;
+        const QString destination = configDir + "/" + filename;
+        if (!QFile::exists(destination) && QFile::exists(source)) {
+            QFile::copy(source, destination);
+        }
     }
 }
 
@@ -95,6 +121,7 @@ protected:
 Tone3000Dialog::Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* parent) 
     : QDialog(parent), m_node(node), m_engine(engine) {
     migrateLegacyTone3000ApiKey();
+    migrateLegacyTone3000Data();
     m_originalModelPath = node ? node->getModelFilePath() : "";
     
     setupUI();
@@ -767,7 +794,7 @@ void Tone3000Dialog::onSearchFinished(QNetworkReply* reply) {
     }
 
     if (m_favoritesCheckbox->isChecked()) {
-        QFile localFile(QDir::homePath() + "/.config/PedalBoard/favorites.json");
+        QFile localFile(tone3000FavoritesPath());
         if (localFile.open(QFile::ReadOnly)) {
             const QJsonArray localFavorites = QJsonDocument::fromJson(localFile.readAll()).array();
             QSet<int> ids;
@@ -866,7 +893,7 @@ void Tone3000Dialog::selectTone(int row) {
     const bool useOfficial = !settings.value("tone3000_api_key", "").toString().isEmpty();
     if (m_favoritesCheckbox->isChecked() && !useOfficial) {
         // Load models list from local favorites
-        QFile file(QDir::homePath() + "/.config/PedalBoard/favorites.json");
+        QFile file(tone3000FavoritesPath());
         if (file.open(QFile::ReadOnly)) {
             QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
             if (doc.isArray()) {
@@ -1261,7 +1288,7 @@ void Tone3000Dialog::onDownloadClicked() {
         safeName += ".nam";
     }
 
-    QString cacheDir = QDir::homePath() + "/.cache/PedalBoard/tone3000/" + toneFolder;
+    QString cacheDir = tone3000CacheDir() + "/" + toneFolder;
     QDir().mkpath(cacheDir);
     m_downloadedModelPath = (cacheDir + "/" + safeName).toStdString();
 
@@ -1301,7 +1328,7 @@ void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filena
     m_previewDownload = isPreview;
 
     if (m_downloadedModelPath.empty()) {
-        QString cacheDir = QDir::homePath() + "/.cache/PedalBoard/tone3000/tone_preview";
+        QString cacheDir = tone3000CacheDir() + "/tone_preview";
         QDir().mkpath(cacheDir);
         m_downloadedModelPath = (cacheDir + "/" + filename).toStdString();
     }
@@ -1539,7 +1566,7 @@ void Tone3000Dialog::loadFavoritesLocal() {
     m_selectedToneIndex = -1;
     m_selectedToneId = -1;
     
-    QString filePath = QDir::homePath() + "/.config/PedalBoard/favorites.json";
+    QString filePath = tone3000FavoritesPath();
     QFile file(filePath);
     if (!file.open(QFile::ReadOnly)) {
         m_statusLabel->setText("No favorites saved yet.");
@@ -1586,7 +1613,7 @@ void Tone3000Dialog::loadFavoritesLocal() {
 }
 
 bool Tone3000Dialog::isFavoriteLocal(int toneId) const {
-    QString filePath = QDir::homePath() + "/.config/PedalBoard/favorites.json";
+    QString filePath = tone3000FavoritesPath();
     QFile file(filePath);
     if (!file.open(QFile::ReadOnly)) return false;
     
@@ -1605,7 +1632,7 @@ bool Tone3000Dialog::isFavoriteLocal(int toneId) const {
 }
 
 void Tone3000Dialog::saveFavoriteLocal(const QJsonObject& toneObj, const QJsonArray& modelsArray) {
-    QString configDir = QDir::homePath() + "/.config/PedalBoard";
+    QString configDir = tone3000ConfigDir();
     QDir().mkpath(configDir);
     QString filePath = configDir + "/favorites.json";
     
@@ -1638,7 +1665,7 @@ void Tone3000Dialog::saveFavoriteLocal(const QJsonObject& toneObj, const QJsonAr
 }
 
 void Tone3000Dialog::removeFavoriteLocal(int toneId) {
-    QString filePath = QDir::homePath() + "/.config/PedalBoard/favorites.json";
+    QString filePath = tone3000FavoritesPath();
     QJsonArray favoritesArray;
     QFile file(filePath);
     if (file.open(QFile::ReadOnly)) {
@@ -1665,7 +1692,7 @@ void Tone3000Dialog::removeFavoriteLocal(int toneId) {
 }
 
 void Tone3000Dialog::saveFilterSettings() {
-    QString configDir = QDir::homePath() + "/.config/PedalBoard";
+    QString configDir = tone3000ConfigDir();
     QDir().mkpath(configDir);
     QString filePath = configDir + "/browser_settings.json";
     
@@ -1693,7 +1720,7 @@ void Tone3000Dialog::saveFilterSettings() {
 }
 
 void Tone3000Dialog::loadFilterSettings() {
-    QString filePath = QDir::homePath() + "/.config/PedalBoard/browser_settings.json";
+    QString filePath = tone3000ConfigDir() + "/browser_settings.json";
     QFile file(filePath);
     if (!file.open(QFile::ReadOnly)) return;
     

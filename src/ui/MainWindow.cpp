@@ -80,6 +80,7 @@
 #include <cmath>
 #include <limits>
 #include <tuple>
+#include <QSet>
 
 class ModernKnob : public QDial {
 public:
@@ -986,6 +987,10 @@ MainWindow::~MainWindow() {
         lilv_world_free(m_lilvWorld);
         m_lilvWorld = nullptr;
     }
+    for (LilvWorld* world : m_retiredLilvWorlds) {
+        lilv_world_free(world);
+    }
+    m_retiredLilvWorlds.clear();
 }
 
 void MainWindow::setupUI() {
@@ -1378,20 +1383,54 @@ void MainWindow::setupUI() {
         "QPushButton { background: #00B0FF; color: white; font-weight: bold; border-radius: 4px; padding: 8px 16px; font-size: 12px; }"
         "QPushButton:hover { background: #0091EA; }"
     );
-    QLabel* rescanNote = new QLabel("Applies custom search directories immediately.", pluginsTab);
-    rescanNote->setStyleSheet("color: #888898; font-size: 11px;");
-
     rescanLayout->addWidget(rescanBtn);
-    rescanLayout->addWidget(rescanNote);
     rescanLayout->addStretch();
     pluginsLayout->addLayout(rescanLayout);
 
     connect(rescanBtn, &QPushButton::clicked, this, [this, rescanBtn]() {
+        QSet<QString> previousUris;
+        for (const auto& plugin : m_availablePlugins) {
+            previousUris.insert(QString::fromStdString(plugin.uri));
+        }
+
         rescanBtn->setText("⏳ Scanning...");
         rescanBtn->setEnabled(false);
         qApp->processEvents();
         
         scanPlugins();
+
+        QStringList newPluginDetails;
+        for (const auto& plugin : m_availablePlugins) {
+            const QString uri = QString::fromStdString(plugin.uri);
+            if (previousUris.contains(uri)) continue;
+
+            const QString format = plugin.isLV2 ? "LV2" :
+                (uri.contains(".clap") ? "CLAP" : "VST3");
+            const QString vendor = plugin.brand.empty() ? "Unknown" : QString::fromStdString(plugin.brand);
+            const QString version = plugin.version.empty() ? "Unknown" : QString::fromStdString(plugin.version);
+            const QString file = QFileInfo(QString::fromStdString(plugin.path)).fileName();
+            newPluginDetails << QString("<b>%1</b> [%2]<br>Category: %3<br>Vendor: %4<br>Version: %5<br>File: %6")
+                .arg(QString::fromStdString(plugin.name).toHtmlEscaped(),
+                     format.toHtmlEscaped(),
+                     QString::fromStdString(plugin.category).toHtmlEscaped(),
+                     vendor.toHtmlEscaped(),
+                     version.toHtmlEscaped(),
+                     file.toHtmlEscaped());
+        }
+
+        QMessageBox scanSummary(this);
+        scanSummary.setWindowTitle("Plugin Rescan");
+        scanSummary.setIcon(QMessageBox::Information);
+        if (newPluginDetails.isEmpty()) {
+            scanSummary.setText(QString("No new plugins found. %1 plugins are currently available.")
+                .arg(m_availablePlugins.size()));
+        } else {
+            scanSummary.setText(QString("Found %1 new plugin%2.")
+                .arg(newPluginDetails.size())
+                .arg(newPluginDetails.size() == 1 ? "" : "s"));
+            scanSummary.setInformativeText(newPluginDetails.join("<br><br>"));
+        }
+        scanSummary.exec();
         
         rescanBtn->setText("✓ Plugins Rescanned!");
         QTimer::singleShot(1500, this, [rescanBtn]() {
@@ -1708,7 +1747,16 @@ void MainWindow::scanPlugins() {
     m_availablePlugins.clear();
 
     if (m_lilvWorld) {
-        lilv_world_free(m_lilvWorld);
+        const auto nodes = m_engine.getNodes();
+        const bool hasLiveLV2Node = std::any_of(nodes.begin(), nodes.end(), [](const auto& node) {
+            return node && node->getType() == NodeType::LV2Plugin;
+        });
+        if (hasLiveLV2Node) {
+            // Live LV2 nodes retain pointers owned by the world they were created from.
+            m_retiredLilvWorlds.push_back(m_lilvWorld);
+        } else {
+            lilv_world_free(m_lilvWorld);
+        }
         m_lilvWorld = nullptr;
     }
 
@@ -1877,32 +1925,33 @@ void MainWindow::scanPlugins() {
     for (const auto& p : m_customCLAPPaths) {
         if (!p.isEmpty()) customClapDirs.push_back(p.toStdString());
     }
-        auto clapPlugins = CLAPPluginNode::scanStandardPaths(customClapDirs);
-        for (const auto& clapDesc : clapPlugins) {
-            std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
-            std::string category = "Utilities";
-            if (!clapDesc.features.empty()) {
-                std::string feat = clapDesc.features[0];
-                if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
-                else if (feat.find("delay") != std::string::npos || feat.find("reverb") != std::string::npos) category = "Delays & Reverbs";
-                else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
-                else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
-            }
-            PluginInfo clapInfo = {
-                clapDesc.name,
-                uri,
-                category,
-                clapDesc.vendor,
-                "",
-                false,
-                2, 2, 0,
-                clapDesc.version,
-                clapDesc.description,
-                clapDesc.features,
-                clapDesc.pluginPath,
-                true
-            };
+    auto clapPlugins = CLAPPluginNode::scanStandardPaths(customClapDirs);
+    for (const auto& clapDesc : clapPlugins) {
+        std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
+        std::string category = "Utilities";
+        if (!clapDesc.features.empty()) {
+            std::string feat = clapDesc.features[0];
+            if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
+            else if (feat.find("delay") != std::string::npos || feat.find("reverb") != std::string::npos) category = "Delays & Reverbs";
+            else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
+            else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
         }
+        PluginInfo clapInfo = {
+            clapDesc.name,
+            uri,
+            category,
+            clapDesc.vendor,
+            "",
+            false,
+            2, 2, 0,
+            clapDesc.version,
+            clapDesc.description,
+            clapDesc.features,
+            clapDesc.pluginPath,
+            true
+        };
+        m_availablePlugins.push_back(clapInfo);
+    }
 }
 
 void MainWindow::refreshPresetList() {
