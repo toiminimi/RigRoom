@@ -262,6 +262,7 @@ void ModelDetailsDialog::onOpenTone3000Browser() {
 
             AudioNode::ModelMetadata meta = dialog.getDownloadedMetadata();
             m_node->setModelMetadata(meta);
+            m_node->setModelVariants(dialog.getDownloadedVariants());
 
             size_t slash = filePath.find_last_of("/\\");
             std::string filename = (slash != std::string::npos) ? filePath.substr(slash + 1) : filePath;

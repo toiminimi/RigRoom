@@ -4686,6 +4686,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                         AudioNode::ModelMetadata meta = dialog.getDownloadedMetadata();
                         parseNamFileMetadata(QString::fromStdString(filePath), meta);
                         node->setModelMetadata(meta);
+                        node->setModelVariants(dialog.getDownloadedVariants());
 
                         size_t slash = filePath.find_last_of("/\\");
                         std::string filename = (slash != std::string::npos) ? filePath.substr(slash + 1) : filePath;

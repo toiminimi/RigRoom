@@ -2,10 +2,13 @@
 #include <QDialog>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QTableWidget>
+#include <QScrollArea>
 #include <QComboBox>
 #include <QLabel>
 #include <QProgressBar>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <QCheckBox>
 #include <QPointer>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -19,6 +22,12 @@
 #include "../audio/AudioNode.h"
 #include "../audio/AudioEngine.h"
 
+class QKeyEvent;
+class QEvent;
+class QUrl;
+class QListWidget;
+class QSplitter;
+
 class Tone3000Dialog : public QDialog {
     Q_OBJECT
 public:
@@ -29,31 +38,40 @@ public:
     QString getDownloadedToneName() const { return m_downloadedToneName; }
     QString getDownloadedToneUrl() const { return m_downloadedToneUrl; }
     AudioNode::ModelMetadata getDownloadedMetadata() const { return m_downloadedMetadata; }
+    std::vector<AudioNode::ModelVariant> getDownloadedVariants() const { return m_downloadedVariants; }
     void setInitialSearchQuery(const QString& query);
     void reject() override;
 
 private slots:
     void performSearch();
     void onSearchFinished(QNetworkReply* reply);
-    void onRowSelectionChanged();
     void onDownloadClicked();
     void onPreviewClicked();
     void onDownloadProgress(qint64 bytesReceived, qint64 bytesTotal);
     void onDownloadFinished(QNetworkReply* reply);
     void onFavoritesToggled(bool checked);
     void onFavoriteButtonClicked();
-    void onPreviousPageClicked();
-    void onNextPageClicked();
+    void onScrollChanged(int value);
 
 private:
     void setupUI();
     void requestSearch();
+    void requestPage(int page, bool append);
+    void fetchFavoriteIds(int page = 1);
+    void onFavoriteIdsFinished(QNetworkReply* reply, int page);
     void fetchModelsForTone(int toneId);
     void onModelsFinished(QNetworkReply* reply, int toneId);
     void populateModels(const QJsonArray& models);
     void downloadModelFile(const QString& url, const QString& filename, bool isPreview, bool isRedirect = false);
-    void onHeaderClicked(int logicalIndex);
-    void refreshTableRows();
+    void rebuildCards();
+    void appendToneCard(const QJsonObject& tone, int index);
+    void selectTone(int index);
+    void showToneInfo(const QJsonObject& tone);
+    void updateActiveFilterChips();
+    QString requestCacheKey(int page) const;
+    void onInfoLinkClicked(const QUrl& url);
+    void keyPressEvent(QKeyEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
     // Audio node and engine for preview
     AudioNode* m_node;
@@ -61,8 +79,6 @@ private:
     std::string m_originalModelPath;
     bool m_isPreviewing = false;
     bool m_previewDownload = false;
-    int m_lastSortedColumn = -1;
-    bool m_sortAscending = true;
 
     // UI elements
     QLineEdit* m_searchEdit;
@@ -71,28 +87,32 @@ private:
     // Filters
     QComboBox* m_gearFilterCombo;
     QComboBox* m_archFilterCombo;
-    QComboBox* m_tagFilterCombo;
+    QComboBox* m_sizeFilterCombo;
+    QComboBox* m_characterFilterCombo;
     QComboBox* m_sortCombo;
+    QCheckBox* m_calibratedCheckbox;
 
-    QTableWidget* m_resultsTable;
+    QScrollArea* m_resultsArea;
+    QWidget* m_resultsContent;
+    QVBoxLayout* m_resultsLayout;
+    QScrollArea* m_infoArea;
+    QSplitter* m_contentSplitter;
+    QLabel* m_infoTitleLabel;
+    QLabel* m_infoCreatorLabel;
+    class QTextBrowser* m_infoText;
+    QLabel* m_variantsLabel;
+    QListWidget* m_variantsList;
+    QPushButton* m_infoToggleBtn;
+    QWidget* m_filterChipsWidget;
+    QHBoxLayout* m_filterChipsLayout;
     QComboBox* m_modelsCombo;
     QPushButton* m_loadBtn;
     QPushButton* m_previewBtn;
     QPushButton* m_favoriteBtn;
-    QPushButton* m_previousPageBtn;
-    QPushButton* m_nextPageBtn;
     QLabel* m_pageLabel;
     QLabel* m_statusLabel;
     QProgressBar* m_progressBar;
-    class QCheckBox* m_favoritesCheckbox;
-    QPushButton* m_infoToggleBtn;
-    class QScrollArea* m_detailsArea;
-    QLabel* m_detailsTitleLabel;
-    QLabel* m_detailsAuthorLabel;
-    QLabel* m_detailsStatsLabel;
-    QLabel* m_detailsDescText;
-    QLabel* m_detailsGearLabel;
-    QLabel* m_detailsTagsLabel;
+    QCheckBox* m_favoritesCheckbox;
 
     void loadFavoritesLocal();
     void saveFavoriteLocal(const QJsonObject& toneObj, const QJsonArray& modelsArray);
@@ -105,18 +125,34 @@ private:
     QNetworkAccessManager* m_networkManager;
     QPointer<QNetworkReply> m_currentReply;
     QPointer<QNetworkReply> m_modelsReply;
+    QPointer<QNetworkReply> m_downloadReply;
+    QPointer<QNetworkReply> m_favoritesReply;
 
     // Data cache
     QJsonArray m_currentTones;
     QJsonArray m_currentModels;
     QHash<int, QJsonArray> m_modelsByToneId;
+    QHash<QString, QJsonArray> m_pageCache;
+    QHash<QString, QJsonObject> m_pageMetadata;
     int m_currentPage = 1;
     static constexpr int PAGE_SIZE = 25;
     bool m_hasNextPage = false;
+    bool m_isLoadingPage = false;
+    int m_totalPages = 0;
+    int m_totalResults = 0;
+    int m_selectedToneIndex = -1;
+    int m_selectedToneId = -1;
+    enum class PendingAction { None, Preview, Load };
+    PendingAction m_pendingAction = PendingAction::None;
+    QSet<int> m_favoriteToneIds;
+    bool m_isPopulatingModels = false;
+    quint64 m_searchGeneration = 0;
+    QTimer* m_searchDebounceTimer;
     std::string m_downloadedModelPath;
     QString m_downloadedToneName;
     QString m_downloadedToneUrl;
     AudioNode::ModelMetadata m_downloadedMetadata;
+    std::vector<AudioNode::ModelVariant> m_downloadedVariants;
 
     // Supabase config
     QString m_supabaseUrl = "https://api.tone3000.com";
