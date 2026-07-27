@@ -348,7 +348,7 @@ public:
     
     // IHostApplication
     Steinberg::tresult PLUGIN_API getName(Steinberg::Vst::String128 name) override {
-        std::string hostName = "PedalBoard";
+        std::string hostName = "RigRoom";
         for (size_t i = 0; i < 127 && i < hostName.size(); ++i) {
             name[i] = hostName[i];
         }

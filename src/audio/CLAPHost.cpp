@@ -269,9 +269,9 @@ CLAPPluginNode::~CLAPPluginNode() {
 void CLAPPluginNode::initHostCallbacks() {
     m_host.clap_version = CLAP_VERSION;
     m_host.host_data = this;
-    m_host.name = "PedalBoard";
-    m_host.vendor = "PedalBoard";
-    m_host.url = "https://github.com/tomi/PedalBoard";
+    m_host.name = "RigRoom";
+    m_host.vendor = "RigRoom";
+    m_host.url = "https://github.com/toiminimi/RigRoom";
     m_host.version = "1.0.0";
     m_host.get_extension = host_get_extension;
     m_host.request_restart = host_request_restart;

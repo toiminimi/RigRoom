@@ -90,7 +90,7 @@ sudo zypper install -y gcc-c++ cmake pkg-config \
 
 ```bash
 # 1. Clone repository
-git clone --recurse-submodules https://github.com/placeholder/RigRoom.git
+git clone --recurse-submodules https://github.com/toiminimi/RigRoom.git
 cd RigRoom
 
 # 2. Configure build with CMake

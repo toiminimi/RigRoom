@@ -51,7 +51,7 @@ void AboutWidget::setupUI() {
     titleLayout->addWidget(tagline);
 
     auto* repoLabel = new QLabel(
-        "<a href=\"https://github.com/placeholder/RigRoom\" style=\"color: #00e5ff; text-decoration: none;\">https://github.com/placeholder/RigRoom</a>",
+        "<a href=\"https://github.com/toiminimi/RigRoom\" style=\"color: #00e5ff; text-decoration: none;\">https://github.com/toiminimi/RigRoom</a>",
         container
     );
     repoLabel->setOpenExternalLinks(true);
