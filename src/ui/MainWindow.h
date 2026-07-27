@@ -75,6 +75,7 @@ private:
     void populateInputPorts();
     void populateOutputPorts();
     void refreshAudioPorts();
+    void showFirstRunAudioSetup();
     void syncParameterControls();
     QString pluginPresetDirectory(const AudioNode& node) const;
     bool savePluginPreset(const std::shared_ptr<AudioNode>& node, const QString& name);
@@ -145,6 +146,7 @@ private:
     
     QTimer* m_statusTimer = nullptr;
     QTimer* m_audioPortTimer = nullptr;
+    bool m_audioConfigured = false;
     std::vector<std::string> m_knownPhysicalInputs;
     std::vector<std::string> m_knownPhysicalOutputs;
 

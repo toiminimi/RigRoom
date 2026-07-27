@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QFrame>
+#include <QPixmap>
 
 AboutWidget::AboutWidget(QWidget* parent)
     : QWidget(parent) {
@@ -29,8 +30,8 @@ void AboutWidget::setupUI() {
     // 1. Header Section
     auto* headerLayout = new QHBoxLayout();
     auto* logoLabel = new QLabel(container);
-    logoLabel->setText("🎛️");
-    logoLabel->setStyleSheet("font-size: 34px;");
+    logoLabel->setPixmap(QPixmap(":/branding/rigroom-icon.png").scaled(52, 52, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    logoLabel->setFixedSize(52, 52);
     headerLayout->addWidget(logoLabel);
 
     auto* titleLayout = new QVBoxLayout();

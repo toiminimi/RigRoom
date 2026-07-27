@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(RigRoom VERSION 0.9.0 LANGUAGES CXX)
+project(RigRoom VERSION 0.9.1 LANGUAGES CXX)
 
 option(RIGROOM_DEV_BUILD "Append a development suffix to the application version" ON)
 set(RIGROOM_VERSION_STRING "${PROJECT_VERSION}")
@@ -68,6 +68,7 @@ add_executable(RigRoom
     src/ui/RoutingHandleItem.h
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
+    src/ui/resources.qrc
 )
 
 target_include_directories(RigRoom PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})

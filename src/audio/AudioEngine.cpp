@@ -89,29 +89,7 @@ bool AudioEngine::start() {
         return false;
     }
     
-    // Auto-detect hardware port defaults if not loaded from configuration
-    if (m_hwInputLeft.empty() || m_hwOutputLeft.empty()) {
-        auto physicalInputs = getPhysicalInputs();
-        auto physicalOutputs = getPhysicalOutputs();
-        
-        if (m_hwInputLeft.empty() && !physicalInputs.empty()) {
-            m_hwInputLeft = physicalInputs[0];
-            if (physicalInputs.size() > 1) {
-                m_hwInputRight = physicalInputs[1];
-            } else {
-                m_hwInputRight = physicalInputs[0];
-            }
-        }
-        if (m_hwOutputLeft.empty() && !physicalOutputs.empty()) {
-            m_hwOutputLeft = physicalOutputs[0];
-            if (physicalOutputs.size() > 1) {
-                m_hwOutputRight = physicalOutputs[1];
-            } else {
-                m_hwOutputRight = physicalOutputs[0];
-            }
-        }
-    }
-    
+    // Hardware ports are intentionally opt-in to prevent accidental feedback.
     updateHardwareConnections();
     return true;
 }

@@ -23,6 +23,7 @@
 #include <QDesktopServices>
 #include <QMenu>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QListWidget>
 #include <QLineEdit>
 #include <QToolButton>
@@ -845,6 +846,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             if (obj.contains("outputGain")) {
                 savedOutputGain = obj["outputGain"].toDouble();
             }
+            m_audioConfigured = obj["audioConfigured"].toBool(false);
 
             if (obj.contains("customLV2Paths")) {
                 m_customLV2Paths.clear();
@@ -863,10 +865,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
     m_engine.setInputGain(savedInputGain);
     m_engine.setOutputGain(savedOutputGain);
-    if (!savedHwInputLeft.empty()) {
+    if (m_audioConfigured && !savedHwInputLeft.empty()) {
         m_engine.setHardwareInputPorts(savedHwInputLeft, savedHwInputRight, savedHwInputStereo);
     }
-    if (!savedHwOutputLeft.empty()) {
+    if (m_audioConfigured && !savedHwOutputLeft.empty()) {
         m_engine.setHardwareOutputPorts(savedHwOutputLeft, savedHwOutputRight, savedHwOutputStereo);
     }
     
@@ -888,6 +890,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
     m_canvas->setSystemChannelModes(m_engine.isHardwareInputStereo(), m_engine.isHardwareOutputStereo());
     m_canvas->applyRoutingChange(true);
+    if (!m_audioConfigured) {
+        QTimer::singleShot(0, this, &MainWindow::showFirstRunAudioSetup);
+    }
     
     // Connect canvas signals
     connect(m_canvas, &NodeCanvas::editPluginUI, this, &MainWindow::onPluginDoubleClicked);
@@ -1399,25 +1404,24 @@ void MainWindow::setupUI() {
                      file.toHtmlEscaped());
         }
 
-        QMessageBox scanSummary(this);
-        scanSummary.setWindowTitle("Plugin Rescan");
-        scanSummary.setIcon(QMessageBox::Information);
-        if (newPluginDetails.isEmpty()) {
-            scanSummary.setText(QString("No new plugins found. %1 plugins are currently available.")
-                .arg(m_availablePlugins.size()));
-        } else {
-            scanSummary.setText(QString("Found %1 new plugin%2.")
-                .arg(newPluginDetails.size())
-                .arg(newPluginDetails.size() == 1 ? "" : "s"));
-            scanSummary.setInformativeText(newPluginDetails.join("<br><br>"));
-        }
-        scanSummary.exec();
-        
         rescanBtn->setText("✓ Plugins Rescanned!");
+        rescanBtn->setEnabled(true);
         QTimer::singleShot(1500, this, [rescanBtn]() {
             rescanBtn->setText("🔄 Rescan Plugins Now");
-            rescanBtn->setEnabled(true);
         });
+
+        auto* scanSummary = new QMessageBox(QMessageBox::Information, "Plugin Rescan", {}, QMessageBox::Ok, this);
+        scanSummary->setAttribute(Qt::WA_DeleteOnClose);
+        if (newPluginDetails.isEmpty()) {
+            scanSummary->setText(QString("Scan complete. No new plugins found. %1 plugins are currently available.")
+                .arg(m_availablePlugins.size()));
+        } else {
+            scanSummary->setText(QString("Scan complete. Found %1 new plugin%2.")
+                .arg(newPluginDetails.size())
+                .arg(newPluginDetails.size() == 1 ? "" : "s"));
+            scanSummary->setInformativeText(newPluginDetails.join("<br><br>"));
+        }
+        scanSummary->show();
     });
 
     mainSettingsTab->addTab(pluginsTab, "🔌 Plugins & Formats");
@@ -2738,6 +2742,67 @@ void MainWindow::refreshAudioPorts() {
     if (inputsChanged || outputsChanged) m_engine.updateHardwareConnections();
 }
 
+void MainWindow::showFirstRunAudioSetup() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Audio Setup");
+    dialog.setMinimumWidth(500);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* heading = new QLabel("<b>Choose your audio ports before enabling sound.</b>", &dialog);
+    auto* description = new QLabel(
+        "RigRoom starts disconnected to avoid feedback. Select the JACK/PipeWire ports you want to use, then enable audio. You can change these later in Settings > Audio.",
+        &dialog);
+    description->setWordWrap(true);
+    auto* inputCombo = new QComboBox(&dialog);
+    auto* outputCombo = new QComboBox(&dialog);
+    inputCombo->addItem("No input", QVariant(QStringList{"", ""}));
+    outputCombo->addItem("No output", QVariant(QStringList{"", ""}));
+
+    const auto addStereoPorts = [](QComboBox* combo, const std::vector<std::string>& ports) {
+        for (size_t i = 0; i < ports.size(); ++i) {
+            const QString first = QString::fromStdString(ports[i]);
+            const size_t separator = ports[i].find(':');
+            if (i + 1 < ports.size() && separator != std::string::npos &&
+                ports[i + 1].starts_with(ports[i].substr(0, separator + 1))) {
+                combo->addItem(first + " + " + QString::fromStdString(ports[i + 1].substr(separator + 1)),
+                    QVariant(QStringList{first, QString::fromStdString(ports[i + 1])}));
+                ++i;
+            } else {
+                combo->addItem(first, QVariant(QStringList{first, first}));
+            }
+        }
+    };
+    addStereoPorts(inputCombo, m_engine.getPhysicalInputs());
+    addStereoPorts(outputCombo, m_engine.getPhysicalOutputs());
+
+    auto* form = new QFormLayout();
+    form->addRow("Input:", inputCombo);
+    form->addRow("Output:", outputCombo);
+    auto* buttons = new QDialogButtonBox(&dialog);
+    auto* keepDisconnected = buttons->addButton("Keep Disconnected", QDialogButtonBox::RejectRole);
+    auto* enableAudio = buttons->addButton("Enable Audio", QDialogButtonBox::AcceptRole);
+    layout->addWidget(heading);
+    layout->addWidget(description);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+    connect(keepDisconnected, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(enableAudio, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        m_audioConfigured = true;
+        saveConfigSettings();
+        return;
+    }
+
+    const QStringList inputPorts = inputCombo->currentData().toStringList();
+    const QStringList outputPorts = outputCombo->currentData().toStringList();
+    m_engine.setHardwareInputPorts(inputPorts.value(0).toStdString(), inputPorts.value(1).toStdString(), true);
+    m_engine.setHardwareOutputPorts(outputPorts.value(0).toStdString(), outputPorts.value(1).toStdString(), true);
+    m_audioConfigured = true;
+    populateInputPorts();
+    populateOutputPorts();
+    saveConfigSettings();
+}
+
 void MainWindow::onInputHardwareChanged(int index) {
     if (index < 0 || index >= m_hwInputCombo->count()) return;
     QStringList ports = m_hwInputCombo->itemData(index).toStringList();
@@ -2778,6 +2843,8 @@ void MainWindow::saveConfigSettings() {
     configObj["hwInputStereo"] = m_hwInputModeCombo->currentIndex() == 1;
     configObj["hwOutputStereo"] = m_hwOutputModeCombo->currentIndex() == 1;
     configObj["inputGain"] = m_engine.getInputGainDB();
+    configObj["outputGain"] = m_engine.getOutputGainDB();
+    configObj["audioConfigured"] = m_audioConfigured;
     configObj["defaultTrackSlots"] = m_globalDefaultSlots;
 
     QJsonArray lv2Arr, vst3Arr, clapArr;

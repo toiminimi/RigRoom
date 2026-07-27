@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/branding">
+    <file alias="rigroom-icon.png">../../packaging/org.rigroom.RigRoom.png</file>
+  </qresource>
+</RCC>
