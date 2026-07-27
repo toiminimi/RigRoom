@@ -75,7 +75,6 @@ private:
     void populateInputPorts();
     void populateOutputPorts();
     void refreshAudioPorts();
-    void showFirstRunAudioSetup();
     void syncParameterControls();
     QString pluginPresetDirectory(const AudioNode& node) const;
     bool savePluginPreset(const std::shared_ptr<AudioNode>& node, const QString& name);
