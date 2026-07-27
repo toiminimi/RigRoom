@@ -4,6 +4,7 @@
 #include <QTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QIcon>
 extern "C" int XInitThreads(void);
 #include "ui/MainWindow.h"
 #include "ui/GtkUIHelper.h"
@@ -69,6 +70,7 @@ int main(int argc, char* argv[]) {
     suil_init(&argc, &argv, SUIL_ARG_NONE);
     
     QApplication app(argc, argv);
+    app.setWindowIcon(QIcon(":/branding/rigroom-icon.png"));
     
     MainWindow window;
     window.show();
