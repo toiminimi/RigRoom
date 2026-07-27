@@ -86,11 +86,17 @@ mkdir -p "${APP_DIR}/usr/lib"
 
 EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcrypto|libssl|libcurl|libdbus-1|libpcre2"
 
+copy_library() {
+    local source="$1"
+    local destination="${APP_DIR}/usr/lib/$(basename "$source")"
+    [ -e "$destination" ] || cp -L "$source" "$destination"
+}
+
 # Copy direct dependencies of RigRoom
 for lib in $(ldd "${BUILD_DIR}/RigRoom" | awk '{print $3}' | grep '^/'); do
     libname=$(basename "$lib")
     if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
-        cp -L "$lib" "${APP_DIR}/usr/lib/"
+        copy_library "$lib"
     fi
 done
 
@@ -101,7 +107,7 @@ if [ -d "${APP_DIR}/usr/plugins/platforms" ]; then
             for lib in $(ldd "$plugin" 2>/dev/null | awk '{print $3}' | grep '^/'); do
                 libname=$(basename "$lib")
                 if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
-                    cp -L "$lib" "${APP_DIR}/usr/lib/"
+                    copy_library "$lib"
                 fi
             done
         fi
@@ -115,7 +121,7 @@ for pass in 1 2; do
             for lib in $(ldd "$libfile" 2>/dev/null | awk '{print $3}' | grep '^/'); do
                 libname=$(basename "$lib")
                 if ! echo "$libname" | grep -qE "$EXCLUDE_REGEX"; then
-                    cp -L "$lib" "${APP_DIR}/usr/lib/"
+                    copy_library "$lib"
                 fi
             done
         fi
@@ -190,7 +196,7 @@ EOF
 
 cat "${RAW_APPIMAGE}" >> "${OUTPUT_APPIMAGE}"
 chmod +x "${OUTPUT_APPIMAGE}"
-sha256sum "${OUTPUT_APPIMAGE}" > "${OUTPUT_APPIMAGE}.sha256"
+(cd "${ROOT_DIR}" && sha256sum "$(basename "${OUTPUT_APPIMAGE}")") > "${OUTPUT_APPIMAGE}.sha256"
 
 echo "=========================================="
 echo " ✅ Universal AppImage Created Successfully!"
