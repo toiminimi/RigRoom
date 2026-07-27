@@ -29,10 +29,13 @@ pkg_check_modules(JACK REQUIRED IMPORTED_TARGET jack)
 pkg_check_modules(LILV REQUIRED IMPORTED_TARGET lilv-0)
 pkg_check_modules(SUIL REQUIRED IMPORTED_TARGET suil-0)
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
+pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 
 # Main executable target
 add_executable(RigRoom
     src/main.cpp
+    src/CredentialStore.cpp
+    src/CredentialStore.h
     src/audio/AudioEngine.cpp
     src/audio/AudioEngine.h
     src/audio/AudioNode.h
@@ -77,6 +80,7 @@ target_link_libraries(RigRoom PRIVATE
     PkgConfig::LILV
     PkgConfig::SUIL
     PkgConfig::X11
+    PkgConfig::SECRET
     dl
 )
 

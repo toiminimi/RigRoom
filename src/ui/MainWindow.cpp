@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CredentialStore.h"
 #include "../audio/LV2Host.h"
 #include "../audio/VST3Host.h"
 #include "../audio/CLAPHost.h"
@@ -769,26 +770,6 @@ private:
 
 #include <QSettings>
 
-static QString obfuscateKey(const QString& input) {
-    QByteArray data = input.toUtf8();
-    const char key[] = "RigRoomSecureKey123";
-    int keyLen = sizeof(key) - 1;
-    for (int i = 0; i < data.size(); ++i) {
-        data[i] = data[i] ^ key[i % keyLen];
-    }
-    return QString::fromLatin1(data.toBase64());
-}
-
-static QString deobfuscateKey(const QString& input) {
-    QByteArray data = QByteArray::fromBase64(input.toLatin1());
-    const char key[] = "RigRoomSecureKey123";
-    int keyLen = sizeof(key) - 1;
-    for (int i = 0; i < data.size(); ++i) {
-        data[i] = data[i] ^ key[i % keyLen];
-    }
-    return QString::fromUtf8(data);
-}
-
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("RigRoom - Guitar Multieffects host");
     resize(1200, 800);
@@ -1515,28 +1496,21 @@ void MainWindow::setupUI() {
 
     // Load existing saved value
     {
-        QSettings settings("RigRoom", "RigRoom");
-        QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
-        if (!savedKeyEnc.isEmpty()) {
-            apiKeyEdit->setText(deobfuscateKey(savedKeyEnc));
-        }
+        apiKeyEdit->setText(CredentialStore::tone3000ApiKey());
     }
     updateKeyStatus();
 
-    connect(apiKeyEdit, &QLineEdit::textChanged, this, [updateKeyStatus](const QString& text) {
-        QSettings settings("RigRoom", "RigRoom");
-        if (text.trimmed().isEmpty()) {
-            settings.remove("tone3000_api_key");
-        } else {
-            settings.setValue("tone3000_api_key", obfuscateKey(text.trimmed()));
-        }
+    connect(apiKeyEdit, &QLineEdit::textChanged, this, [this, updateKeyStatus](const QString& text) {
+        QString error;
+        if (text.trimmed().isEmpty()) CredentialStore::clearTone3000ApiKey(&error);
+        else CredentialStore::setTone3000ApiKey(text.trimmed(), &error);
+        if (!error.isEmpty()) m_statusLabel->setText("TONE3000 key will be kept for this session only: " + error);
         updateKeyStatus();
     });
 
     connect(clearKeyBtn, &QPushButton::clicked, this, [apiKeyEdit]() {
         apiKeyEdit->clear();
-        QSettings settings("RigRoom", "RigRoom");
-        settings.remove("tone3000_api_key");
+        CredentialStore::clearTone3000ApiKey();
     });
 
     QLabel* helpLabel = new QLabel(
@@ -1639,10 +1613,8 @@ void MainWindow::setupUI() {
     QPushButton* settingsBtn = new QPushButton("Settings", this);
     settingsBtn->setToolTip("Open audio input/output and buffer settings");
     connect(settingsBtn, &QPushButton::clicked, this, [this]() {
-        QSettings settings("RigRoom", "RigRoom");
-        QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
         if (m_apiKeyEdit) {
-            m_apiKeyEdit->setText(savedKeyEnc.isEmpty() ? "" : deobfuscateKey(savedKeyEnc));
+            m_apiKeyEdit->setText(CredentialStore::tone3000ApiKey());
             if (m_updateKeyStatusFunc) m_updateKeyStatusFunc();
         }
         m_settingsDialog->exec();
@@ -5254,9 +5226,8 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
     if (!combo.isNull()) combo->setEnabled(false);
     if (!fileLabel.isNull()) fileLabel->setText("Downloading variant: 0%...");
 
-    QSettings settings("RigRoom", "RigRoom");
-    QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
-    bool useOfficial = !savedKeyEnc.isEmpty();
+    const QString activeKey = CredentialStore::tone3000ApiKey();
+    bool useOfficial = !activeKey.isEmpty();
     if (!useOfficial) {
         if (!fileLabel.isNull()) fileLabel->setText("TONE3000 secret key required.");
         return;
@@ -5268,7 +5239,6 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
 
     if (useOfficial && !isRedirect && QUrl(finalUrlStr).host().endsWith("tone3000.com")) {
-        QString activeKey = deobfuscateKey(savedKeyEnc);
         request.setRawHeader("Authorization", ("Bearer " + activeKey).toUtf8());
     }
 

@@ -20,7 +20,7 @@ if [ -z "${IN_BUILD_CONTAINER}" ] && (command -v podman >/dev/null 2>&1 || comma
         -w /workspace \
         -e IN_BUILD_CONTAINER=1 \
         "${BASELINE_IMAGE}" \
-        bash -c "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev libx11-dev curl file && ./packaging/build-appimage.sh"
+        bash -c "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev libsecret-1-dev libx11-dev curl file && ./packaging/build-appimage.sh"
 fi
 
 # 1. Compile RigRoom in Release mode

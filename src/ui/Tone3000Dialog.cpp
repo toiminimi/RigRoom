@@ -1,4 +1,5 @@
 #include "Tone3000Dialog.h"
+#include "CredentialStore.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
@@ -34,36 +35,6 @@
 #include <QSet>
 #include <QListWidget>
 
-static QString obfuscateKey(const QString& input) {
-    QByteArray data = input.toUtf8();
-    const char key[] = "RigRoomSecureKey123";
-    int keyLen = sizeof(key) - 1;
-    for (int i = 0; i < data.size(); ++i) {
-        data[i] = data[i] ^ key[i % keyLen];
-    }
-    return QString::fromLatin1(data.toBase64());
-}
-
-static QString deobfuscateKey(const QString& input) {
-    QByteArray data = QByteArray::fromBase64(input.toLatin1());
-    const char key[] = "RigRoomSecureKey123";
-    int keyLen = sizeof(key) - 1;
-    for (int i = 0; i < data.size(); ++i) {
-        data[i] = data[i] ^ key[i % keyLen];
-    }
-    return QString::fromUtf8(data);
-}
-
-static QString deobfuscateLegacyKey(const QString& input) {
-    QByteArray data = QByteArray::fromBase64(input.toLatin1());
-    const char key[] = "PedalBoardSecureKey123";
-    const int keyLen = sizeof(key) - 1;
-    for (int i = 0; i < data.size(); ++i) {
-        data[i] = data[i] ^ key[i % keyLen];
-    }
-    return QString::fromUtf8(data);
-}
-
 static QString tone3000ConfigDir() {
     return QDir::homePath() + "/.config/RigRoom";
 }
@@ -74,18 +45,6 @@ static QString tone3000CacheDir() {
 
 static QString tone3000FavoritesPath() {
     return tone3000ConfigDir() + "/favorites.json";
-}
-
-static void migrateLegacyTone3000ApiKey() {
-    QSettings settings("RigRoom", "RigRoom");
-    if (!settings.value("tone3000_api_key").toString().isEmpty()) return;
-
-    QSettings legacySettings("PedalBoard", "PedalBoard");
-    const QString legacyKey = legacySettings.value("tone3000_api_key").toString();
-    if (!legacyKey.isEmpty()) {
-        settings.setValue("tone3000_api_key", obfuscateKey(deobfuscateLegacyKey(legacyKey)));
-        legacySettings.remove("tone3000_api_key");
-    }
 }
 
 static void migrateLegacyTone3000Data() {
@@ -120,7 +79,6 @@ protected:
 
 Tone3000Dialog::Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* parent) 
     : QDialog(parent), m_node(node), m_engine(engine) {
-    migrateLegacyTone3000ApiKey();
     migrateLegacyTone3000Data();
     m_originalModelPath = node ? node->getModelFilePath() : "";
     
@@ -281,8 +239,7 @@ void Tone3000Dialog::setupUI() {
     
     // Hide banner if key is present
     {
-        QSettings settings("RigRoom", "RigRoom");
-        if (!settings.value("tone3000_api_key", "").toString().isEmpty()) {
+        if (!CredentialStore::tone3000ApiKey().isEmpty()) {
             m_apiKeyBanner->hide();
         }
     }
@@ -290,8 +247,8 @@ void Tone3000Dialog::setupUI() {
     connect(saveKeyBtn, &QPushButton::clicked, this, [this, keyInput]() {
         QString text = keyInput->text().trimmed();
         if (!text.isEmpty()) {
-            QSettings settings("RigRoom", "RigRoom");
-            settings.setValue("tone3000_api_key", obfuscateKey(text));
+            QString error;
+            CredentialStore::setTone3000ApiKey(text, &error);
             m_apiKeyBanner->hide();
             m_favoritesCheckbox->setText("TONE3000 Favorites");
             m_favoritesCheckbox->setToolTip("Shows favorites from your TONE3000 account");
@@ -554,8 +511,7 @@ void Tone3000Dialog::requestSearch() {
 }
 
 void Tone3000Dialog::fetchFavoriteIds(int page) {
-    QSettings settings("RigRoom", "RigRoom");
-    const QString savedKey = settings.value("tone3000_api_key", "").toString();
+    const QString savedKey = CredentialStore::tone3000ApiKey();
     if (savedKey.isEmpty()) return;
 
     if (m_favoritesReply) {
@@ -571,7 +527,7 @@ void Tone3000Dialog::fetchFavoriteIds(int page) {
     query.addQueryItem("page_size", "100");
     url.setQuery(query);
     QNetworkRequest request(url);
-    request.setRawHeader("Authorization", ("Bearer " + deobfuscateKey(savedKey)).toUtf8());
+    request.setRawHeader("Authorization", ("Bearer " + savedKey).toUtf8());
     m_favoritesReply = m_networkManager->get(request);
     QNetworkReply* reply = m_favoritesReply.data();
     connect(reply, &QNetworkReply::finished, this, [this, reply, page]() {
@@ -632,9 +588,8 @@ void Tone3000Dialog::requestPage(int page, bool append) {
     // Save filter settings
     saveFilterSettings();
 
-    QSettings settings("RigRoom", "RigRoom");
-    QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
-    const bool useOfficial = !savedKeyEnc.isEmpty();
+    const QString activeKey = CredentialStore::tone3000ApiKey();
+    const bool useOfficial = !activeKey.isEmpty();
     if (!useOfficial) {
         m_isLoadingPage = false;
         m_statusLabel->setText("Enter your TONE3000 secret key to search profiles.");
@@ -667,8 +622,6 @@ void Tone3000Dialog::requestPage(int page, bool append) {
 
     {
         // TONE3000 access requires a user-provided secret key.
-        QString activeKey = deobfuscateKey(savedKeyEnc);
-        
         QUrl url(m_favoritesCheckbox->isChecked()
             ? "https://www.tone3000.com/api/v1/tones/favorited"
             : "https://www.tone3000.com/api/v1/tones/search");
@@ -881,16 +834,15 @@ void Tone3000Dialog::selectTone(int row) {
 
     // Enable favorites only once the selected profile's variants are known.
     m_favoriteBtn->setEnabled(false);
-    QSettings settings("RigRoom", "RigRoom");
     const bool usingOfficialFavorites = m_favoritesCheckbox->isChecked()
-        && !settings.value("tone3000_api_key", "").toString().isEmpty();
+        && !CredentialStore::tone3000ApiKey().isEmpty();
     bool isFav = usingOfficialFavorites || m_favoriteToneIds.contains(toneId) || isFavoriteLocal(toneId);
     m_favoriteBtn->setChecked(isFav);
     m_favoriteBtn->setText(isFav ? "★ Favorite" : "☆ Favorite");
 
     rebuildCards();
 
-    const bool useOfficial = !settings.value("tone3000_api_key", "").toString().isEmpty();
+    const bool useOfficial = !CredentialStore::tone3000ApiKey().isEmpty();
     if (m_favoritesCheckbox->isChecked() && !useOfficial) {
         // Load models list from local favorites
         QFile file(tone3000FavoritesPath());
@@ -1117,9 +1069,8 @@ void Tone3000Dialog::fetchModelsForTone(int toneId) {
     m_loadBtn->setEnabled(false);
     m_previewBtn->setEnabled(false);
 
-    QSettings settings("RigRoom", "RigRoom");
-    QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
-    bool useOfficial = !savedKeyEnc.isEmpty();
+    const QString activeKey = CredentialStore::tone3000ApiKey();
+    bool useOfficial = !activeKey.isEmpty();
 
     if (!useOfficial) {
         m_statusLabel->setText("Enter your TONE3000 secret key to load models.");
@@ -1127,7 +1078,6 @@ void Tone3000Dialog::fetchModelsForTone(int toneId) {
         return;
     }
 
-    QString activeKey = deobfuscateKey(savedKeyEnc);
     QUrl url("https://www.tone3000.com/api/v1/models");
     QUrlQuery q;
     q.addQueryItem("tone_id", QString::number(toneId));
@@ -1339,9 +1289,8 @@ void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filena
     m_loadBtn->setEnabled(false);
     m_previewBtn->setEnabled(false);
 
-    QSettings settings("RigRoom", "RigRoom");
-    QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
-    bool useOfficial = !savedKeyEnc.isEmpty();
+    const QString activeKey = CredentialStore::tone3000ApiKey();
+    bool useOfficial = !activeKey.isEmpty();
 
     if (!useOfficial) {
         m_statusLabel->setText("Enter your TONE3000 secret key to download profiles.");
@@ -1358,7 +1307,6 @@ void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filena
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     
     if (useOfficial && !isRedirect && QUrl(finalUrl).host().endsWith("tone3000.com")) {
-        QString activeKey = deobfuscateKey(savedKeyEnc);
         request.setRawHeader("Authorization", ("Bearer " + activeKey).toUtf8());
     }
     
@@ -1498,12 +1446,11 @@ void Tone3000Dialog::onFavoriteButtonClicked() {
         }
     }
 
-    QSettings settings("RigRoom", "RigRoom");
-    const QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
-    if (!savedKeyEnc.isEmpty()) {
+    const QString activeKey = CredentialStore::tone3000ApiKey();
+    if (!activeKey.isEmpty()) {
         const bool favorite = m_favoriteBtn->isChecked();
         QNetworkRequest request(QUrl(QString("https://www.tone3000.com/api/v1/tones/%1/favorite").arg(toneId)));
-        request.setRawHeader("Authorization", ("Bearer " + deobfuscateKey(savedKeyEnc)).toUtf8());
+        request.setRawHeader("Authorization", ("Bearer " + activeKey).toUtf8());
         QNetworkReply* reply = favorite ? m_networkManager->put(request, QByteArray()) : m_networkManager->deleteResource(request);
         const QJsonArray selectedModels = m_currentModels;
         connect(reply, &QNetworkReply::finished, this, [this, reply, favorite, toneId, selectedTone, selectedModels]() {

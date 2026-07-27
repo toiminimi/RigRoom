@@ -65,7 +65,7 @@ RigRoom uses **PipeWire** or **JACK** for ultra-low-latency real-time guitar aud
 sudo apt update
 sudo apt install -y build-essential cmake pkg-config \
     qt6-base-dev qt6-base-private-dev \
-    libjack-jackd2-dev liblilv-dev libsuil-dev libx11-dev
+    libjack-jackd2-dev liblilv-dev libsuil-dev libsecret-1-dev libx11-dev
 ```
 
 #### **Arch Linux / Manjaro / EndeavourOS**
