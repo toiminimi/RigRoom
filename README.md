@@ -31,7 +31,7 @@
 
 ### 🎚️ Audio Engine & Display Compatibility
 - **Real-Time Audio Engine**: Low-latency JACK Audio Connection Kit and PipeWire-JACK backend.
-- **Display Server Support**: Runs natively on **both X11 (Xorg) and Wayland** (via Qt 6 XCB / Wayland and XWayland for native X11 plugin GUIs).
+- **Display Server Support**: Runs on X11 and Wayland sessions with XWayland. Native plugin UIs currently require X11/XWayland.
 - **Live Monitoring**: Real-time master input/output peak meters with clipping warnings, DSP load indicator, and XRun dropout counter.
 - **Branch Gain Controls**: Individual row volume, main mix level, panning, and polarity invert per branch.
 
@@ -85,6 +85,20 @@ sudo dnf install -y gcc-c++ cmake pkgconfig \
 sudo zypper install -y gcc-c++ cmake pkg-config \
     libqt6-qtbase-devel lilv-devel suil-devel libjack-devel libX11-devel
 ```
+
+### AppImage
+
+Release AppImages are built against an Ubuntu 22.04 glibc baseline and use the
+host PipeWire-JACK or JACK service for real-time audio. They do not bundle
+glibc or an audio server. To build one locally, run:
+
+```bash
+./packaging/build-appimage.sh
+```
+
+Docker or Podman is used automatically when available. The output is written
+to the repository root. Install PipeWire-JACK or JACK on the target system
+before using audio processing.
 
 ### Compiling RigRoom
 

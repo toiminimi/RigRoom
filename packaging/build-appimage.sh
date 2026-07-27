@@ -10,22 +10,23 @@ echo "=========================================="
 echo " 🎛️  Building RigRoom AppImage"
 echo "=========================================="
 
-# Auto-delegate compilation to baseline Ubuntu 24.04 container via podman/docker if running on host
+# Build on Ubuntu 22.04 so the AppImage uses that glibc baseline. Do not bundle glibc.
+BASELINE_IMAGE="${RIGROOM_APPIMAGE_BASELINE_IMAGE:-ubuntu@sha256:0d779ea97881505f5ef0039336ee85edba27519bdba968c284c86ee066a973c8}"
 if [ -z "${IN_BUILD_CONTAINER}" ] && (command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1); then
     CONTAINER_TOOL=$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)
-    echo "--> Delegates compilation to baseline container via ${CONTAINER_TOOL} (Ubuntu 24.04 for universal Glibc compatibility)..."
+    echo "--> Delegating compilation to ${BASELINE_IMAGE} via ${CONTAINER_TOOL}..."
     exec "${CONTAINER_TOOL}" run --rm \
         -v "${ROOT_DIR}:/workspace:Z" \
         -w /workspace \
         -e IN_BUILD_CONTAINER=1 \
-        ubuntu:24.04 \
-        bash -c "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libjack-jackd2-dev liblilv-dev libsuil-dev libx11-dev curl file && ./packaging/build-appimage.sh"
+        "${BASELINE_IMAGE}" \
+        bash -c "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev libx11-dev curl file && ./packaging/build-appimage.sh"
 fi
 
 # 1. Compile RigRoom in Release mode
 echo "--> Compiling RigRoom binary..."
 rm -rf "${BUILD_DIR}/CMakeCache.txt" "${BUILD_DIR}/CMakeFiles"
-cmake -B "${BUILD_DIR}" -S "${ROOT_DIR}" -DCMAKE_BUILD_TYPE=Release
+cmake -B "${BUILD_DIR}" -S "${ROOT_DIR}" -DCMAKE_BUILD_TYPE=Release -DRIGROOM_DEV_BUILD=OFF
 
 # Calculate safe parallel jobs based on available RAM (allocating ~2GB per job) to prevent OOM system lockups
 NPROC=$(nproc)
@@ -142,7 +143,12 @@ fi
 
 # 4. Generate AppImage
 RAW_APPIMAGE="${ROOT_DIR}/build/RigRoom-raw.AppImage"
-OUTPUT_APPIMAGE="${ROOT_DIR}/RigRoom-0.9.0-x86_64.AppImage"
+APP_VERSION=$(grep '^#define RIGROOM_VERSION_STRING' "${BUILD_DIR}/Version.h" | cut -d '"' -f 2)
+if [ -z "${APP_VERSION}" ]; then
+    echo "ERROR: Could not determine RigRoom version from generated Version.h." >&2
+    exit 1
+fi
+OUTPUT_APPIMAGE="${ROOT_DIR}/RigRoom-${APP_VERSION}-x86_64.AppImage"
 echo "--> Generating ${OUTPUT_APPIMAGE}..."
 export APPIMAGE_EXTRACT_AND_RUN=1
 export NO_APPSTREAM=1
@@ -180,5 +186,5 @@ chmod +x "${OUTPUT_APPIMAGE}"
 echo "=========================================="
 echo " ✅ Universal AppImage Created Successfully!"
 echo " Output: ${OUTPUT_APPIMAGE}"
-echo " Run with: ./RigRoom-0.9.0-x86_64.AppImage"
+echo " Run with: ./RigRoom-${APP_VERSION}-x86_64.AppImage"
 echo "=========================================="

@@ -146,7 +146,7 @@ private:
     
     // A callback keeps its own shared reference while processing, so replacing a
     // compiled graph cannot free buffers still in use by JACK.
-    std::atomic<std::shared_ptr<RTGraphData>> m_rtGraphData;
+    std::shared_ptr<RTGraphData> m_rtGraphData;
     std::shared_ptr<RTGraphData> m_suspendedGraphData;
     std::atomic<bool> m_needsNodePrepare{false};
     

@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 project(RigRoom VERSION 0.9.0 LANGUAGES CXX)
 
+option(RIGROOM_DEV_BUILD "Append a development suffix to the application version" ON)
+set(RIGROOM_VERSION_STRING "${PROJECT_VERSION}")
+set(RIGROOM_IS_DEV_BUILD false)
+if(RIGROOM_DEV_BUILD)
+    string(APPEND RIGROOM_VERSION_STRING "-dev")
+    set(RIGROOM_IS_DEV_BUILD true)
+endif()
+
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/Version.h
@@ -60,7 +68,7 @@ add_executable(RigRoom
 )
 
 target_include_directories(RigRoom PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
-target_compile_options(RigRoom PRIVATE -g -rdynamic)
+target_compile_options(RigRoom PRIVATE -rdynamic)
 target_link_options(RigRoom PRIVATE -rdynamic)
 target_link_libraries(RigRoom PRIVATE
     Qt6::Widgets
@@ -71,3 +79,10 @@ target_link_libraries(RigRoom PRIVATE
     PkgConfig::X11
     dl
 )
+
+include(GNUInstallDirs)
+install(TARGETS RigRoom RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES packaging/org.rigroom.RigRoom.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES packaging/org.rigroom.RigRoom.appdata.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+install(FILES packaging/org.rigroom.RigRoom.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps)
+install(FILES LICENSE THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/RigRoom)

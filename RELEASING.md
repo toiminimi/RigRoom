@@ -47,7 +47,7 @@ When the project owner decides to issue a release:
 
 1. **Update `CMakeLists.txt`**:
    Change version (e.g. `VERSION 1.0.0`).
-2. **Remove `-dev` flag in `Version.h.in`** for tag build.
+2. **Build with `-DRIGROOM_DEV_BUILD=OFF`** for release artifacts.
 3. **Tag release in Git**:
    ```bash
    git tag -a v1.0.0 -m "RigRoom v1.0.0 - Initial Public Release"

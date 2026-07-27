@@ -420,7 +420,7 @@ void AudioEngine::rebuildGraph() {
     if (m_suspendedGraphData) {
         m_suspendedGraphData = std::move(pending);
     } else {
-        m_rtGraphData.store(std::move(pending), std::memory_order_release);
+        std::atomic_store_explicit(&m_rtGraphData, std::move(pending), std::memory_order_release);
     }
 }
 
@@ -428,13 +428,13 @@ void AudioEngine::suspendProcessing() {
     std::lock_guard<std::mutex> lock(m_graphMutex);
     if (m_suspendedGraphData) return;
     
-    m_suspendedGraphData = m_rtGraphData.exchange(nullptr, std::memory_order_acq_rel);
+    m_suspendedGraphData = std::atomic_exchange_explicit(&m_rtGraphData, std::shared_ptr<RTGraphData>{}, std::memory_order_acq_rel);
 }
 
 void AudioEngine::resumeProcessing() {
     std::lock_guard<std::mutex> lock(m_graphMutex);
     if (m_suspendedGraphData) {
-        m_rtGraphData.store(std::move(m_suspendedGraphData), std::memory_order_release);
+        std::atomic_store_explicit(&m_rtGraphData, std::move(m_suspendedGraphData), std::memory_order_release);
     }
 }
 
@@ -481,7 +481,7 @@ void AudioEngine::processAudio(int numFrames) {
         }
     }
 
-    const auto graph = m_rtGraphData.load(std::memory_order_acquire);
+    const auto graph = std::atomic_load_explicit(&m_rtGraphData, std::memory_order_acquire);
     if (!graph) return;
     
     // 1. Copy physical JACK input buffers to SystemInput, apply input gain & measure input peak
