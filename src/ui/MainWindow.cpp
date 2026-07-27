@@ -976,8 +976,15 @@ MainWindow::~MainWindow() {
         m_currentDownloadReply->abort();
         m_currentDownloadReply->deleteLater();
     }
+    // LV2 node destructors release Lilv instances, which must happen before their world is freed.
+    m_engine.stop();
+    delete m_canvas;
+    m_canvas = nullptr;
+    m_engine.clearGraph();
+    m_engine.rebuildGraph();
     if (m_lilvWorld) {
         lilv_world_free(m_lilvWorld);
+        m_lilvWorld = nullptr;
     }
 }
 
