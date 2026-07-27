@@ -1,0 +1,19 @@
+ARG BASELINE_IMAGE
+FROM ${BASELINE_IMAGE}
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        pkg-config \
+        qt6-base-dev \
+        qt6-base-private-dev \
+        libgl1-mesa-dev \
+        libjack-jackd2-dev \
+        liblilv-dev \
+        libsuil-dev \
+        libsecret-1-dev \
+        libx11-dev \
+        curl \
+        file \
+    && rm -rf /var/lib/apt/lists/*

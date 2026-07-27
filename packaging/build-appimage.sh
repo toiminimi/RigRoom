@@ -12,15 +12,24 @@ echo "=========================================="
 
 # Build on Ubuntu 22.04 so the AppImage uses that glibc baseline. Do not bundle glibc.
 BASELINE_IMAGE="${RIGROOM_APPIMAGE_BASELINE_IMAGE:-ubuntu@sha256:0d779ea97881505f5ef0039336ee85edba27519bdba968c284c86ee066a973c8}"
+BUILDER_IMAGE="${RIGROOM_APPIMAGE_BUILDER_IMAGE:-rigroom-appimage-builder:ubuntu-22.04}"
 if [ -z "${IN_BUILD_CONTAINER}" ] && (command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1); then
     CONTAINER_TOOL=$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)
-    echo "--> Delegating compilation to ${BASELINE_IMAGE} via ${CONTAINER_TOOL}..."
+    if [ "${RIGROOM_REBUILD_APPIMAGE_BUILDER:-0}" = "1" ] || ! "${CONTAINER_TOOL}" image inspect "${BUILDER_IMAGE}" >/dev/null 2>&1; then
+        echo "--> Creating cached AppImage builder ${BUILDER_IMAGE} via ${CONTAINER_TOOL}..."
+        "${CONTAINER_TOOL}" build \
+            --build-arg "BASELINE_IMAGE=${BASELINE_IMAGE}" \
+            -f "${SCRIPT_DIR}/Dockerfile.appimage-builder" \
+            -t "${BUILDER_IMAGE}" \
+            "${ROOT_DIR}"
+    fi
+    echo "--> Delegating compilation to cached ${BUILDER_IMAGE} via ${CONTAINER_TOOL}..."
     exec "${CONTAINER_TOOL}" run --rm \
         -v "${ROOT_DIR}:/workspace:Z" \
         -w /workspace \
         -e IN_BUILD_CONTAINER=1 \
-        "${BASELINE_IMAGE}" \
-        bash -c "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev libsecret-1-dev libx11-dev curl file && ./packaging/build-appimage.sh"
+        "${BUILDER_IMAGE}" \
+        ./packaging/build-appimage.sh
 fi
 
 # 1. Compile RigRoom in Release mode
