@@ -897,6 +897,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     // Setup UI
     setupUI();
+    QSettings windowSettings("RigRoom", "RigRoom");
+    const QByteArray windowGeometry = windowSettings.value("main_window_geometry").toByteArray();
+    if (!windowGeometry.isEmpty()) restoreGeometry(windowGeometry);
+    const QList<int> workspaceSizes = windowSettings.value("main_workspace_splitter").value<QList<int>>();
+    if (workspaceSizes.size() == m_workspaceSplitter->count()) {
+        QTimer::singleShot(0, this, [this, workspaceSizes]() { m_workspaceSplitter->setSizes(workspaceSizes); });
+    }
     m_canvas->setSystemChannelModes(m_engine.isHardwareInputStereo(), m_engine.isHardwareOutputStereo());
     m_canvas->applyRoutingChange(true);
     
@@ -1601,7 +1608,7 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(topBarWidget);
     
     // --- WORKSPACE SPLITTER ---
-    QSplitter* midSplitter = new QSplitter(Qt::Horizontal, this);
+    QSplitter* midSplitter = m_workspaceSplitter = new QSplitter(Qt::Horizontal, this);
     
     // Center: Node Graph Canvas
     m_canvas = new NodeCanvas(&m_engine, this);
@@ -2299,6 +2306,9 @@ bool MainWindow::promptUnsavedChanges() {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (promptUnsavedChanges()) {
+        QSettings windowSettings("RigRoom", "RigRoom");
+        windowSettings.setValue("main_window_geometry", saveGeometry());
+        windowSettings.setValue("main_workspace_splitter", QVariant::fromValue(m_workspaceSplitter->sizes()));
         saveConfigSettings();
         closeAllPluginUIs();
         event->accept();

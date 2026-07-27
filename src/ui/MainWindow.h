@@ -19,6 +19,7 @@
 #include <lilv/lilv.h>
 
 class ExternalPluginUIWindow;
+class QSplitter;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -87,6 +88,7 @@ private:
     
     // UI Elements
     NodeCanvas* m_canvas = nullptr;
+    QSplitter* m_workspaceSplitter = nullptr;
     QComboBox* m_presetCombo = nullptr;
     QPushButton* m_savePresetButton = nullptr;
     QToolButton* m_prevPresetBtn = nullptr;
