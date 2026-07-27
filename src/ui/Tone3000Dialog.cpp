@@ -505,8 +505,10 @@ void Tone3000Dialog::setInitialSearchQuery(const QString& query) {
 
 void Tone3000Dialog::requestSearch() {
     if (m_currentReply) {
-        m_currentReply->abort();
+        QNetworkReply* reply = m_currentReply.data();
         m_currentReply = nullptr;
+        reply->abort();
+        reply->deleteLater();
     }
 
     m_modelsCombo->clear();
@@ -661,25 +663,27 @@ void Tone3000Dialog::requestSearch() {
         m_currentReply = m_networkManager->get(request);
     }
     
-    connect(m_currentReply, &QNetworkReply::finished, this, &Tone3000Dialog::onSearchFinished);
+    QNetworkReply* reply = m_currentReply.data();
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        onSearchFinished(reply);
+    });
 }
 
-void Tone3000Dialog::onSearchFinished() {
-    if (!m_currentReply) return;
+void Tone3000Dialog::onSearchFinished(QNetworkReply* reply) {
+    if (reply != m_currentReply.data()) return;
+    m_currentReply = nullptr;
     
-    if (m_currentReply->error() != QNetworkReply::NoError) {
-        if (m_currentReply->error() != QNetworkReply::OperationCanceledError) {
+    if (reply->error() != QNetworkReply::NoError) {
+        if (reply->error() != QNetworkReply::OperationCanceledError) {
             m_statusLabel->setText("Error connecting to TONE3000 API.");
-            std::cerr << "Network Error: " << m_currentReply->errorString().toStdString() << std::endl;
+            std::cerr << "Network Error: " << reply->errorString().toStdString() << std::endl;
         }
-        m_currentReply->deleteLater();
-        m_currentReply = nullptr;
+        reply->deleteLater();
         return;
     }
 
-    QByteArray data = m_currentReply->readAll();
-    m_currentReply->deleteLater();
-    m_currentReply = nullptr;
+    QByteArray data = reply->readAll();
+    reply->deleteLater();
 
     QJsonArray tonesArray;
     QJsonDocument doc = QJsonDocument::fromJson(data);
@@ -987,9 +991,10 @@ void Tone3000Dialog::onHeaderClicked(int logicalIndex) {
 
 void Tone3000Dialog::fetchModelsForTone(int toneId) {
     if (m_modelsReply) {
-        m_modelsReply->abort();
-        m_modelsReply->deleteLater();
+        QNetworkReply* reply = m_modelsReply.data();
         m_modelsReply = nullptr;
+        reply->abort();
+        reply->deleteLater();
     }
 
     m_statusLabel->setText("Fetching profile models...");
@@ -1037,25 +1042,24 @@ void Tone3000Dialog::fetchModelsForTone(int toneId) {
         m_modelsReply = m_networkManager->get(request);
     }
 
-    QNetworkReply* reply = m_modelsReply;
+    QNetworkReply* reply = m_modelsReply.data();
     connect(reply, &QNetworkReply::finished, this, [this, reply, toneId]() {
         onModelsFinished(reply, toneId);
     });
 }
 
 void Tone3000Dialog::onModelsFinished(QNetworkReply* reply, int toneId) {
-    if (reply != m_modelsReply) return;
+    if (reply != m_modelsReply.data()) return;
+    m_modelsReply = nullptr;
     
     if (reply->error() != QNetworkReply::NoError) {
         m_statusLabel->setText("Failed to load models.");
         reply->deleteLater();
-        m_modelsReply = nullptr;
         return;
     }
 
     QByteArray data = reply->readAll();
     reply->deleteLater();
-    m_modelsReply = nullptr;
 
     QJsonArray modelsArray;
     QJsonDocument doc = QJsonDocument::fromJson(data);
@@ -1201,8 +1205,10 @@ void Tone3000Dialog::onPreviewClicked() {
 
 void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filename, bool isPreview, bool isRedirect) {
     if (m_currentReply) {
-        m_currentReply->abort();
+        QNetworkReply* reply = m_currentReply.data();
         m_currentReply = nullptr;
+        reply->abort();
+        reply->deleteLater();
     }
 
     m_previewDownload = isPreview;
@@ -1238,8 +1244,11 @@ void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filena
     
     m_currentReply = m_networkManager->get(request);
 
-    connect(m_currentReply, &QNetworkReply::downloadProgress, this, &Tone3000Dialog::onDownloadProgress);
-    connect(m_currentReply, &QNetworkReply::finished, this, &Tone3000Dialog::onDownloadFinished);
+    QNetworkReply* reply = m_currentReply.data();
+    connect(reply, &QNetworkReply::downloadProgress, this, &Tone3000Dialog::onDownloadProgress);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        onDownloadFinished(reply);
+    });
 }
 
 void Tone3000Dialog::onDownloadProgress(qint64 bytesReceived, qint64 bytesTotal) {
@@ -1250,20 +1259,20 @@ void Tone3000Dialog::onDownloadProgress(qint64 bytesReceived, qint64 bytesTotal)
     }
 }
 
-void Tone3000Dialog::onDownloadFinished() {
-    if (!m_currentReply) return;
+void Tone3000Dialog::onDownloadFinished(QNetworkReply* reply) {
+    if (reply != m_currentReply.data()) return;
+    m_currentReply = nullptr;
 
     // Check for redirection manually to strip auth headers on redirect target
-    QVariant redirectUrl = m_currentReply->attribute(QNetworkRequest::RedirectionTargetAttribute);
+    QVariant redirectUrl = reply->attribute(QNetworkRequest::RedirectionTargetAttribute);
     if (redirectUrl.isValid()) {
         QUrl nextUrl = redirectUrl.toUrl();
         if (nextUrl.isRelative()) {
-            nextUrl = m_currentReply->url().resolved(nextUrl);
+            nextUrl = reply->url().resolved(nextUrl);
         }
         QString fname = QFileInfo(QString::fromStdString(m_downloadedModelPath)).fileName();
         bool isPrev = m_previewDownload;
-        m_currentReply->deleteLater();
-        m_currentReply = nullptr;
+        reply->deleteLater();
         downloadModelFile(nextUrl.toString(), fname, isPrev, true);
         return;
     }
@@ -1272,17 +1281,15 @@ void Tone3000Dialog::onDownloadFinished() {
     m_loadBtn->setEnabled(true);
     m_previewBtn->setEnabled(true);
 
-    if (m_currentReply->error() != QNetworkReply::NoError) {
+    if (reply->error() != QNetworkReply::NoError) {
         m_statusLabel->setText("Download failed.");
-        QMessageBox::critical(this, "Download Error", QString("Failed to download model file:\n%1").arg(m_currentReply->errorString()));
-        m_currentReply->deleteLater();
-        m_currentReply = nullptr;
+        QMessageBox::critical(this, "Download Error", QString("Failed to download model file:\n%1").arg(reply->errorString()));
+        reply->deleteLater();
         return;
     }
 
-    QByteArray fileData = m_currentReply->readAll();
-    m_currentReply->deleteLater();
-    m_currentReply = nullptr;
+    QByteArray fileData = reply->readAll();
+    reply->deleteLater();
 
     QFile file(QString::fromStdString(m_downloadedModelPath));
     if (!file.open(QIODevice::WriteOnly)) {

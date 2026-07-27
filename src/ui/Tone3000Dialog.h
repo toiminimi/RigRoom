@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QLabel>
 #include <QProgressBar>
+#include <QPointer>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QJsonDocument>
@@ -33,12 +34,12 @@ public:
 
 private slots:
     void performSearch();
-    void onSearchFinished();
+    void onSearchFinished(QNetworkReply* reply);
     void onRowSelectionChanged();
     void onDownloadClicked();
     void onPreviewClicked();
     void onDownloadProgress(qint64 bytesReceived, qint64 bytesTotal);
-    void onDownloadFinished();
+    void onDownloadFinished(QNetworkReply* reply);
     void onFavoritesToggled(bool checked);
     void onFavoriteButtonClicked();
     void onPreviousPageClicked();
@@ -102,8 +103,8 @@ private:
 
     // Network manager
     QNetworkAccessManager* m_networkManager;
-    QNetworkReply* m_currentReply = nullptr;
-    QNetworkReply* m_modelsReply = nullptr;
+    QPointer<QNetworkReply> m_currentReply;
+    QPointer<QNetworkReply> m_modelsReply;
 
     // Data cache
     QJsonArray m_currentTones;

@@ -122,6 +122,13 @@ public:
     const ModelMetadata& getModelMetadata() const { return m_modelMetadata; }
     void setModelMetadata(const ModelMetadata& meta) { m_modelMetadata = meta; }
 
+    void clearModelPresentation() {
+        m_modelDisplayName.clear();
+        m_modelSourceUrl.clear();
+        m_modelVariants.clear();
+        m_modelMetadata = {};
+    }
+
     const std::vector<ModelVariant>& getModelVariants() const { return m_modelVariants; }
     void setModelVariants(const std::vector<ModelVariant>& vars) { m_modelVariants = vars; }
     void setModelVariantLocalPath(size_t index, const std::string& path) {

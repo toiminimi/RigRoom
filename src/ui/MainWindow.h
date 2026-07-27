@@ -76,7 +76,6 @@ private:
     void refreshAudioPorts();
     void syncParameterControls();
     QString pluginPresetDirectory(const AudioNode& node) const;
-    void refreshPluginPresetList(const std::shared_ptr<AudioNode>& node, QComboBox* combo, const QString& selected = {});
     bool savePluginPreset(const std::shared_ptr<AudioNode>& node, const QString& name);
     bool loadPluginPreset(const std::shared_ptr<AudioNode>& node, const QString& name);
     bool isValidPluginPresetName(const QString& name) const;
@@ -140,9 +139,6 @@ private:
     };
     std::shared_ptr<AudioNode> m_parameterControlNode;
     std::vector<ParameterControlBinding> m_parameterControlBindings;
-    std::string m_activePluginPresetNodeId;
-    QString m_activePluginPresetName;
-    std::unordered_map<std::string, QString> m_nodeActivePresets;
     
     QTimer* m_statusTimer = nullptr;
     QTimer* m_audioPortTimer = nullptr;

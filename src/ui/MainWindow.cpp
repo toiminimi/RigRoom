@@ -25,6 +25,7 @@
 #include <QListWidget>
 #include <QLineEdit>
 #include <QToolButton>
+#include <QToolTip>
 #include <QPixmap>
 #include <QFileInfo>
 #include <suil/suil.h>
@@ -1930,21 +1931,6 @@ bool MainWindow::isValidPluginPresetName(const QString& name) const {
     return !name.trimmed().isEmpty() && !name.contains('/') && !name.contains('\\');
 }
 
-void MainWindow::refreshPluginPresetList(
-    const std::shared_ptr<AudioNode>& node, QComboBox* combo, const QString& selected) {
-    const QSignalBlocker blocker(combo);
-    combo->clear();
-    combo->addItem("Plugin preset...", "");
-    QDir directory(pluginPresetDirectory(*node));
-    const QStringList files = directory.entryList({"*.json"}, QDir::Files, QDir::Name);
-    for (const QString& file : files) {
-        const QString name = file.left(file.size() - 5);
-        combo->addItem(name, name);
-    }
-    const int index = combo->findData(selected);
-    combo->setCurrentIndex(index >= 0 ? index : 0);
-}
-
 bool MainWindow::savePluginPreset(const std::shared_ptr<AudioNode>& node, const QString& name) {
     if (!isValidPluginPresetName(name)) {
         QMessageBox::warning(this, "Plugin Preset", "Preset names cannot be empty or contain path separators.");
@@ -1986,23 +1972,31 @@ bool MainWindow::savePluginPreset(const std::shared_ptr<AudioNode>& node, const 
         preset["modelFile"] = modelFileName;
         preset["modelDisplayName"] = QString::fromStdString(node->getModelDisplayName());
         preset["modelName"] = modelInfo.fileName();
-        preset["modelSourceUrl"] = QString::fromStdString(node->getModelSourceUrl());
     }
+    const auto& variants = node->getModelVariants();
+    const bool activeModelIsVariant = std::any_of(variants.begin(), variants.end(),
+        [&modelPath](const AudioNode::ModelVariant& variant) {
+            return variant.localPath == modelPath.toStdString();
+        });
     QJsonArray modelVariants;
-    for (const auto& variant : node->getModelVariants()) {
-        QJsonObject value{
-            {"name", QString::fromStdString(variant.name)},
-            {"url", QString::fromStdString(variant.url)}
-        };
-        if (!modelFileName.isEmpty() && variant.localPath == modelPath.toStdString()) {
-            value["localFile"] = modelFileName;
+    if (activeModelIsVariant) {
+        for (const auto& variant : variants) {
+            QJsonObject value{
+                {"name", QString::fromStdString(variant.name)},
+                {"url", QString::fromStdString(variant.url)}
+            };
+            if (!modelFileName.isEmpty() && variant.localPath == modelPath.toStdString()) {
+                value["localFile"] = modelFileName;
+            }
+            modelVariants.append(value);
         }
-        modelVariants.append(value);
     }
     preset["modelVariants"] = modelVariants;
+    preset["modelSourceUrl"] = activeModelIsVariant || variants.empty()
+        ? QString::fromStdString(node->getModelSourceUrl()) : QString();
 
     const auto& meta = node->getModelMetadata();
-    preset["modelMetadata"] = QJsonObject{
+    preset["modelMetadata"] = activeModelIsVariant || variants.empty() ? QJsonObject{
         {"toneId", QString::fromStdString(meta.toneId)},
         {"toneTitle", QString::fromStdString(meta.toneTitle)},
         {"toneSlug", QString::fromStdString(meta.toneSlug)},
@@ -2017,14 +2011,11 @@ bool MainWindow::savePluginPreset(const std::shared_ptr<AudioNode>& node, const 
         {"architecture", QString::fromStdString(meta.architecture)},
         {"loudness", meta.loudness},
         {"sampleRate", meta.sampleRate}
-    };
+    } : QJsonObject{};
 
     QFile file(QDir(directoryPath).filePath(name.trimmed() + ".json"));
     if (!file.open(QFile::WriteOnly | QFile::Truncate)) return false;
     file.write(QJsonDocument(preset).toJson());
-    m_activePluginPresetNodeId = node->uniqueId;
-    m_activePluginPresetName = name.trimmed();
-    m_nodeActivePresets[node->uniqueId] = name.trimmed();
     return true;
 }
 
@@ -2054,9 +2045,11 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
         loadedModelPath = modelPath;
         node->setModelSourceUrl(preset.value("modelSourceUrl").toString().toStdString());
     }
+    bool hasSavedActiveVariant = false;
+    const QJsonArray savedVariants = preset.value("modelVariants").toArray();
     if (preset.contains("modelVariants")) {
         std::vector<AudioNode::ModelVariant> modelVariants;
-        for (const QJsonValue& value : preset.value("modelVariants").toArray()) {
+        for (const QJsonValue& value : savedVariants) {
             const QJsonObject savedVariant = value.toObject();
             AudioNode::ModelVariant variant;
             variant.name = savedVariant.value("name").toString().toStdString();
@@ -2064,13 +2057,20 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
             const QString localFile = savedVariant.value("localFile").toString();
             if (!localFile.isEmpty() && !localFile.contains('/') && !localFile.contains('\\')) {
                 const QString localPath = QDir(pluginPresetDirectory(*node)).filePath(localFile);
-                if (QFileInfo(localPath).isFile()) variant.localPath = localPath.toStdString();
+                if (QFileInfo(localPath).isFile()) {
+                    variant.localPath = localPath.toStdString();
+                    hasSavedActiveVariant = localFile == modelFile;
+                }
             }
             modelVariants.push_back(std::move(variant));
         }
-        node->setModelVariants(modelVariants);
+        // A TONE3000 variant list is meaningful only when one of its files is
+        // the model copied into this preset. Older malformed presets lack this link.
+        node->setModelVariants(hasSavedActiveVariant || savedVariants.isEmpty()
+            ? modelVariants : std::vector<AudioNode::ModelVariant>{});
     }
-    if (preset.contains("modelMetadata") && preset.value("modelMetadata").isObject()) {
+    const bool hasUnlinkedVariants = !savedVariants.isEmpty() && !hasSavedActiveVariant;
+    if (!hasUnlinkedVariants && preset.contains("modelMetadata") && preset.value("modelMetadata").isObject()) {
         const QJsonObject metaObj = preset.value("modelMetadata").toObject();
         AudioNode::ModelMetadata meta;
         meta.toneId = metaObj.value("toneId").toString().toStdString();
@@ -2088,6 +2088,9 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
         meta.loudness = metaObj.value("loudness").toDouble();
         meta.sampleRate = metaObj.value("sampleRate").toDouble();
         node->setModelMetadata(meta);
+    } else if (hasUnlinkedVariants) {
+        node->setModelMetadata({});
+        node->setModelSourceUrl({});
     }
     if (!loadedModelPath.isEmpty()) {
         if (displayName.isEmpty()) displayName = preset.value("modelName").toString();
@@ -2097,9 +2100,6 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
         node->setModelDisplayName((displayName.isEmpty() ? QFileInfo(loadedModelPath).fileName() : displayName).toStdString());
     }
     syncParameterControls();
-    m_activePluginPresetNodeId = node->uniqueId;
-    m_activePluginPresetName = name;
-    m_nodeActivePresets[node->uniqueId] = name;
     setUnsavedChanges(true);
     QTimer::singleShot(0, this, [this, node]() {
         if (m_parameterControlNode == node) showPluginControls(node);
@@ -2368,8 +2368,6 @@ void MainWindow::onNewPreset() {
     m_isLoadingPreset = true;
     m_parameterControlNode.reset();
     m_parameterControlBindings.clear();
-    m_activePluginPresetNodeId.clear();
-    m_activePluginPresetName.clear();
     showPluginControls(nullptr);
     m_canvas->clearCanvas();
     m_canvas->setNumCols(m_globalDefaultSlots);
@@ -2978,10 +2976,6 @@ void MainWindow::savePresetToFile(const QString& path) {
                     }
                 }
                 nodeObj["parameters"] = paramsArray;
-                auto presetIt = m_nodeActivePresets.find(node->uniqueId);
-                if (presetIt != m_nodeActivePresets.end() && !presetIt->second.isEmpty()) {
-                    nodeObj["presetName"] = presetIt->second;
-                }
                 nodesArray.append(nodeObj);
             }
         }
@@ -3039,9 +3033,6 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     // before removing canvas nodes so stale plugin parameters cannot remain shown.
     m_parameterControlNode.reset();
     m_parameterControlBindings.clear();
-    m_activePluginPresetNodeId.clear();
-    m_activePluginPresetName.clear();
-    m_nodeActivePresets.clear();
     showPluginControls(nullptr);
     
     QJsonObject presetObj = doc.object();
@@ -3141,10 +3132,6 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         if (node) {
             node->uniqueId = id;
             node->setBypassed(bypassed);
-            if (nObj.contains("presetName")) {
-                m_nodeActivePresets[id] = nObj["presetName"].toString();
-            }
-            
             QString modelFilePath = nObj["model_file_path"].toString();
             if (!modelFilePath.isEmpty()) {
                 m_engine.suspendProcessing();
@@ -4230,85 +4217,62 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                          node->getType() == NodeType::CLAPPlugin);
 
     if (isPluginNode) {
-        // Preset management bar
-        auto* presetRow = new QWidget(m_paramContainer);
-        auto* presetLayout = new QVBoxLayout(presetRow);
-        presetLayout->setContentsMargins(0, 0, 0, 8);
-        presetLayout->setSpacing(4);
+        auto* presetsButton = new QPushButton("Plugin Presets ▾", m_paramContainer);
+        presetsButton->setToolTip("Load, save, and manage reusable settings for this plugin");
+        presetsButton->setStyleSheet(
+            "QPushButton { background-color: #333338; color: #C5DDE8; padding: 5px 8px; font-size: 11px; font-weight: bold; border-radius: 4px; border: none; }"
+            "QPushButton:hover { background-color: #44444A; color: #FFFFFF; }"
+        );
+        m_paramLayout->addWidget(presetsButton);
 
-        auto* presetTitleLabel = new QLabel("Plugin Preset", presetRow);
-        presetTitleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 12px; margin-bottom: 2px;");
-        presetLayout->addWidget(presetTitleLabel);
-
-        auto* presetCombo = new QComboBox(presetRow);
-        presetCombo->setToolTip("Select or load a saved preset for this plugin");
-        presetCombo->setStyleSheet("QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #333438; border-radius: 4px; padding: 4px 8px; font-weight: bold; }");
-        auto it = m_nodeActivePresets.find(node->uniqueId);
-        const QString activePreset = (it != m_nodeActivePresets.end()) ? it->second : (node->uniqueId == m_activePluginPresetNodeId ? m_activePluginPresetName : QString{});
-        refreshPluginPresetList(node, presetCombo, activePreset);
-        presetLayout->addWidget(presetCombo);
-
-        auto* btnBox = new QWidget(presetRow);
-        auto* btnLayout = new QHBoxLayout(btnBox);
-        btnLayout->setContentsMargins(0, 0, 0, 0);
-        btnLayout->setSpacing(6);
-
-        auto* saveButton = new QPushButton("💾 Save Preset", btnBox);
-        saveButton->setStyleSheet("QPushButton { background-color: #00897B; color: white; padding: 5px 8px; font-size: 11px; font-weight: bold; border-radius: 4px; border: none; } QPushButton:hover { background-color: #009688; }");
-        btnLayout->addWidget(saveButton, 1);
-
-        auto* optionsButton = new QPushButton("⚙ Preset Options ▾", btnBox);
-        optionsButton->setStyleSheet("QPushButton { background-color: #333338; color: #E0E0E0; padding: 5px 8px; font-size: 11px; border-radius: 4px; border: none; } QPushButton:hover { background-color: #44444A; }");
-        btnLayout->addWidget(optionsButton, 1);
-
-        presetLayout->addWidget(btnBox);
-        m_paramLayout->addWidget(presetRow);
-
-        connect(presetCombo, &QComboBox::activated, this, [this, node, presetCombo](int index) {
-            const QString name = presetCombo->itemData(index).toString();
-            if (name.isEmpty()) return;
-            if (!loadPluginPreset(node, name)) {
-                QMessageBox::warning(this, "Plugin Preset", "Could not load this plugin preset.");
-            }
-        });
-
-        connect(saveButton, &QPushButton::clicked, this, [this, node, presetCombo]() {
-            QString name = presetCombo->currentData().toString();
-            if (name.isEmpty()) {
-                bool accepted = false;
-                name = QInputDialog::getText(this, "Save Plugin Preset", "Preset name:", QLineEdit::Normal, "", &accepted);
-                if (!accepted) return;
-            }
-            if (!savePluginPreset(node, name)) {
-                QMessageBox::warning(this, "Plugin Preset", "Could not save this plugin preset.");
-                return;
-            }
-            refreshPluginPresetList(node, presetCombo, name.trimmed());
-        });
-
-        connect(optionsButton, &QPushButton::clicked, this, [this, node, presetCombo, optionsButton]() {
+        connect(presetsButton, &QPushButton::clicked, this, [this, node, presetsButton]() {
             QMenu menu(this);
+            QAction* loadAction = menu.addAction("Load...");
+            menu.addSeparator();
             QAction* saveAsAction = menu.addAction("Save As...");
+            QAction* updateAction = menu.addAction("Update Existing...");
             QAction* renameAction = menu.addAction("Rename...");
             QAction* deleteAction = menu.addAction("Delete Preset");
 
-            const QString currentPreset = presetCombo->currentData().toString();
-            if (currentPreset.isEmpty()) {
-                renameAction->setEnabled(false);
-                deleteAction->setEnabled(false);
-            }
-
-            QAction* chosen = menu.exec(optionsButton->mapToGlobal(QPoint(0, optionsButton->height())));
-            if (chosen == saveAsAction) {
+            QAction* chosen = menu.exec(presetsButton->mapToGlobal(QPoint(0, presetsButton->height())));
+            auto choosePreset = [this, node](const QString& title) {
+                const QStringList files = QDir(pluginPresetDirectory(*node)).entryList({"*.json"}, QDir::Files, QDir::Name);
+                QStringList names;
+                for (const QString& file : files) names << file.left(file.size() - 5);
+                bool accepted = false;
+                const QString name = QInputDialog::getItem(this, title, "Preset:", names, 0, false, &accepted);
+                return accepted ? name : QString{};
+            };
+            if (chosen == loadAction) {
+                const QString name = choosePreset("Load Plugin Preset");
+                if (name.isEmpty()) return;
+                if (!loadPluginPreset(node, name)) {
+                    QMessageBox::warning(this, "Plugin Preset", "Could not load this plugin preset.");
+                    return;
+                }
+                QToolTip::showText(presetsButton->mapToGlobal(presetsButton->rect().center()),
+                                   QString("Loaded '%1'").arg(name), presetsButton);
+            } else if (chosen == saveAsAction) {
                 bool accepted = false;
                 const QString name = QInputDialog::getText(this, "Save Plugin Preset As", "Preset name:", QLineEdit::Normal, "", &accepted);
                 if (!accepted) return;
+                if (isValidPluginPresetName(name) && QFile::exists(QDir(pluginPresetDirectory(*node)).filePath(name.trimmed() + ".json"))) {
+                    QMessageBox::warning(this, "Plugin Preset", "A preset with that name already exists. Use 'Update Existing...' to replace it.");
+                    return;
+                }
                 if (!savePluginPreset(node, name)) {
                     QMessageBox::warning(this, "Plugin Preset", "Could not save this plugin preset.");
                     return;
                 }
-                refreshPluginPresetList(node, presetCombo, name.trimmed());
+            } else if (chosen == updateAction) {
+                const QString name = choosePreset("Update Plugin Preset");
+                if (name.isEmpty()) return;
+                if (!savePluginPreset(node, name)) {
+                    QMessageBox::warning(this, "Plugin Preset", "Could not update this plugin preset.");
+                }
             } else if (chosen == renameAction) {
+                const QString currentPreset = choosePreset("Rename Plugin Preset");
+                if (currentPreset.isEmpty()) return;
                 bool accepted = false;
                 const QString newName = QInputDialog::getText(this, "Rename Plugin Preset", "New preset name:", QLineEdit::Normal, currentPreset, &accepted);
                 if (!accepted || newName.trimmed() == currentPreset) return;
@@ -4323,24 +4287,15 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     QMessageBox::warning(this, "Plugin Preset", "A preset with that name already exists.");
                     return;
                 }
-                if (QFile::rename(oldPath, newPath)) {
-                    m_nodeActivePresets[node->uniqueId] = newName.trimmed();
-                    if (m_activePluginPresetNodeId == node->uniqueId && m_activePluginPresetName == currentPreset) {
-                        m_activePluginPresetName = newName.trimmed();
-                    }
-                    refreshPluginPresetList(node, presetCombo, newName.trimmed());
-                } else {
+                if (!QFile::rename(oldPath, newPath)) {
                     QMessageBox::warning(this, "Plugin Preset", "Could not rename this preset.");
                 }
             } else if (chosen == deleteAction) {
+                const QString currentPreset = choosePreset("Delete Plugin Preset");
+                if (currentPreset.isEmpty()) return;
                 if (QMessageBox::question(this, "Delete Plugin Preset", QString("Delete preset '%1'?").arg(currentPreset), QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
                     const QString dir = pluginPresetDirectory(*node);
                     QFile::remove(QDir(dir).filePath(currentPreset + ".json"));
-                    m_nodeActivePresets.erase(node->uniqueId);
-                    if (m_activePluginPresetNodeId == node->uniqueId && m_activePluginPresetName == currentPreset) {
-                        m_activePluginPresetName.clear();
-                    }
-                    refreshPluginPresetList(node, presetCombo);
                 }
             }
         });
@@ -4878,8 +4833,6 @@ void MainWindow::unregisterExternalUI(ExternalPluginUIWindow* uiWin) {
 void MainWindow::closeAllPluginUIs() {
     m_parameterControlNode.reset();
     m_parameterControlBindings.clear();
-    m_activePluginPresetNodeId.clear();
-    m_activePluginPresetName.clear();
     showPluginControls(nullptr);
 
     const auto dialogs = findChildren<QDialog*>();
@@ -4904,8 +4857,6 @@ void MainWindow::closePluginUIForNode(AudioNode* node) {
     if (m_parameterControlNode.get() == node) {
         m_parameterControlNode.reset();
         m_parameterControlBindings.clear();
-        m_activePluginPresetNodeId.clear();
-        m_activePluginPresetName.clear();
         showPluginControls(nullptr);
     }
 

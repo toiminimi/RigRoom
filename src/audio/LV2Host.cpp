@@ -673,6 +673,12 @@ void LV2PluginNode::loadModelFile(const std::string& path) {
 }
 
 void LV2PluginNode::setFileProperty(const std::string& uri, const std::string& path) {
+    const bool isNamModel = uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model";
+    if (isNamModel && path != m_modelFilePath) {
+        // A file selected by the plugin UI has no associated TONE3000 context.
+        clearModelPresentation();
+    }
+
     m_filePropertiesMap[uri] = path;
     for (auto& fp : m_fileProperties) {
         if (fp.uri == uri) {
@@ -681,7 +687,7 @@ void LV2PluginNode::setFileProperty(const std::string& uri, const std::string& p
         }
     }
 
-    if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
+    if (isNamModel) {
         m_modelFilePath = path;
     }
 
