@@ -5208,6 +5208,10 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
     QSettings settings("RigRoom", "RigRoom");
     QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
     bool useOfficial = !savedKeyEnc.isEmpty();
+    if (!useOfficial) {
+        if (!fileLabel.isNull()) fileLabel->setText("TONE3000 secret key required.");
+        return;
+    }
 
     QString finalUrlStr = urlStr;
 

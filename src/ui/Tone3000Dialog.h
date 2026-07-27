@@ -156,10 +156,5 @@ private:
     AudioNode::ModelMetadata m_downloadedMetadata;
     std::vector<AudioNode::ModelVariant> m_downloadedVariants;
 
-    // Supabase config
-    QString m_supabaseUrl = "https://api.tone3000.com";
-    QString m_supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd6eWJpdW9weGtkeGJ5dG5vamRzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzgwODIxNjUsImV4cCI6MjA1MzY1ODE2NX0.Gq66BJXjtLsqP2nAGXm9Xb9PAjoeZalWUj66K4nmVSU";
-    
     QWidget* m_apiKeyBanner = nullptr;
-    QString getEffectiveApiKey() const;
 };

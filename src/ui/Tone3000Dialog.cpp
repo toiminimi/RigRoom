@@ -36,7 +36,7 @@
 
 static QString obfuscateKey(const QString& input) {
     QByteArray data = input.toUtf8();
-    const char key[] = "PedalBoardSecureKey123";
+    const char key[] = "RigRoomSecureKey123";
     int keyLen = sizeof(key) - 1;
     for (int i = 0; i < data.size(); ++i) {
         data[i] = data[i] ^ key[i % keyLen];
@@ -46,12 +46,34 @@ static QString obfuscateKey(const QString& input) {
 
 static QString deobfuscateKey(const QString& input) {
     QByteArray data = QByteArray::fromBase64(input.toLatin1());
-    const char key[] = "PedalBoardSecureKey123";
+    const char key[] = "RigRoomSecureKey123";
     int keyLen = sizeof(key) - 1;
     for (int i = 0; i < data.size(); ++i) {
         data[i] = data[i] ^ key[i % keyLen];
     }
     return QString::fromUtf8(data);
+}
+
+static QString deobfuscateLegacyKey(const QString& input) {
+    QByteArray data = QByteArray::fromBase64(input.toLatin1());
+    const char key[] = "PedalBoardSecureKey123";
+    const int keyLen = sizeof(key) - 1;
+    for (int i = 0; i < data.size(); ++i) {
+        data[i] = data[i] ^ key[i % keyLen];
+    }
+    return QString::fromUtf8(data);
+}
+
+static void migrateLegacyTone3000ApiKey() {
+    QSettings settings("RigRoom", "RigRoom");
+    if (!settings.value("tone3000_api_key").toString().isEmpty()) return;
+
+    QSettings legacySettings("PedalBoard", "PedalBoard");
+    const QString legacyKey = legacySettings.value("tone3000_api_key").toString();
+    if (!legacyKey.isEmpty()) {
+        settings.setValue("tone3000_api_key", obfuscateKey(deobfuscateLegacyKey(legacyKey)));
+        legacySettings.remove("tone3000_api_key");
+    }
 }
 
 class ToneCardFrame : public QFrame {
@@ -72,7 +94,7 @@ protected:
 
 Tone3000Dialog::Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* parent) 
     : QDialog(parent), m_node(node), m_engine(engine) {
-    
+    migrateLegacyTone3000ApiKey();
     m_originalModelPath = node ? node->getModelFilePath() : "";
     
     setupUI();
@@ -232,7 +254,7 @@ void Tone3000Dialog::setupUI() {
     
     // Hide banner if key is present
     {
-        QSettings settings("PedalBoard", "PedalBoard");
+        QSettings settings("RigRoom", "RigRoom");
         if (!settings.value("tone3000_api_key", "").toString().isEmpty()) {
             m_apiKeyBanner->hide();
         }
@@ -241,7 +263,7 @@ void Tone3000Dialog::setupUI() {
     connect(saveKeyBtn, &QPushButton::clicked, this, [this, keyInput]() {
         QString text = keyInput->text().trimmed();
         if (!text.isEmpty()) {
-            QSettings settings("PedalBoard", "PedalBoard");
+            QSettings settings("RigRoom", "RigRoom");
             settings.setValue("tone3000_api_key", obfuscateKey(text));
             m_apiKeyBanner->hide();
             m_favoritesCheckbox->setText("TONE3000 Favorites");
@@ -505,7 +527,7 @@ void Tone3000Dialog::requestSearch() {
 }
 
 void Tone3000Dialog::fetchFavoriteIds(int page) {
-    QSettings settings("PedalBoard", "PedalBoard");
+    QSettings settings("RigRoom", "RigRoom");
     const QString savedKey = settings.value("tone3000_api_key", "").toString();
     if (savedKey.isEmpty()) return;
 
@@ -583,12 +605,13 @@ void Tone3000Dialog::requestPage(int page, bool append) {
     // Save filter settings
     saveFilterSettings();
 
-    QSettings settings("PedalBoard", "PedalBoard");
+    QSettings settings("RigRoom", "RigRoom");
     QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
     const bool useOfficial = !savedKeyEnc.isEmpty();
-    if (m_favoritesCheckbox->isChecked() && !useOfficial) {
-        m_pageLabel->setText("Favorites");
-        loadFavoritesLocal();
+    if (!useOfficial) {
+        m_isLoadingPage = false;
+        m_statusLabel->setText("Enter your TONE3000 secret key to search profiles.");
+        m_apiKeyBanner->show();
         return;
     }
 
@@ -615,61 +638,8 @@ void Tone3000Dialog::requestPage(int page, bool append) {
     
     QString query = m_searchEdit->text().trimmed();
 
-    if (!useOfficial) {
-        // --- GUEST SUPABASE API (POST) ---
-        QJsonObject payload;
-        payload["query_term"] = query;
-        payload["page_number"] = page;
-        payload["page_size"] = PAGE_SIZE;
-        QString sort = m_sortCombo->currentData().toString();
-        if (sort == "favorites") {
-            sort = "trending";
-        }
-        payload["order_by"] = sort;
-        payload["make_names"] = QJsonValue::Null;
-
-        const QString character = m_characterFilterCombo->currentData().toString();
-        if (character.isEmpty()) {
-            payload["tag_names"] = QJsonValue::Null;
-        } else {
-            QJsonArray tags;
-            tags.append(character);
-            payload["tag_names"] = tags;
-        }
-
-        // Apply gear filter
-        QString gear = m_gearFilterCombo->currentData().toString();
-        if (gear.isEmpty()) {
-            payload["gear_filters"] = QJsonValue::Null;
-        } else {
-            QJsonArray gearArr;
-            gearArr.append(gear);
-            payload["gear_filters"] = gearArr;
-        }
-
-        payload["is_calibrated"] = m_calibratedCheckbox->isChecked();
-        QString size = m_sizeFilterCombo->currentData().toString();
-        if (size.isEmpty()) payload["size_filters"] = QJsonValue::Null;
-        else { QJsonArray sizes; sizes.append(size); payload["size_filters"] = sizes; }
-        payload["usernames"] = QJsonValue::Null;
-
-        QString arch = m_archFilterCombo->currentData().toString();
-        if (arch.isEmpty()) {
-            payload["architecture_filter"] = QJsonValue::Null;
-        } else {
-            payload["architecture_filter"] = arch;
-        }
-
-        QNetworkRequest request;
-        request.setUrl(QUrl(m_supabaseUrl + "/rest/v1/rpc/search_tones_a2"));
-        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        request.setRawHeader("apikey", m_supabaseKey.toUtf8());
-        request.setRawHeader("authorization", ("Bearer " + m_supabaseKey).toUtf8());
-
-        QJsonDocument doc(payload);
-        m_currentReply = m_networkManager->post(request, doc.toJson(QJsonDocument::Compact));
-    } else {
-        // --- OFFICIAL TONE3000 WEB API (GET) ---
+    {
+        // TONE3000 access requires a user-provided secret key.
         QString activeKey = deobfuscateKey(savedKeyEnc);
         
         QUrl url(m_favoritesCheckbox->isChecked()
@@ -884,7 +854,7 @@ void Tone3000Dialog::selectTone(int row) {
 
     // Enable favorites only once the selected profile's variants are known.
     m_favoriteBtn->setEnabled(false);
-    QSettings settings("PedalBoard", "PedalBoard");
+    QSettings settings("RigRoom", "RigRoom");
     const bool usingOfficialFavorites = m_favoritesCheckbox->isChecked()
         && !settings.value("tone3000_api_key", "").toString().isEmpty();
     bool isFav = usingOfficialFavorites || m_favoriteToneIds.contains(toneId) || isFavoriteLocal(toneId);
@@ -1120,40 +1090,30 @@ void Tone3000Dialog::fetchModelsForTone(int toneId) {
     m_loadBtn->setEnabled(false);
     m_previewBtn->setEnabled(false);
 
-    QSettings settings("PedalBoard", "PedalBoard");
+    QSettings settings("RigRoom", "RigRoom");
     QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
     bool useOfficial = !savedKeyEnc.isEmpty();
 
     if (!useOfficial) {
-        // --- GUEST SUPABASE API (GET) ---
-        QString urlStr = QString("%1/rest/v1/models?select=id,name,model_url&tone_id=eq.%2")
-                            .arg(m_supabaseUrl)
-                            .arg(toneId);
-        
-        QNetworkRequest request;
-        request.setUrl(QUrl(urlStr));
-        request.setRawHeader("apikey", m_supabaseKey.toUtf8());
-        request.setRawHeader("authorization", ("Bearer " + m_supabaseKey).toUtf8());
-        m_modelsReply = m_networkManager->get(request);
-    } else {
-        // --- OFFICIAL TONE3000 WEB API (GET) ---
-        QString activeKey = deobfuscateKey(savedKeyEnc);
-        
-        QUrl url("https://www.tone3000.com/api/v1/models");
-        QUrlQuery q;
-        q.addQueryItem("tone_id", QString::number(toneId));
-        q.addQueryItem("page", "1");
-        q.addQueryItem("page_size", "300");
-        QString arch = m_archFilterCombo->currentData().toString();
-        if (!arch.isEmpty()) q.addQueryItem("architecture", arch);
-        url.setQuery(q);
-        
-        QNetworkRequest request;
-        request.setUrl(url);
-        request.setRawHeader("Authorization", ("Bearer " + activeKey).toUtf8());
-        
-        m_modelsReply = m_networkManager->get(request);
+        m_statusLabel->setText("Enter your TONE3000 secret key to load models.");
+        m_apiKeyBanner->show();
+        return;
     }
+
+    QString activeKey = deobfuscateKey(savedKeyEnc);
+    QUrl url("https://www.tone3000.com/api/v1/models");
+    QUrlQuery q;
+    q.addQueryItem("tone_id", QString::number(toneId));
+    q.addQueryItem("page", "1");
+    q.addQueryItem("page_size", "300");
+    QString arch = m_archFilterCombo->currentData().toString();
+    if (!arch.isEmpty()) q.addQueryItem("architecture", arch);
+    url.setQuery(q);
+
+    QNetworkRequest request;
+    request.setUrl(url);
+    request.setRawHeader("Authorization", ("Bearer " + activeKey).toUtf8());
+    m_modelsReply = m_networkManager->get(request);
 
     QNetworkReply* reply = m_modelsReply.data();
     connect(reply, &QNetworkReply::finished, this, [this, reply, toneId]() {
@@ -1352,9 +1312,15 @@ void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filena
     m_loadBtn->setEnabled(false);
     m_previewBtn->setEnabled(false);
 
-    QSettings settings("PedalBoard", "PedalBoard");
+    QSettings settings("RigRoom", "RigRoom");
     QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
     bool useOfficial = !savedKeyEnc.isEmpty();
+
+    if (!useOfficial) {
+        m_statusLabel->setText("Enter your TONE3000 secret key to download profiles.");
+        m_apiKeyBanner->show();
+        return;
+    }
 
     // model_url is already a direct, signed/downloadable TONE3000 file URL.
     // Rewriting its host can return an HTML response instead of the NAM data.
@@ -1505,7 +1471,7 @@ void Tone3000Dialog::onFavoriteButtonClicked() {
         }
     }
 
-    QSettings settings("PedalBoard", "PedalBoard");
+    QSettings settings("RigRoom", "RigRoom");
     const QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
     if (!savedKeyEnc.isEmpty()) {
         const bool favorite = m_favoriteBtn->isChecked();
@@ -1803,13 +1769,4 @@ void Tone3000Dialog::loadFilterSettings() {
         m_favoritesCheckbox->blockSignals(false);
         updateActiveFilterChips();
     }
-}
-
-QString Tone3000Dialog::getEffectiveApiKey() const {
-    QSettings settings("PedalBoard", "PedalBoard");
-    QString savedKeyEnc = settings.value("tone3000_api_key", "").toString();
-    if (!savedKeyEnc.isEmpty()) {
-        return deobfuscateKey(savedKeyEnc);
-    }
-    return m_supabaseKey;
 }
