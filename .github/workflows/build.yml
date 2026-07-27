@@ -1,0 +1,22 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev libsecret-1-dev libx11-dev
+      - name: Configure release build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRIGROOM_DEV_BUILD=OFF
+      - name: Build
+        run: cmake --build build -j2
+      - name: Validate install layout
+        run: DESTDIR="$PWD/stage" cmake --install build --prefix /usr

@@ -1,4 +1,5 @@
 build/
+stage/
 crash_debug.txt
 *.AppImage
 *.user
@@ -6,5 +7,4 @@ crash_debug.txt
 .vscode/
 .DS_Store
 *.log
-
 

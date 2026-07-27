@@ -47,11 +47,14 @@ mkdir -p "${APP_DIR}/usr/bin"
 mkdir -p "${APP_DIR}/usr/lib"
 mkdir -p "${APP_DIR}/usr/plugins/platforms"
 mkdir -p "${APP_DIR}/usr/share/applications"
+mkdir -p "${APP_DIR}/usr/share/licenses/RigRoom"
 
 # Copy binary & launcher
 cp "${BUILD_DIR}/RigRoom" "${APP_DIR}/usr/bin/RigRoom"
 cp "${SCRIPT_DIR}/AppRun" "${APP_DIR}/AppRun"
 chmod +x "${APP_DIR}/AppRun"
+cp "${ROOT_DIR}/LICENSE" "${APP_DIR}/usr/share/licenses/RigRoom/LICENSE"
+cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${APP_DIR}/usr/share/licenses/RigRoom/THIRD_PARTY_NOTICES.md"
 
 # Copy Qt plugins & themes
 echo "--> Bundling Qt plugins & themes..."
@@ -182,9 +185,11 @@ EOF
 
 cat "${RAW_APPIMAGE}" >> "${OUTPUT_APPIMAGE}"
 chmod +x "${OUTPUT_APPIMAGE}"
+sha256sum "${OUTPUT_APPIMAGE}" > "${OUTPUT_APPIMAGE}.sha256"
 
 echo "=========================================="
 echo " ✅ Universal AppImage Created Successfully!"
 echo " Output: ${OUTPUT_APPIMAGE}"
 echo " Run with: ./RigRoom-${APP_VERSION}-x86_64.AppImage"
+echo " Checksum: ${OUTPUT_APPIMAGE}.sha256"
 echo "=========================================="

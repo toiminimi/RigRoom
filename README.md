@@ -100,6 +100,12 @@ Docker or Podman is used automatically when available. The output is written
 to the repository root. Install PipeWire-JACK or JACK on the target system
 before using audio processing.
 
+Release downloads include a `.sha256` file. Verify it with:
+
+```bash
+sha256sum --check RigRoom-<version>-x86_64.AppImage.sha256
+```
+
 ### Compiling RigRoom
 
 ```bash
@@ -137,6 +143,9 @@ cmake --build build -j$(nproc)
 ## ⚖️ License & Open Source Credits
 
 RigRoom is open-source software released under the **GNU General Public License v3.0 (GPLv3)**. See [LICENSE](LICENSE) for details.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+[PRIVACY.md](PRIVACY.md) for project policies.
 
 ### Third-Party Acknowledgments
 - **Qt 6 Framework** ([LGPLv3](https://www.qt.io/)) — GUI & event loop
