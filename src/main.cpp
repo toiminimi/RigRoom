@@ -3,6 +3,7 @@
 #include <QLibrary>
 #include <QTimer>
 #include <QFile>
+#include <QFileInfo>
 extern "C" int XInitThreads(void);
 #include "ui/MainWindow.h"
 #include "ui/GtkUIHelper.h"
@@ -34,20 +35,6 @@ static void crash_handler(int sig) {
 }
 
 int main(int argc, char* argv[]) {
-    {
-        std::ifstream maps("/proc/self/maps");
-        if (maps.is_open()) {
-            std::string line;
-            std::cout << "--- ABSOLUTE ENTRY PROC MAPS GTK/GDK DEBUG ---" << std::endl;
-            while (std::getline(maps, line)) {
-                if (line.find("libgtk") != std::string::npos || line.find("libgdk") != std::string::npos) {
-                    std::cout << "Maps Entry: " << line << std::endl;
-                }
-            }
-            std::cout << "--- END ABSOLUTE ENTRY PROC MAPS GTK/GDK DEBUG ---" << std::endl;
-            maps.close();
-        }
-    }
     XInitThreads();
     if (argc > 1 && std::string(argv[1]) == "--gtk-ui-helper") {
         return runGtkUIHelper(argc, argv);
@@ -70,7 +57,7 @@ int main(int argc, char* argv[]) {
 
     // Suil module directory auto-detection across distros & AppImage
     if (qEnvironmentVariableIsEmpty("SUIL_MODULE_DIR")) {
-        QString appDirSuil = QCoreApplication::applicationDirPath() + "/../lib/suil-0";
+        const QString appDirSuil = QFileInfo(QString::fromLocal8Bit(argv[0])).absoluteDir().filePath("../lib/suil-0");
         if (QDir(appDirSuil).exists()) {
             qputenv("SUIL_MODULE_DIR", appDirSuil.toUtf8());
         } else if (QDir("/usr/lib/x86_64-linux-gnu/suil-0").exists()) {
