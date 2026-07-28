@@ -35,6 +35,8 @@ void migrateLegacyLocked() {
     if (encrypted.isEmpty()) {
         QSettings legacy("PedalBoard", "PedalBoard");
         encrypted = legacy.value("tone3000_api_key").toString();
+        // LEGACY: fixed migration key for old PedalBoard XOR-encrypted format.
+        // This is a one-time migration path only, not a security mechanism.
         if (!encrypted.isEmpty()) encrypted = decodeLegacy(encrypted, "PedalBoardSecureKey123");
     } else {
         encrypted = decodeLegacy(encrypted, "RigRoomSecureKey123");

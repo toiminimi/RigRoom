@@ -1,7 +1,9 @@
 build/
+build-*/
 stage/
 crash_debug.txt
 *.AppImage
+*.sha256
 *.user
 .idea/
 .vscode/
