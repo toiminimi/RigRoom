@@ -19,7 +19,7 @@
 RoutingHandleItem::RoutingHandleItem(NodeCanvas* canvas, int branchRow, bool isSplit)
     : m_canvas(canvas), m_branchRow(branchRow), m_isSplit(isSplit) {
     setAcceptHoverEvents(true);
-    setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable);
+    setFlags(QGraphicsItem::ItemIsSelectable);
     setZValue(20); // Top layer so it's always draggable
     m_previewLine = new QGraphicsPathItem(this);
     m_previewLine->setPen(QPen(QColor(255, 200, 50), 2, Qt::DashLine, Qt::RoundCap));
@@ -129,14 +129,14 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
         } else if (mixVal < 0.95f) {
             accent = QColor(100, 110, 130); // Attenuated
         } else {
-            accent = QColor(75, 85, 99);
+            accent = QColor(106, 120, 153);
         }
     } else {
-        accent = QColor(75, 85, 99);
+        accent = QColor(106, 120, 153);
     }
 
     painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging || m_dragInvalid || (!m_isSplit && m_canvas->getMix(m_branchRow) > 1.05f) ? 2.0 : 1.2));
-    painter->setBrush(m_dragInvalid ? QColor(45, 18, 18) : QColor(29, 31, 37));
+    painter->setBrush(m_dragInvalid ? QColor(45, 18, 18) : QColor(36, 40, 51));
     painter->drawRoundedRect(QRectF(-42, -18, 84, 36), 6, 6);
 
     painter->setPen(Qt::NoPen);

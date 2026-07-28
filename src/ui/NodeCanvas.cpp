@@ -316,6 +316,7 @@ NodeCanvas::NodeCanvas(AudioEngine* engine, QWidget* parent)
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setBackgroundBrush(QColor(14, 14, 16));
     setDragMode(QGraphicsView::NoDrag);
+    setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
     setFocusPolicy(Qt::StrongFocus);
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     setResizeAnchor(QGraphicsView::AnchorUnderMouse);
