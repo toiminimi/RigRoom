@@ -32,8 +32,13 @@ if [ -z "${IN_BUILD_CONTAINER}" ] && [ "${CI:-}" != "true" ] && (command -v podm
         ./packaging/build-appimage.sh
 else
     echo "--> No container tool found. Installing build prerequisites directly..."
-    sudo DEBIAN_FRONTEND=noninteractive apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO=(sudo)
+    else
+        SUDO=()
+    fi
+    DEBIAN_FRONTEND=noninteractive "${SUDO[@]}" apt-get update
+    DEBIAN_FRONTEND=noninteractive "${SUDO[@]}" apt-get install -y --no-install-recommends \
         build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev \
         libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev \
         libsecret-1-dev libx11-dev curl file
@@ -100,7 +105,7 @@ done
 echo "--> Bundling dynamic shared libraries into AppDir..."
 mkdir -p "${APP_DIR}/usr/lib"
 
-EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcurl|libdbus-1"
+EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcurl|libdbus-1|libpcre2-(8|32|posix)\.so"
 
 copy_library() {
     local source="$1"
