@@ -13,7 +13,7 @@ echo "=========================================="
 # Build on Ubuntu 22.04 so the AppImage uses that glibc baseline. Do not bundle glibc.
 BASELINE_IMAGE="${RIGROOM_APPIMAGE_BASELINE_IMAGE:-ubuntu@sha256:0d779ea97881505f5ef0039336ee85edba27519bdba968c284c86ee066a973c8}"
 BUILDER_IMAGE="${RIGROOM_APPIMAGE_BUILDER_IMAGE:-rigroom-appimage-builder:ubuntu-22.04}"
-if [ -z "${IN_BUILD_CONTAINER}" ] && (command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1); then
+if [ -z "${IN_BUILD_CONTAINER}" ] && [ "${CI:-}" != "true" ] && (command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1); then
     CONTAINER_TOOL=$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)
     if [ "${RIGROOM_REBUILD_APPIMAGE_BUILDER:-0}" = "1" ] || ! "${CONTAINER_TOOL}" image inspect "${BUILDER_IMAGE}" >/dev/null 2>&1; then
         echo "--> Creating cached AppImage builder ${BUILDER_IMAGE} via ${CONTAINER_TOOL}..."
