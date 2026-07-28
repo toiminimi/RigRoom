@@ -93,7 +93,7 @@ done
 echo "--> Bundling dynamic shared libraries into AppDir..."
 mkdir -p "${APP_DIR}/usr/lib"
 
-EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcrypto|libssl|libcurl|libdbus-1|libpcre2"
+EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcrypto|libssl|libcurl|libdbus-1"
 
 copy_library() {
     local source="$1"
