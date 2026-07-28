@@ -28,7 +28,7 @@
 ### ☁️ TONE3000 Neural Model Integration
 - **In-App Search**: Search and filter thousands of open-source neural amp and pedal captures on TONE3000.
 - **One-Click Loading**: View model details, tags, and sample rates, and download models directly into NAM plugin nodes.
-- **Requirements**: A **Neural Amp Modeler LV2 plugin** must be installed on the system. Users must provide their own **TONE3000 secret key** (available at tone3000.com/settings) in the application settings.
+- **Requirements**: A **Neural Amp Modeler LV2 plugin** must be installed on the system. Users must provide their own **TONE3000 secret key** (available at tone3000.com/settings) in the application settings. Secure key storage requires a running Secret Service provider — **gnome-keyring** on GNOME or **KDE Wallet** (with the Secrets DBus interface enabled) on KDE Plasma.
 
 ### 🎚️ Audio Engine & Display Compatibility
 - **Real-Time Audio Engine**: Low-latency JACK Audio Connection Kit and PipeWire-JACK backend.
