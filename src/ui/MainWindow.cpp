@@ -65,6 +65,7 @@
 #include <QTabWidget>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QDataStream>
 #include <X11/Xlib.h>
 #include <X11/Xresource.h>
@@ -3383,6 +3384,13 @@ public:
 
         m_process = new QProcess(this);
         m_process->setProcessChannelMode(QProcess::ForwardedChannels);
+        // Native GTK/X11 LV2 UIs must use one host library stack.  In an
+        // AppImage, inheriting its bundled Qt/X11 libraries mixes ABIs with GTK.
+        QProcessEnvironment helperEnvironment = QProcessEnvironment::systemEnvironment();
+        helperEnvironment.remove("LD_LIBRARY_PATH");
+        helperEnvironment.remove("QT_PLUGIN_PATH");
+        helperEnvironment.remove("SUIL_MODULE_DIR");
+        m_process->setProcessEnvironment(helperEnvironment);
         connect(m_process, &QProcess::finished, this, [this]() {
             m_syncTimer.stop();
             deleteLater();
