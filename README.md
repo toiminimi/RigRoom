@@ -71,19 +71,19 @@ sudo apt install -y build-essential cmake pkg-config \
 #### **Arch Linux / Manjaro / EndeavourOS**
 ```bash
 sudo pacman -S --needed base-devel cmake pkgconf \
-    qt6-base lilv suil jack2 libx11
+    qt6-base lilv suil jack2 libx11 libsecret
 ```
 
-#### **Fedora 38 / 39 / 40 / 41**
+#### **Fedora 43+**
 ```bash
 sudo dnf install -y gcc-c++ cmake pkgconfig \
-    qt6-qtbase-devel lilv-devel suil-devel jack-audio-connection-kit-devel libX11-devel
+    qt6-qtbase-devel lilv-devel suil-devel jack-audio-connection-kit-devel libX11-devel libsecret-devel
 ```
 
 #### **openSUSE Tumbleweed / Leap**
 ```bash
 sudo zypper install -y gcc-c++ cmake pkg-config \
-    libqt6-qtbase-devel lilv-devel suil-devel libjack-devel libX11-devel
+    libqt6-qtbase-devel lilv-devel suil-devel libjack-devel libX11-devel libsecret-devel
 ```
 
 ### AppImage
