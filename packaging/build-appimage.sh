@@ -73,7 +73,7 @@ if [ ! -d "${QT_PLUGINS_DIR}/platforms" ]; then
     echo "ERROR: Qt platform plugins were not found in ${QT_PLUGINS_DIR}." >&2
     exit 1
 fi
-for plugin_dir in platforms platformthemes iconengines imageformats styles; do
+for plugin_dir in platforms platformthemes iconengines imageformats styles tls; do
     if [ -d "${QT_PLUGINS_DIR}/${plugin_dir}" ]; then
         mkdir -p "${APP_DIR}/usr/plugins/${plugin_dir}"
         cp -r "${QT_PLUGINS_DIR}/${plugin_dir}"/* "${APP_DIR}/usr/plugins/${plugin_dir}/"
@@ -93,7 +93,7 @@ done
 echo "--> Bundling dynamic shared libraries into AppDir..."
 mkdir -p "${APP_DIR}/usr/lib"
 
-EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcrypto|libssl|libcurl|libdbus-1"
+EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcurl|libdbus-1"
 
 copy_library() {
     local source="$1"
@@ -134,6 +134,17 @@ for pass in 1 2; do
                 fi
             done
         fi
+    done
+done
+
+# Bundle OpenSSL explicitly: Qt6 Network loads it dynamically (not visible to ldd)
+for libdir in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib; do
+    for libbase in libssl libcrypto; do
+        for candidate in "$libdir/${libbase}".so.*; do
+            if [ -f "$candidate" ]; then
+                copy_library "$candidate"
+            fi
+        done
     done
 done
 
