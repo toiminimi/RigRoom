@@ -1388,24 +1388,20 @@ void MainWindow::setupUI() {
         
         scanPlugins();
 
-        QStringList newPluginDetails;
+        int newLV2 = 0, newCLAP = 0, newVST3 = 0;
         for (const auto& plugin : m_availablePlugins) {
             const QString uri = QString::fromStdString(plugin.uri);
             if (previousUris.contains(uri)) continue;
 
-            const QString format = plugin.isLV2 ? "LV2" :
-                (uri.contains(".clap") ? "CLAP" : "VST3");
-            const QString vendor = plugin.brand.empty() ? "Unknown" : QString::fromStdString(plugin.brand);
-            const QString version = plugin.version.empty() ? "Unknown" : QString::fromStdString(plugin.version);
-            const QString file = QFileInfo(QString::fromStdString(plugin.path)).fileName();
-            newPluginDetails << QString("<b>%1</b> [%2]<br>Category: %3<br>Vendor: %4<br>Version: %5<br>File: %6")
-                .arg(QString::fromStdString(plugin.name).toHtmlEscaped(),
-                     format.toHtmlEscaped(),
-                     QString::fromStdString(plugin.category).toHtmlEscaped(),
-                     vendor.toHtmlEscaped(),
-                     version.toHtmlEscaped(),
-                     file.toHtmlEscaped());
+            if (plugin.isLV2) {
+                ++newLV2;
+            } else if (uri.contains(".clap")) {
+                ++newCLAP;
+            } else {
+                ++newVST3;
+            }
         }
+        const int newCount = newLV2 + newCLAP + newVST3;
 
         rescanBtn->setText("✓ Plugins Rescanned!");
         rescanBtn->setEnabled(true);
@@ -1415,14 +1411,18 @@ void MainWindow::setupUI() {
 
         auto* scanSummary = new QMessageBox(QMessageBox::Information, "Plugin Rescan", {}, QMessageBox::Ok, this);
         scanSummary->setAttribute(Qt::WA_DeleteOnClose);
-        if (newPluginDetails.isEmpty()) {
+        if (newCount == 0) {
             scanSummary->setText(QString("Scan complete. No new plugins found. %1 plugins are currently available.")
                 .arg(m_availablePlugins.size()));
         } else {
-            scanSummary->setText(QString("Scan complete. Found %1 new plugin%2.")
-                .arg(newPluginDetails.size())
-                .arg(newPluginDetails.size() == 1 ? "" : "s"));
-            scanSummary->setInformativeText(newPluginDetails.join("<br><br>"));
+            scanSummary->setText(QString("Scan complete: %1 new plugin%2 found.")
+                .arg(newCount)
+                .arg(newCount == 1 ? "" : "s"));
+            QStringList formatCounts;
+            if (newLV2 > 0) formatCounts << QString("LV2: %1").arg(newLV2);
+            if (newCLAP > 0) formatCounts << QString("CLAP: %1").arg(newCLAP);
+            if (newVST3 > 0) formatCounts << QString("VST3: %1").arg(newVST3);
+            scanSummary->setInformativeText(formatCounts.join("  ·  "));
         }
         scanSummary->show();
     });
