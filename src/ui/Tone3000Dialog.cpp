@@ -213,7 +213,7 @@ void Tone3000Dialog::setupUI() {
     bannerLayout->setContentsMargins(12, 8, 12, 8);
     bannerLayout->setSpacing(10);
     
-    QLabel* warningIcon = new QLabel("🔑", m_apiKeyBanner);
+    QLabel* warningIcon = new QLabel("", m_apiKeyBanner);
     warningIcon->setStyleSheet("font-size: 16px;");
     
     QLabel* bannerText = new QLabel(

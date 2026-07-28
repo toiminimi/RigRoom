@@ -512,7 +512,8 @@ public:
         hint->setStyleSheet("color: #7d7d8a; font-size: 11px;");
         auto* cancel = new QPushButton("Cancel", this);
         cancel->setStyleSheet("QPushButton { background: #2c2c34; } QPushButton:hover { background: #3a3a44; }");
-        auto* add = new QPushButton("➕ Add Plugin to Board", this);
+        auto* add = new QPushButton("Add Plugin to Board", this);
+        add->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
         actions->addWidget(hint, 1);
         actions->addWidget(cancel);
         actions->addWidget(add);
@@ -594,10 +595,10 @@ private:
 
         // GUI Badge
         if (plugin.hasNativeGUI) {
-            m_detailGuiBadge->setText("🎨 Native UI");
+            m_detailGuiBadge->setText("Native UI");
             m_detailGuiBadge->setStyleSheet("background: #1b3022; color: #4caf50; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
         } else {
-            m_detailGuiBadge->setText("⚙️ Parameters");
+            m_detailGuiBadge->setText("Parameters");
             m_detailGuiBadge->setStyleSheet("background: #252830; color: #90a0b0; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
         }
 
@@ -1115,7 +1116,8 @@ void MainWindow::setupUI() {
     connect(m_nextPresetBtn, &QToolButton::clicked, this, &MainWindow::onNextPreset);
     topBar->addWidget(m_nextPresetBtn);
 
-    m_savePresetButton = new QPushButton("💾 Save", this);
+    m_savePresetButton = new QPushButton("Save", this);
+    m_savePresetButton->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
     m_savePresetButton->setToolTip("Save current preset (Ctrl+S)");
     m_savePresetButton->setStyleSheet(
         "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
@@ -1124,7 +1126,8 @@ void MainWindow::setupUI() {
     connect(m_savePresetButton, &QPushButton::clicked, this, &MainWindow::onSavePreset);
     topBar->addWidget(m_savePresetButton);
 
-    QPushButton* newBtn = new QPushButton("➕ New", this);
+    QPushButton* newBtn = new QPushButton("New", this);
+    newBtn->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
     newBtn->setToolTip("Create new empty preset (Ctrl+N)");
     newBtn->setStyleSheet(
         "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
@@ -1133,7 +1136,7 @@ void MainWindow::setupUI() {
     connect(newBtn, &QPushButton::clicked, this, &MainWindow::onNewPreset);
     topBar->addWidget(newBtn);
 
-    QPushButton* presetOptionsBtn = new QPushButton("⚙ Options ▾", this);
+    QPushButton* presetOptionsBtn = new QPushButton("Options ▾", this);
     presetOptionsBtn->setToolTip("Preset actions (Save As, Rename, Delete)");
     presetOptionsBtn->setStyleSheet(
         "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
@@ -1160,7 +1163,7 @@ void MainWindow::setupUI() {
     topBar->addWidget(slotTitleLabel);
 
     m_slotMinusBtn = new QToolButton(this);
-    m_slotMinusBtn->setText("➖");
+    m_slotMinusBtn->setText("−");
     m_slotMinusBtn->setToolTip("Remove empty tail slot (Ctrl+-)");
     m_slotMinusBtn->setFixedSize(24, 24);
     m_slotMinusBtn->setCursor(Qt::PointingHandCursor);
@@ -1177,7 +1180,7 @@ void MainWindow::setupUI() {
     topBar->addWidget(m_slotCountLabel);
 
     m_slotPlusBtn = new QToolButton(this);
-    m_slotPlusBtn->setText("➕");
+    m_slotPlusBtn->setText("+");
     m_slotPlusBtn->setToolTip("Add extra track slot (Ctrl+=)");
     m_slotPlusBtn->setFixedSize(24, 24);
     m_slotPlusBtn->setCursor(Qt::PointingHandCursor);
@@ -1286,7 +1289,8 @@ void MainWindow::setupUI() {
     
     audioTabLayout->addWidget(ioBox);
     audioTabLayout->addStretch();
-    mainSettingsTab->addTab(audioTab, "🎛️ Audio");
+    int audioTabIdx = mainSettingsTab->addTab(audioTab, "Audio");
+    mainSettingsTab->setTabIcon(audioTabIdx, style()->standardIcon(QStyle::SP_MediaVolume));
 
     // TAB 2: Plugins & Formats
     QWidget* pluginsTab = new QWidget();
@@ -1323,10 +1327,12 @@ void MainWindow::setupUI() {
         QVBoxLayout* btnCol = new QVBoxLayout();
         btnCol->setSpacing(6);
 
-        QPushButton* addBtn = new QPushButton("➕ Add Folder", page);
+        QPushButton* addBtn = new QPushButton("Add Folder", page);
+        addBtn->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
         addBtn->setStyleSheet("QPushButton { background: #282834; color: #00B0FF; font-weight: bold; border: 1px solid #00B0FF; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #00B0FF; color: white; }");
         
-        QPushButton* removeBtn = new QPushButton("🗑️ Remove", page);
+        QPushButton* removeBtn = new QPushButton("Remove", page);
+        removeBtn->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
         removeBtn->setStyleSheet("QPushButton { background: #352528; color: #FF6B6B; font-weight: bold; border: 1px solid #4a3034; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #4a2d32; color: #FF8787; border-color: #FF5252; }");
 
         btnCol->addWidget(addBtn);
@@ -1366,7 +1372,8 @@ void MainWindow::setupUI() {
     pluginsLayout->addWidget(pathsBox);
 
     QHBoxLayout* rescanLayout = new QHBoxLayout();
-    QPushButton* rescanBtn = new QPushButton("🔄 Rescan Plugins Now", pluginsTab);
+    QPushButton* rescanBtn = new QPushButton("Rescan Plugins Now", pluginsTab);
+    rescanBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     rescanBtn->setCursor(Qt::PointingHandCursor);
     rescanBtn->setStyleSheet(
         "QPushButton { background: #00B0FF; color: white; font-weight: bold; border-radius: 4px; padding: 8px 16px; font-size: 12px; }"
@@ -1403,10 +1410,10 @@ void MainWindow::setupUI() {
         }
         const int newCount = newLV2 + newCLAP + newVST3;
 
-        rescanBtn->setText("✓ Plugins Rescanned!");
+        rescanBtn->setText("Plugins Rescanned!");
         rescanBtn->setEnabled(true);
         QTimer::singleShot(1500, this, [rescanBtn]() {
-            rescanBtn->setText("🔄 Rescan Plugins Now");
+            rescanBtn->setText("Rescan Plugins Now");
         });
 
         auto* scanSummary = new QMessageBox(QMessageBox::Information, "Plugin Rescan", {}, QMessageBox::Ok, this);
@@ -1427,7 +1434,8 @@ void MainWindow::setupUI() {
         scanSummary->show();
     });
 
-    mainSettingsTab->addTab(pluginsTab, "🔌 Plugins & Formats");
+    int pluginsTabIdx = mainSettingsTab->addTab(pluginsTab, "Plugins & Formats");
+    mainSettingsTab->setTabIcon(pluginsTabIdx, style()->standardIcon(QStyle::SP_FileDialogDetailedView));
 
     // TAB 3: TONE3000 Integration
     QWidget* toneTab = new QWidget();
@@ -1454,7 +1462,7 @@ void MainWindow::setupUI() {
     apiKeyEdit->setStyleSheet("QLineEdit { background: #222228; border: 1px solid #363642; border-radius: 4px; color: #ECECF0; padding: 6px; font-size: 11px; }");
 
     QToolButton* toggleEyeBtn = new QToolButton(m_settingsDialog);
-    toggleEyeBtn->setText("🔒");
+    toggleEyeBtn->setText("Hide");
     toggleEyeBtn->setToolTip("Show / Hide API Key");
     toggleEyeBtn->setFixedSize(28, 28);
     toggleEyeBtn->setCursor(Qt::PointingHandCursor);
@@ -1465,14 +1473,15 @@ void MainWindow::setupUI() {
     connect(toggleEyeBtn, &QToolButton::clicked, apiKeyEdit, [apiKeyEdit, toggleEyeBtn]() {
         if (apiKeyEdit->echoMode() == QLineEdit::Password) {
             apiKeyEdit->setEchoMode(QLineEdit::Normal);
-            toggleEyeBtn->setText("👁️");
+            toggleEyeBtn->setText("Show");
         } else {
             apiKeyEdit->setEchoMode(QLineEdit::Password);
-            toggleEyeBtn->setText("🔒");
+            toggleEyeBtn->setText("Hide");
         }
     });
 
-    QPushButton* clearKeyBtn = new QPushButton("🗑️ Clear", m_settingsDialog);
+    QPushButton* clearKeyBtn = new QPushButton("Clear", m_settingsDialog);
+    clearKeyBtn->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
     clearKeyBtn->setToolTip("Remove stored API key");
     clearKeyBtn->setCursor(Qt::PointingHandCursor);
     clearKeyBtn->setStyleSheet(
@@ -1488,11 +1497,11 @@ void MainWindow::setupUI() {
     auto updateKeyStatus = [apiKeyEdit, toneStatusLabel, clearKeyBtn]() {
         QString text = apiKeyEdit->text().trimmed();
         if (text.isEmpty()) {
-            toneStatusLabel->setText("🔑 Secret Key Required: Enter your Secret Key (t3k_cs_...) to enable online searches");
+            toneStatusLabel->setText("Secret Key Required: Enter your Secret Key (t3k_cs_...) to enable online searches");
             toneStatusLabel->setStyleSheet("color: #FFB74D; font-size: 11px; font-weight: bold; border: none;");
             clearKeyBtn->setEnabled(false);
         } else {
-            toneStatusLabel->setText("✓ Mode: Secret Key Configured — Full TONE3000 API Access");
+            toneStatusLabel->setText("Mode: Secret Key Configured — Full TONE3000 API Access");
             toneStatusLabel->setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold; border: none;");
             clearKeyBtn->setEnabled(true);
         }
@@ -1523,7 +1532,7 @@ void MainWindow::setupUI() {
     QLabel* helpLabel = new QLabel(
         "<b>Which key is needed?</b> Copy your <b>Secret Key</b> (starts with <code>t3k_cs_...</code>) from your TONE3000 account.<br>"
         "<span style='color:#a0a4b8;'>Path: <b>tone3000.com</b> → <b>Settings</b> → <b>API & Developer Keys</b> → <b>Secret Key</b></span><br>"
-        "<a href='https://tone3000.com/settings' style='color:#00B0FF; font-weight:bold;'>🔗 Open tone3000.com/settings in browser</a>", toneBox);
+        "<a href='https://tone3000.com/settings' style='color:#00B0FF; font-weight:bold;'>Open tone3000.com/settings in browser</a>", toneBox);
     helpLabel->setStyleSheet("font-size: 11px; color: #CCCCCC; border: none; padding-top: 4px;");
     helpLabel->setOpenExternalLinks(true);
 
@@ -2292,7 +2301,7 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
             "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
         );
         if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
-            m_savePresetButton->setText("💾 Save *");
+            m_savePresetButton->setText("Save *");
             m_savePresetButton->setStyleSheet(
                 "QPushButton { background-color: #F57C00; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
                 "QPushButton:hover { background-color: #FF9800; }"
@@ -2305,7 +2314,7 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
             "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
         );
         if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
-            m_savePresetButton->setText("💾 Save");
+            m_savePresetButton->setText("Save");
             m_savePresetButton->setStyleSheet(
                 "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
                 "QPushButton:hover { background-color: #009688; }"
@@ -2616,7 +2625,7 @@ void MainWindow::triggerSaveFeedback() {
         });
     }
 
-    m_savePresetButton->setText("✓ Saved!");
+    m_savePresetButton->setText("Saved!");
     m_savePresetButton->setStyleSheet(
         "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
         "QPushButton:hover { background-color: #66BB6A; }"
@@ -2846,7 +2855,7 @@ void MainWindow::updateCPUStatus() {
         const int displayCpu = qRound(m_smoothedCpuLoad);
         if (m_dspCpuButton) {
             if (displayCpu >= 85) {
-                m_dspCpuButton->setText(QString("🔴 DSP %1% BOTTLENECK").arg(displayCpu));
+                m_dspCpuButton->setText(QString("DSP %1% BOTTLENECK").arg(displayCpu));
                 m_dspCpuButton->setStyleSheet(
                     "QToolButton { background-color: #D32F2F; color: white; font-weight: bold; border-radius: 4px; padding: 2px 8px; border: none; }"
                     "QToolButton:hover { background-color: #F44336; }"
@@ -4413,7 +4422,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 }
             }
             
-            QPushButton* uiBtn = new QPushButton("🎛️ Open GUI", m_paramContainer);
+            QPushButton* uiBtn = new QPushButton("Open GUI", m_paramContainer);
             uiBtn->setStyleSheet(
                 "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
                 "QPushButton:hover { background-color: #009688; }"

@@ -2,6 +2,7 @@
 #include "Tone3000Dialog.h"
 #include <QDir>
 #include <QScrollArea>
+#include <QStyle>
 
 ModelDetailsDialog::ModelDetailsDialog(std::shared_ptr<AudioNode> node, AudioEngine* engine, QWidget* parent)
     : QDialog(parent), m_node(node), m_engine(engine) {
@@ -99,7 +100,7 @@ void ModelDetailsDialog::setupUI() {
         descLayout->setContentsMargins(0, 0, 0, 0);
         descLayout->setSpacing(6);
 
-        QLabel* descHeader = new QLabel("📝 DESCRIPTION / CAPTURE NOTES", descCard);
+        QLabel* descHeader = new QLabel("DESCRIPTION / CAPTURE NOTES", descCard);
         descHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
         descLayout->addWidget(descHeader);
 
@@ -120,7 +121,7 @@ void ModelDetailsDialog::setupUI() {
     gearLayout->setContentsMargins(0, 0, 0, 0);
     gearLayout->setSpacing(6);
 
-    QLabel* gearHeader = new QLabel("🎸 GEAR & CAPTURE DETAILS", gearCard);
+    QLabel* gearHeader = new QLabel("GEAR & CAPTURE DETAILS", gearCard);
     gearHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
     gearLayout->addWidget(gearHeader);
 
@@ -194,7 +195,7 @@ void ModelDetailsDialog::setupUI() {
     pathLayout->setContentsMargins(0, 0, 0, 0);
     pathLayout->setSpacing(4);
 
-    QLabel* pathHeader = new QLabel("📁 FILE LOCATION", pathCard);
+    QLabel* pathHeader = new QLabel("FILE LOCATION", pathCard);
     pathHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
     pathLayout->addWidget(pathHeader);
 
@@ -237,13 +238,15 @@ void ModelDetailsDialog::setupUI() {
     connect(browserBtn, &QPushButton::clicked, this, &ModelDetailsDialog::onOpenTone3000Browser);
 
     if (!m_sourceUrl.isEmpty()) {
-        QPushButton* webBtn = new QPushButton("🔗 View on Web", actionCard);
+        QPushButton* webBtn = new QPushButton("View on Web", actionCard);
+        webBtn->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
         webBtn->setStyleSheet("QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 8px 12px; font-size: 11px; border: none; } QPushButton:hover { background-color: #009688; }");
         actionLayout->addWidget(webBtn);
         connect(webBtn, &QPushButton::clicked, this, &ModelDetailsDialog::onOpenOnWeb);
     }
 
-    QPushButton* exportBtn = new QPushButton("💾 Export NAM...", actionCard);
+    QPushButton* exportBtn = new QPushButton("Export NAM...", actionCard);
+    exportBtn->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
     exportBtn->setStyleSheet("QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 8px 12px; font-size: 11px; border: none; } QPushButton:hover { background-color: #44444A; }");
     actionLayout->addWidget(exportBtn);
     connect(exportBtn, &QPushButton::clicked, this, &ModelDetailsDialog::onExportNam);
