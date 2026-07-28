@@ -28,6 +28,7 @@
 ### ☁️ TONE3000 Neural Model Integration
 - **In-App Search**: Search and filter thousands of open-source neural amp and pedal captures on TONE3000.
 - **One-Click Loading**: View model details, tags, and sample rates, and download models directly into NAM plugin nodes.
+- **Requirements**: A **Neural Amp Modeler LV2 plugin** must be installed on the system. Users must provide their own **TONE3000 secret key** (available at tone3000.com/settings) in the application settings.
 
 ### 🎚️ Audio Engine & Display Compatibility
 - **Real-Time Audio Engine**: Low-latency JACK Audio Connection Kit and PipeWire-JACK backend.
@@ -46,7 +47,7 @@
 
 ### 🔊 Audio Engine Requirements
 
-RigRoom uses **PipeWire** or **JACK** for ultra-low-latency real-time guitar audio processing.
+RigRoom uses **PipeWire** or **JACK** for real-time guitar audio processing.
 
 - **Ubuntu 22.04 / 24.04 & Debian 12 (PipeWire)**:
   Modern Ubuntu distros run PipeWire by default. Install PipeWire's JACK compatibility library:
