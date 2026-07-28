@@ -167,7 +167,7 @@ void ModelDetailsDialog::setupUI() {
     techLayout->setContentsMargins(0, 0, 0, 0);
     techLayout->setSpacing(6);
 
-    QLabel* techHeader = new QLabel("⚙ TECHNICAL SPECIFICATIONS", techCard);
+    QLabel* techHeader = new QLabel("TECHNICAL SPECIFICATIONS", techCard);
     techHeader->setStyleSheet("font-weight: bold; font-size: 11px; color: #80DEEA; background: transparent; border: none;");
     techLayout->addWidget(techHeader);
 
@@ -232,7 +232,8 @@ void ModelDetailsDialog::setupUI() {
     actionLayout->setContentsMargins(0, 4, 0, 0);
     actionLayout->setSpacing(6);
 
-    QPushButton* browserBtn = new QPushButton("⚡ Open in TONE3000 Browser", actionCard);
+    QPushButton* browserBtn = new QPushButton("Open in TONE3000 Browser", actionCard);
+    browserBtn->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
     browserBtn->setStyleSheet("QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 8px 12px; font-size: 11px; border: none; } QPushButton:hover { background-color: #388E3C; }");
     actionLayout->addWidget(browserBtn);
     connect(browserBtn, &QPushButton::clicked, this, &ModelDetailsDialog::onOpenTone3000Browser);

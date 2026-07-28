@@ -373,7 +373,7 @@ public:
         filterRow->setSpacing(8);
 
         m_search = new QLineEdit(this);
-        m_search->setPlaceholderText("🔍 Search plugins by name, brand, category, or URI...");
+        m_search->setPlaceholderText("Search plugins by name, brand, category, or URI...");
 
         m_formatFilter = new QComboBox(this);
         m_formatFilter->setMinimumWidth(120);
@@ -586,11 +586,11 @@ private:
 
         // Audio I/O Layout Badge
         if (plugin.audioInputs == 2 && plugin.audioOutputs == 2) {
-            m_detailAudioBadge->setText("🔊 Stereo (2x2)");
+            m_detailAudioBadge->setText("Stereo (2x2)");
         } else if (plugin.audioInputs == 1 && plugin.audioOutputs == 1) {
-            m_detailAudioBadge->setText("🔉 Mono (1x1)");
+            m_detailAudioBadge->setText("Mono (1x1)");
         } else {
-            m_detailAudioBadge->setText(QString("🔊 Audio (%1 In / %2 Out)").arg(plugin.audioInputs).arg(plugin.audioOutputs));
+            m_detailAudioBadge->setText(QString("Audio (%1 In / %2 Out)").arg(plugin.audioInputs).arg(plugin.audioOutputs));
         }
 
         // GUI Badge
@@ -1541,7 +1541,8 @@ void MainWindow::setupUI() {
     toneLayout->addWidget(helpLabel);
     toneTabLayout->addWidget(toneBox);
     toneTabLayout->addStretch();
-    mainSettingsTab->addTab(toneTab, "☁️ TONE3000");
+    int toneTabIdx = mainSettingsTab->addTab(toneTab, "TONE3000");
+    mainSettingsTab->setTabIcon(toneTabIdx, style()->standardIcon(QStyle::SP_DriveNetIcon));
 
     AboutWidget* aboutWidget = new AboutWidget(m_settingsDialog);
     mainSettingsTab->addTab(aboutWidget, "ℹ️ About");
@@ -2861,7 +2862,7 @@ void MainWindow::updateCPUStatus() {
                     "QToolButton:hover { background-color: #F44336; }"
                 );
             } else if (displayCpu >= 70) {
-                m_dspCpuButton->setText(QString("⚠️ DSP %1%").arg(displayCpu));
+                m_dspCpuButton->setText(QString("DSP %1%").arg(displayCpu));
                 m_dspCpuButton->setStyleSheet(
                     "QToolButton { background-color: #FBC02D; color: #18181B; font-weight: bold; border-radius: 4px; padding: 2px 8px; border: none; }"
                     "QToolButton:hover { background-color: #FDD835; }"
@@ -4263,7 +4264,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         missingBox->setStyleSheet("QFrame { background-color: #2A1717; border: 1px solid #FF5252; border-radius: 6px; padding: 12px; }");
         auto* missingLayout = new QVBoxLayout(missingBox);
         
-        auto* titleLabel = new QLabel("⚠️ Plugin Missing", missingBox);
+        auto* titleLabel = new QLabel("Plugin Missing", missingBox);
         titleLabel->setStyleSheet("font-weight: bold; color: #FF5252; font-size: 14px;");
         missingLayout->addWidget(titleLabel);
 
@@ -4454,7 +4455,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     auto* vst3Node = dynamic_cast<VST3PluginNode*>(node.get());
     if (vst3Node && vst3Node->hasEditor()) {
         hasCustomUI = true;
-        QPushButton* uiBtn = new QPushButton("🎛️ Open GUI", m_paramContainer);
+        QPushButton* uiBtn = new QPushButton("Open GUI", m_paramContainer);
         uiBtn->setStyleSheet(
             "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
             "QPushButton:hover { background-color: #009688; }"
@@ -4476,7 +4477,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     auto* clapNode = dynamic_cast<CLAPPluginNode*>(node.get());
     if (clapNode && clapNode->hasGUI()) {
         hasCustomUI = true;
-        QPushButton* uiBtn = new QPushButton("🎛️ Open GUI", m_paramContainer);
+        QPushButton* uiBtn = new QPushButton("Open GUI", m_paramContainer);
         uiBtn->setStyleSheet(
             "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
             "QPushButton:hover { background-color: #009688; }"
