@@ -32,8 +32,8 @@ if [ -z "${IN_BUILD_CONTAINER}" ] && [ "${CI:-}" != "true" ] && (command -v podm
         ./packaging/build-appimage.sh
 else
     echo "--> No container tool found. Installing build prerequisites directly..."
-    DEBIAN_FRONTEND=noninteractive apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev \
         libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev \
         libsecret-1-dev libx11-dev curl file
