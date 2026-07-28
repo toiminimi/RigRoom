@@ -16,8 +16,6 @@ jobs:
           submodules: recursive
       - name: Build AppImage
         run: ./packaging/build-appimage.sh
-      - name: Create checksum
-        run: sha256sum RigRoom-*.AppImage > RigRoom-*.AppImage.sha256
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:

@@ -30,6 +30,13 @@ if [ -z "${IN_BUILD_CONTAINER}" ] && (command -v podman >/dev/null 2>&1 || comma
         -e IN_BUILD_CONTAINER=1 \
         "${BUILDER_IMAGE}" \
         ./packaging/build-appimage.sh
+else
+    echo "--> No container tool found. Installing build prerequisites directly..."
+    DEBIAN_FRONTEND=noninteractive apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev \
+        libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev \
+        libsecret-1-dev libx11-dev curl file
 fi
 
 # 1. Compile RigRoom in Release mode
