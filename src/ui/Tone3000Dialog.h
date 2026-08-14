@@ -27,6 +27,7 @@ class QEvent;
 class QUrl;
 class QListWidget;
 class QSplitter;
+class Tone3000ImageLoader;
 
 class Tone3000Dialog : public QDialog {
     Q_OBJECT
@@ -100,6 +101,7 @@ private:
     QSplitter* m_contentSplitter;
     QLabel* m_infoTitleLabel;
     QLabel* m_infoCreatorLabel;
+    QLabel* m_infoImageLabel;
     class QTextBrowser* m_infoText;
     QLabel* m_variantsLabel;
     QListWidget* m_variantsList;
@@ -124,6 +126,7 @@ private:
 
     // Network manager
     QNetworkAccessManager* m_networkManager;
+    Tone3000ImageLoader* m_imageLoader;
     QPointer<QNetworkReply> m_currentReply;
     QPointer<QNetworkReply> m_modelsReply;
     QPointer<QNetworkReply> m_downloadReply;

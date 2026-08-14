@@ -62,6 +62,8 @@ add_executable(RigRoom
     src/ui/GridRow.h
     src/ui/Tone3000Dialog.cpp
     src/ui/Tone3000Dialog.h
+    src/ui/Tone3000ImageLoader.cpp
+    src/ui/Tone3000ImageLoader.h
     src/ui/ModelDetailsDialog.cpp
     src/ui/ModelDetailsDialog.h
     src/ui/GtkUIHelper.cpp

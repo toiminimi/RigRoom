@@ -9,6 +9,7 @@
 #include "../audio/BypassNode.h"
 #include "NodeWidget.h"
 #include "Tone3000Dialog.h"
+#include "Tone3000ImageLoader.h"
 #include "ModelDetailsDialog.h"
 #include "AboutDialog.h"
 #include <filesystem>
@@ -981,6 +982,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     resize(1200, 800);
     
     m_networkManager = new QNetworkAccessManager(this);
+    m_toneImageLoader = new Tone3000ImageLoader(this);
     
     // Create configs dir and automatically migrate legacy PedalBoard settings & presets
     QString newConfigDir = QDir::homePath() + "/.config/RigRoom";
@@ -4501,59 +4503,6 @@ static void parseNamFileMetadata(const QString& filePath, AudioNode::ModelMetada
     }
 }
 
-static QString modelImageCachePath(const QString& imageUrl) {
-    const QString cacheDir = QDir::homePath() + "/.cache/RigRoom/tone3000/images";
-    QDir().mkpath(cacheDir);
-    const QString key = QString::fromLatin1(QCryptographicHash::hash(imageUrl.toUtf8(), QCryptographicHash::Sha256).toHex());
-    return QDir(cacheDir).filePath(key + ".png");
-}
-
-static void applyModelImage(QLabel* label, const QPixmap& source) {
-    if (!label || source.isNull()) return;
-    const QSize target = label->size();
-    QPixmap scaled = source.scaled(target, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-    const int x = std::max(0, (scaled.width() - target.width()) / 2);
-    const int y = std::max(0, (scaled.height() - target.height()) / 2);
-    label->setPixmap(scaled.copy(x, y, target.width(), target.height()));
-    label->setText({});
-}
-
-void MainWindow::loadModelImage(QLabel* label, const QString& imageUrl) {
-    if (!label || imageUrl.isEmpty()) return;
-    const QUrl url(imageUrl);
-    const QString host = url.host().toLower();
-    if (url.scheme() != "https" || (host != "tone3000.com" && !host.endsWith(".tone3000.com"))) {
-        label->setText("Image unavailable");
-        return;
-    }
-
-    const QString cachePath = modelImageCachePath(imageUrl);
-    QPixmap cached(cachePath);
-    if (!cached.isNull()) {
-        applyModelImage(label, cached);
-        return;
-    }
-
-    label->setText("Loading image...");
-    QNetworkRequest request(url);
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-    QNetworkReply* reply = m_networkManager->get(request);
-    QPointer<QLabel> guardedLabel(label);
-    connect(reply, &QNetworkReply::finished, this, [reply, guardedLabel, cachePath]() {
-        const QByteArray data = reply->error() == QNetworkReply::NoError ? reply->readAll() : QByteArray{};
-        reply->deleteLater();
-        if (guardedLabel.isNull()) return;
-
-        QPixmap image;
-        if (data.size() <= 5 * 1024 * 1024 && image.loadFromData(data)) {
-            image.save(cachePath, "PNG");
-            applyModelImage(guardedLabel, image);
-        } else {
-            guardedLabel->setText("Image unavailable");
-        }
-    });
-}
-
 void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     // Clear parameters container
     m_parameterControlBindings.clear();
@@ -5074,7 +5023,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
 
             auto* imageLabel = new AmpPreviewLabel(namModule);
             imageLabel->setToolTip(meta.imageUrl.empty() ? "No model image supplied" : "Image supplied by TONE3000");
-            if (!meta.imageUrl.empty()) loadModelImage(imageLabel, QString::fromStdString(meta.imageUrl));
+            if (!meta.imageUrl.empty()) m_toneImageLoader->load(imageLabel, QString::fromStdString(meta.imageUrl));
             namMainFlow->addWidget(imageLabel);
 
             auto* modelInfo = new QWidget(namModule);

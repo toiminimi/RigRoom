@@ -1,4 +1,5 @@
 #include "Tone3000Dialog.h"
+#include "Tone3000ImageLoader.h"
 #include "CredentialStore.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -84,6 +85,7 @@ Tone3000Dialog::Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* pa
     
     setupUI();
     m_networkManager = new QNetworkAccessManager(this);
+    m_imageLoader = new Tone3000ImageLoader(this);
     m_searchDebounceTimer = new QTimer(this);
     m_searchDebounceTimer->setSingleShot(true);
     m_searchDebounceTimer->setInterval(400);
@@ -353,6 +355,12 @@ void Tone3000Dialog::setupUI() {
     auto* infoLayout = new QVBoxLayout(infoContent);
     infoLayout->setContentsMargins(14, 14, 14, 14);
     infoLayout->setAlignment(Qt::AlignTop);
+    m_infoImageLabel = new QLabel(infoContent);
+    m_infoImageLabel->setFixedHeight(176);
+    m_infoImageLabel->setMinimumWidth(240);
+    m_infoImageLabel->setAlignment(Qt::AlignCenter);
+    m_infoImageLabel->setStyleSheet("background: #111416; border: 1px solid #30363b; border-radius: 7px; color: #727b82;");
+    m_infoImageLabel->hide();
     m_infoTitleLabel = new QLabel("Capture details", infoContent);
     m_infoTitleLabel->setWordWrap(true);
     m_infoTitleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -384,6 +392,7 @@ void Tone3000Dialog::setupUI() {
             m_modelsCombo->setCurrentIndex(index);
         }
     });
+    infoLayout->addWidget(m_infoImageLabel);
     infoLayout->addWidget(m_infoTitleLabel);
     infoLayout->addWidget(m_infoCreatorLabel);
     infoLayout->addWidget(m_infoText);
@@ -921,12 +930,27 @@ void Tone3000Dialog::appendToneCard(const QJsonObject& tone, int index) {
     card->onClicked = [this, index]() { selectTone(index); };
     card->setCursor(Qt::PointingHandCursor);
     card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    card->setFixedHeight(78);
+    card->setFixedHeight(96);
     card->setStyleSheet(QString("QFrame { background-color: %1; border: 1px solid %2; border-radius: 10px; } QLabel { border: none; background: transparent; }")
         .arg(selected ? "#1d2730" : "#1b1e20", selected ? "#00a3e0" : "#2d3135"));
-    auto* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(14, 12, 14, 12);
-    layout->setSpacing(8);
+    auto* layout = new QHBoxLayout(card);
+    layout->setContentsMargins(10, 10, 14, 10);
+    layout->setSpacing(12);
+
+    auto* thumbnail = new QLabel("NAM", card);
+    thumbnail->setFixedSize(112, 74);
+    thumbnail->setAlignment(Qt::AlignCenter);
+    thumbnail->setStyleSheet(
+        "background: #111416; color: #7f8992; border: 1px solid #343b41; border-radius: 6px; "
+        "font-size: 11px; font-weight: bold; letter-spacing: 1px;"
+    );
+    const QString imageUrl = Tone3000ImageLoader::firstImageUrl(tone);
+    if (!imageUrl.isEmpty()) m_imageLoader->load(thumbnail, imageUrl);
+    layout->addWidget(thumbnail);
+
+    auto* textLayout = new QVBoxLayout();
+    textLayout->setContentsMargins(0, 0, 0, 0);
+    textLayout->setSpacing(7);
     auto* top = new QHBoxLayout();
     auto* title = new QLabel(tone["title"].toString(), card);
     title->setWordWrap(true);
@@ -941,7 +965,7 @@ void Tone3000Dialog::appendToneCard(const QJsonObject& tone, int index) {
         top->addWidget(favoriteBadge);
     }
     top->addWidget(meta);
-    layout->addLayout(top);
+    textLayout->addLayout(top);
 
     const int modelCount = tone["models_count"].toInt(tone["model_count"].toInt());
     auto* facts = new QLabel(QString("%1  •  %2 downloads  •  %3 favorites  •  %4 model%5")
@@ -951,13 +975,24 @@ void Tone3000Dialog::appendToneCard(const QJsonObject& tone, int index) {
         .arg(QString::number(modelCount))
         .arg(modelCount == 1 ? "" : "s"), card);
     facts->setStyleSheet("font-size: 12px; color: #b7bbc0;");
-    layout->addWidget(facts);
+    textLayout->addWidget(facts);
+    layout->addLayout(textLayout, 1);
 
     m_resultsLayout->addWidget(card);
 }
 
 void Tone3000Dialog::showToneInfo(const QJsonObject& tone) {
     if (!m_infoArea) return;
+    const QString imageUrl = Tone3000ImageLoader::firstImageUrl(tone);
+    m_infoImageLabel->clear();
+    if (imageUrl.isEmpty()) {
+        m_imageLoader->load(m_infoImageLabel, {});
+        m_infoImageLabel->hide();
+    } else {
+        m_infoImageLabel->setText("Loading image...");
+        m_infoImageLabel->show();
+        m_imageLoader->load(m_infoImageLabel, imageUrl);
+    }
     m_infoTitleLabel->setText(tone["title"].toString());
     const QJsonObject user = tone["user"].toObject();
     QString profileUrl = user["url"].toString().isEmpty() ? "https://www.tone3000.com/" + toneUsername(tone) : user["url"].toString();

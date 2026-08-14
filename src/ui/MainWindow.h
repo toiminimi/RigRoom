@@ -21,6 +21,7 @@
 
 class ExternalPluginUIWindow;
 class QSplitter;
+class Tone3000ImageLoader;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -162,8 +163,8 @@ private:
     bool promptUnsavedChanges();
 
     QNetworkAccessManager* m_networkManager = nullptr;
+    Tone3000ImageLoader* m_toneImageLoader = nullptr;
     QNetworkReply* m_currentDownloadReply = nullptr;
-    void loadModelImage(QLabel* label, const QString& imageUrl);
     void downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect = false);
     
 public:
