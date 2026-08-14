@@ -347,6 +347,12 @@ void AudioEngine::rebuildGraph() {
     auto pending = std::make_shared<RTGraphData>();
     pending->nodeRefs = m_nodes;
     pending->executionOrder = sorted;
+    pending->outgoingConnections.resize(sorted.size());
+
+    std::map<AudioNode*, size_t> executionIndices;
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        executionIndices[sorted[i]] = i;
+    }
     
     for (const auto& conn : m_connections) {
         AudioNode* src = nullptr;
@@ -389,7 +395,10 @@ void AudioEngine::rebuildGraph() {
                 rtConn.currentGain = conn.liveGain
                     ? conn.liveGain->load(std::memory_order_relaxed) * conn.gain
                     : conn.gain;
-                pending->rtConnections.push_back(rtConn);
+                auto sourceNode = executionIndices.find(src);
+                if (sourceNode != executionIndices.end()) {
+                    pending->outgoingConnections[sourceNode->second].push_back(rtConn);
+                }
             }
         }
     }
@@ -418,7 +427,19 @@ void AudioEngine::resumeProcessing() {
 
 int AudioEngine::processCallback(jack_nframes_t nframes, void* arg) {
     auto* engine = static_cast<AudioEngine*>(arg);
+#ifdef RIGROOM_ENABLE_RT_METRICS
+    // JACK's clock lets development builds retain the worst callback duration
+    // without allocating or taking a lock in the realtime path.
+    const jack_time_t startUsec = jack_get_time();
+#endif
     engine->processAudio(nframes);
+#ifdef RIGROOM_ENABLE_RT_METRICS
+    const uint64_t durationUsec = static_cast<uint64_t>(jack_get_time() - startUsec);
+    uint64_t previousMax = engine->m_maxProcessDurationUsec.load(std::memory_order_relaxed);
+    while (durationUsec > previousMax &&
+           !engine->m_maxProcessDurationUsec.compare_exchange_weak(
+               previousMax, durationUsec, std::memory_order_relaxed)) {}
+#endif
     return 0;
 }
 
@@ -498,32 +519,23 @@ void AudioEngine::processAudio(int numFrames) {
     }
     
     // 3. Traverse nodes in order, sum/move connections, and process
-    for (AudioNode* node : graph->executionOrder) {
+    for (size_t nodeIndex = 0; nodeIndex < graph->executionOrder.size(); ++nodeIndex) {
+        AudioNode* node = graph->executionOrder[nodeIndex];
         // Run DSP processing for the node
         node->process(numFrames);
         
-        // Push this node's outputs forward to all connected target input ports
-        for (auto& conn : graph->rtConnections) {
-            // Find if connection source belongs to this node's output buffers
-            bool isSrcOfNode = false;
-            for (const auto& port : node->getPorts()) {
-                if (!port.isInput && port.buffer == conn.srcBuffer) {
-                    isSrcOfNode = true;
-                    break;
-                }
+        // Connections are compiled by source node when the graph is rebuilt.
+        for (auto& conn : graph->outgoingConnections[nodeIndex]) {
+            const float targetGain = conn.liveGain
+                ? conn.liveGain->load(std::memory_order_relaxed) * conn.gain
+                : conn.gain;
+            const float gainStep = (targetGain - conn.currentGain) / std::max(1, numFrames);
+            float gain = conn.currentGain;
+            for (int i = 0; i < numFrames; ++i) {
+                gain += gainStep;
+                conn.dstBuffer[i] += conn.srcBuffer[i] * gain;
             }
-            if (isSrcOfNode) {
-                const float targetGain = conn.liveGain
-                    ? conn.liveGain->load(std::memory_order_relaxed) * conn.gain
-                    : conn.gain;
-                const float gainStep = (targetGain - conn.currentGain) / std::max(1, numFrames);
-                float gain = conn.currentGain;
-                for (int i = 0; i < numFrames; ++i) {
-                    gain += gainStep;
-                    conn.dstBuffer[i] += conn.srcBuffer[i] * gain;
-                }
-                conn.currentGain = targetGain;
-            }
+            conn.currentGain = targetGain;
         }
     }
     

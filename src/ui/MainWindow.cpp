@@ -17,6 +17,7 @@
 #include <QSplitter>
 #include <QHBoxLayout>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QPushButton>
 #include <QFileDialog>
@@ -87,11 +88,57 @@
 class ModernKnob : public QDial {
 public:
     explicit ModernKnob(QWidget* parent = nullptr) : QDial(parent) {
-        setMinimumSize(32, 32);
-        setMaximumSize(32, 32);
+        setFixedSize(52, 52);
         setNotchesVisible(false);
+        setWrapping(false);
+        setCursor(Qt::SizeVerCursor);
     }
+
+    void setDefaultValue(int value) { m_defaultValue = value; }
 protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton) {
+            m_dragStartPosition = event->position();
+            m_dragStartValue = value();
+            m_dragging = true;
+            setSliderDown(true);
+            setCursor(Qt::ClosedHandCursor);
+            event->accept();
+            return;
+        }
+        QDial::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (m_dragging) {
+            constexpr double normalTravel = 160.0;
+            constexpr double fineTravel = 1600.0;
+            const double travel = event->modifiers().testFlag(Qt::ShiftModifier) ? fineTravel : normalTravel;
+            const double delta = m_dragStartPosition.y() - event->position().y();
+            const int range = maximum() - minimum();
+            setValue(std::clamp(m_dragStartValue + qRound(delta * range / travel), minimum(), maximum()));
+            event->accept();
+            return;
+        }
+        QDial::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        if (m_dragging && event->button() == Qt::LeftButton) {
+            m_dragging = false;
+            setSliderDown(false);
+            setCursor(Qt::SizeVerCursor);
+            event->accept();
+            return;
+        }
+        QDial::mouseReleaseEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* event) override {
+        setValue(m_defaultValue);
+        event->accept();
+    }
+
     void paintEvent(QPaintEvent* event) override {
         Q_UNUSED(event);
         QPainter painter(this);
@@ -106,13 +153,24 @@ protected:
         painter.drawEllipse(rect);
 
         // Calculate value ratio
-        double valueRatio = static_cast<double>(value() - minimum()) / (maximum() - minimum());
+        const int valueRange = std::max(1, maximum() - minimum());
+        double valueRatio = static_cast<double>(value() - minimum()) / valueRange;
         if (valueRatio < 0.0) valueRatio = 0.0;
         if (valueRatio > 1.0) valueRatio = 1.0;
 
         // Angle math: bottom-left (225 degrees) to bottom-right (315 degrees is -45 degrees)
         double startAngle = 225.0;
         double spanAngle = -270.0 * valueRatio;
+
+        // Mark the default position so it is easy to return to a known value.
+        const double PI = 3.14159265358979323846;
+        const double defaultRatio = static_cast<double>(m_defaultValue - minimum()) / valueRange;
+        const double defaultAngle = (startAngle - 270.0 * std::clamp(defaultRatio, 0.0, 1.0)) * PI / 180.0;
+        const QPointF markerCenter = rect.center();
+        const double markerRadius = rect.width() / 2.0 - 1.5;
+        painter.setPen(QPen(QColor("#7B7F89"), 1.5, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(markerCenter + QPointF((markerRadius - 4.0) * cos(defaultAngle), -(markerRadius - 4.0) * sin(defaultAngle)),
+                         markerCenter + QPointF(markerRadius * cos(defaultAngle), -markerRadius * sin(defaultAngle)));
 
         // Draw active value arc (light blue #00B0FF)
         QPen arcPen(QColor("#00B0FF"), 3);
@@ -128,7 +186,6 @@ protected:
         painter.drawEllipse(innerRect);
 
         // Draw indicator dot
-        const double PI = 3.14159265358979323846;
         double angleRad = (startAngle + spanAngle) * PI / 180.0;
         
         QPointF center = innerRect.center();
@@ -138,7 +195,154 @@ protected:
         painter.setPen(Qt::NoPen);
         painter.setBrush(QColor("#FFFFFF"));
         painter.drawEllipse(dotPos, 1.5, 1.5);
+
+        if (hasFocus()) {
+            painter.setPen(QPen(QColor("#80D8FF"), 1, Qt::DashLine));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawEllipse(rect.adjusted(-1, -1, 1, 1));
+        }
     }
+
+private:
+    int m_defaultValue = 500;
+    int m_dragStartValue = 0;
+    QPointF m_dragStartPosition;
+    bool m_dragging = false;
+};
+
+class AmpPreviewLabel final : public QLabel {
+public:
+    explicit AmpPreviewLabel(QWidget* parent = nullptr) : QLabel(parent) {
+        setFixedSize(200, 110);
+        setAlignment(Qt::AlignCenter);
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        Q_UNUSED(event);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const QRectF frame = rect().adjusted(1, 1, -1, -1);
+        const QPixmap image = pixmap(Qt::ReturnByValue);
+        if (!image.isNull()) {
+            QPainterPath clip;
+            clip.addRoundedRect(frame, 6, 6);
+            painter.setClipPath(clip);
+            painter.drawPixmap(rect(), image);
+            painter.setClipping(false);
+            painter.setPen(QPen(QColor("#4A535D"), 1));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRoundedRect(frame, 6, 6);
+            return;
+        }
+
+        QLinearGradient shell(frame.topLeft(), frame.bottomLeft());
+        shell.setColorAt(0.0, QColor("#333840"));
+        shell.setColorAt(0.28, QColor("#242930"));
+        shell.setColorAt(1.0, QColor("#15191D"));
+        painter.setPen(QPen(QColor("#4A535D"), 1));
+        painter.setBrush(shell);
+        painter.drawRoundedRect(frame, 6, 6);
+
+        painter.setPen(QPen(QColor(255, 255, 255, 22), 1));
+        for (int y = 42; y < 96; y += 5) painter.drawLine(10, y, width() - 10, y);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor("#111419"));
+        painter.drawRoundedRect(QRectF(10, 10, width() - 20, 24), 3, 3);
+        for (int x = 24; x <= 72; x += 16) {
+            painter.setBrush(QColor("#D97B32"));
+            painter.drawEllipse(QPointF(x, 22), 2.5, 2.5);
+        }
+
+        QFont logoFont = painter.font();
+        logoFont.setBold(true);
+        logoFont.setPixelSize(15);
+        logoFont.setLetterSpacing(QFont::AbsoluteSpacing, 2.0);
+        painter.setFont(logoFont);
+        painter.setPen(QColor("#CDD3DA"));
+        painter.drawText(QRectF(90, 10, 96, 24), Qt::AlignCenter, "NAM");
+    }
+};
+
+class AmpModuleFrame final : public QFrame {
+public:
+    explicit AmpModuleFrame(QWidget* parent = nullptr) : QFrame(parent) {}
+
+    QSize sizeHint() const override {
+        QSize hint = QFrame::sizeHint();
+        hint.setWidth(1050);
+        return hint;
+    }
+
+    QSize minimumSizeHint() const override {
+        QSize hint = QFrame::minimumSizeHint();
+        hint.setWidth(320);
+        return hint;
+    }
+};
+
+class FlowLayout final : public QLayout {
+public:
+    explicit FlowLayout(QWidget* parent, int spacing = 8) : QLayout(parent) {
+        setContentsMargins(0, 0, 0, 0);
+        setSpacing(spacing);
+    }
+
+    ~FlowLayout() override {
+        while (QLayoutItem* item = takeAt(0)) delete item;
+    }
+
+    void addItem(QLayoutItem* item) override { m_items.push_back(item); }
+    int count() const override { return static_cast<int>(m_items.size()); }
+    QLayoutItem* itemAt(int index) const override {
+        return index >= 0 && index < count() ? m_items[index] : nullptr;
+    }
+    QLayoutItem* takeAt(int index) override {
+        if (index < 0 || index >= count()) return nullptr;
+        QLayoutItem* item = m_items[index];
+        m_items.erase(m_items.begin() + index);
+        return item;
+    }
+    Qt::Orientations expandingDirections() const override { return {}; }
+    bool hasHeightForWidth() const override { return true; }
+    int heightForWidth(int width) const override { return layoutItems(QRect(0, 0, width, 0), true); }
+    QSize minimumSize() const override {
+        QSize size;
+        for (QLayoutItem* item : m_items) size = size.expandedTo(item->minimumSize());
+        const QMargins margins = contentsMargins();
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
+    }
+    QSize sizeHint() const override { return minimumSize(); }
+    void setGeometry(const QRect& rect) override {
+        QLayout::setGeometry(rect);
+        layoutItems(rect, false);
+    }
+
+private:
+    int layoutItems(const QRect& rect, bool testOnly) const {
+        const QMargins margins = contentsMargins();
+        const QRect area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom());
+        int x = area.x();
+        int y = area.y();
+        int rowHeight = 0;
+
+        for (QLayoutItem* item : m_items) {
+            const QSize itemSize = item->sizeHint();
+            const int nextX = x + itemSize.width() + spacing();
+            if (nextX - spacing() > area.right() + 1 && rowHeight > 0) {
+                x = area.x();
+                y += rowHeight + spacing();
+                rowHeight = 0;
+            }
+            if (!testOnly) item->setGeometry(QRect(QPoint(x, y), itemSize));
+            x += itemSize.width() + spacing();
+            rowHeight = std::max(rowHeight, itemSize.height());
+        }
+        return y + rowHeight - rect.y() + margins.bottom();
+    }
+
+    std::vector<QLayoutItem*> m_items;
 };
 
 class ResetGainSlider final : public QSlider {
@@ -885,10 +1089,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QSettings windowSettings("RigRoom", "RigRoom");
     const QByteArray windowGeometry = windowSettings.value("main_window_geometry").toByteArray();
     if (!windowGeometry.isEmpty()) restoreGeometry(windowGeometry);
-    const QList<int> workspaceSizes = windowSettings.value("main_workspace_splitter").value<QList<int>>();
-    if (workspaceSizes.size() == m_workspaceSplitter->count()) {
-        QTimer::singleShot(0, this, [this, workspaceSizes]() { m_workspaceSplitter->setSizes(workspaceSizes); });
-    }
+    const QList<int> workspaceSizes = windowSettings.value("main_workspace_vertical_splitter").value<QList<int>>();
+    QTimer::singleShot(0, this, [this, workspaceSizes]() {
+        if (workspaceSizes.size() == m_workspaceSplitter->count()) {
+            m_workspaceSplitter->setSizes(workspaceSizes);
+            return;
+        }
+
+        constexpr int defaultInspectorHeight = 280;
+        const int inspectorHeight = std::clamp(defaultInspectorHeight, 180,
+                                                std::max(180, m_workspaceSplitter->height() - 260));
+        m_workspaceSplitter->setSizes({std::max(260, m_workspaceSplitter->height() - inspectorHeight), inspectorHeight});
+    });
     m_canvas->setSystemChannelModes(m_engine.isHardwareInputStereo(), m_engine.isHardwareOutputStereo());
     m_canvas->applyRoutingChange(true);
     if (!m_audioConfigured) {
@@ -1644,19 +1856,19 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(topBarWidget);
     
     // --- WORKSPACE SPLITTER ---
-    QSplitter* midSplitter = m_workspaceSplitter = new QSplitter(Qt::Horizontal, this);
+    QSplitter* midSplitter = m_workspaceSplitter = new QSplitter(Qt::Vertical, this);
     
     // Center: Node Graph Canvas
     m_canvas = new NodeCanvas(&m_engine, this);
-    m_canvas->setMinimumWidth(0);
+    m_canvas->setMinimumHeight(260);
     midSplitter->addWidget(m_canvas);
     midSplitter->setStretchFactor(0, 1);
     
-    // Right panel: parameter sliders
+    // Bottom inspector: centered control shelf
     m_paramContainer = new QWidget(this);
-    m_paramContainer->setMinimumWidth(240);
-    m_paramContainer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    m_paramContainer->setStyleSheet("background-color: #1E1E1E; border-left: 1px solid #333333;");
+    m_paramContainer->setMinimumHeight(180);
+    m_paramContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_paramContainer->setStyleSheet("background-color: #1E1E1E; border-top: 1px solid #333333;");
     
     QVBoxLayout* rightLayout = new QVBoxLayout(m_paramContainer);
     rightLayout->setContentsMargins(12, 12, 12, 12);
@@ -1673,16 +1885,26 @@ void MainWindow::setupUI() {
     paramScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     paramScroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* paramContent = new QWidget(paramScroll);
-    m_paramLayout = new QVBoxLayout(paramContent);
+    auto* paramContentLayout = new QHBoxLayout(paramContent);
+    paramContentLayout->setContentsMargins(4, 0, 4, 0);
+    paramContentLayout->setSpacing(0);
+    auto* paramShelf = new QWidget(paramContent);
+    paramShelf->setObjectName("paramShelf");
+    paramShelf->setMaximumWidth(1400);
+    paramShelf->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    paramShelf->setStyleSheet("QWidget#paramShelf { background: transparent; }");
+    m_paramLayout = new QVBoxLayout(paramShelf);
     m_paramLayout->setContentsMargins(0, 0, 0, 0);
     m_paramLayout->setSpacing(6);
     m_paramLayout->setAlignment(Qt::AlignTop);
+    paramContentLayout->addStretch(1);
+    paramContentLayout->addWidget(paramShelf, 100, Qt::AlignTop);
+    paramContentLayout->addStretch(1);
     paramScroll->setWidget(paramContent);
     rightLayout->addWidget(paramScroll, 1);
     
     midSplitter->addWidget(m_paramContainer);
     midSplitter->setStretchFactor(1, 0);
-    midSplitter->setSizes({960, 260});
     
     mainLayout->addWidget(midSplitter);
     
@@ -1708,6 +1930,7 @@ void MainWindow::setupUI() {
     );
     connect(m_dspCpuButton, &QToolButton::clicked, this, [this]() {
         m_peakCpuLoad = m_smoothedCpuLoad;
+        m_engine.resetMaxProcessDurationUsec();
     });
     statusLayout->addWidget(m_dspCpuButton);
     statusLayout->addSpacing(8);
@@ -2058,6 +2281,7 @@ bool MainWindow::savePluginPreset(const std::shared_ptr<AudioNode>& node, const 
         {"gearType", QString::fromStdString(meta.gearType)},
         {"gearMake", QString::fromStdString(meta.gearMake)},
         {"gearModel", QString::fromStdString(meta.gearModel)},
+        {"imageUrl", QString::fromStdString(meta.imageUrl)},
         {"tags", QString::fromStdString(meta.tags)},
         {"description", QString::fromStdString(meta.description)},
         {"version", QString::fromStdString(meta.version)},
@@ -2134,6 +2358,7 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
         meta.gearType = metaObj.value("gearType").toString().toStdString();
         meta.gearMake = metaObj.value("gearMake").toString().toStdString();
         meta.gearModel = metaObj.value("gearModel").toString().toStdString();
+        meta.imageUrl = metaObj.value("imageUrl").toString().toStdString();
         meta.tags = metaObj.value("tags").toString().toStdString();
         meta.description = metaObj.value("description").toString().toStdString();
         meta.version = metaObj.value("version").toString().toStdString();
@@ -2354,7 +2579,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (promptUnsavedChanges()) {
         QSettings windowSettings("RigRoom", "RigRoom");
         windowSettings.setValue("main_window_geometry", saveGeometry());
-        windowSettings.setValue("main_workspace_splitter", QVariant::fromValue(m_workspaceSplitter->sizes()));
+        windowSettings.setValue("main_workspace_vertical_splitter", QVariant::fromValue(m_workspaceSplitter->sizes()));
         saveConfigSettings();
         closeAllPluginUIs();
         event->accept();
@@ -2856,32 +3081,40 @@ void MainWindow::updateCPUStatus() {
 
         const int displayCpu = qRound(m_smoothedCpuLoad);
         if (m_dspCpuButton) {
-            if (displayCpu >= 85) {
-                m_dspCpuButton->setText(QString("DSP %1% BOTTLENECK").arg(displayCpu));
+            const int cpuSeverity = displayCpu >= 85 ? 2 : displayCpu >= 70 ? 1 : 0;
+            if (displayCpu != m_lastCpuDisplay) {
+                m_dspCpuButton->setText(cpuSeverity == 2
+                    ? QString("DSP %1% BOTTLENECK").arg(displayCpu)
+                    : QString("DSP %1%").arg(displayCpu));
+                m_lastCpuDisplay = displayCpu;
+            }
+            if (cpuSeverity != m_lastCpuSeverity && cpuSeverity == 2) {
                 m_dspCpuButton->setStyleSheet(
                     "QToolButton { background-color: #D32F2F; color: white; font-weight: bold; border-radius: 4px; padding: 2px 8px; border: none; }"
                     "QToolButton:hover { background-color: #F44336; }"
                 );
-            } else if (displayCpu >= 70) {
-                m_dspCpuButton->setText(QString("DSP %1%").arg(displayCpu));
+            } else if (cpuSeverity != m_lastCpuSeverity && cpuSeverity == 1) {
                 m_dspCpuButton->setStyleSheet(
                     "QToolButton { background-color: #FBC02D; color: #18181B; font-weight: bold; border-radius: 4px; padding: 2px 8px; border: none; }"
                     "QToolButton:hover { background-color: #FDD835; }"
                 );
-            } else {
-                m_dspCpuButton->setText(QString("DSP %1%").arg(displayCpu));
+            } else if (cpuSeverity != m_lastCpuSeverity) {
                 m_dspCpuButton->setStyleSheet(
                     "QToolButton { background-color: #263238; color: #80CBC4; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
                     "QToolButton:hover { background-color: #37474F; }"
                 );
             }
-            m_dspCpuButton->setToolTip(
-                QString("DSP CPU Load: %1%\nPeak Load: %2%\nBuffer: %3 frames @ %4 Hz\nClick to reset peak")
-                    .arg(displayCpu)
-                    .arg(qRound(m_peakCpuLoad))
-                    .arg(m_engine.getBufferSize())
-                    .arg(static_cast<int>(m_engine.getSampleRate()))
-            );
+            m_lastCpuSeverity = cpuSeverity;
+            QString tooltip = QString("DSP CPU Load: %1%\nPeak Load: %2%\nBuffer: %3 frames @ %4 Hz")
+                .arg(displayCpu)
+                .arg(qRound(m_peakCpuLoad))
+                .arg(m_engine.getBufferSize())
+                .arg(static_cast<int>(m_engine.getSampleRate()));
+#ifdef RIGROOM_ENABLE_RT_METRICS
+            tooltip += QString("\nWorst callback: %1 us")
+                .arg(m_engine.getMaxProcessDurationUsec());
+#endif
+            m_dspCpuButton->setToolTip(tooltip + "\nClick to reset peak");
         }
     }
     
@@ -2909,14 +3142,24 @@ void MainWindow::updateCPUStatus() {
     };
     const int inputValue = meterValue(m_inputLevelDecay);
     const int outputValue = meterValue(m_outputLevelDecay);
-    m_inputMeter->setValue(inputValue);
-    m_outputMeter->setValue(outputValue);
-    if (m_inputPopupMeter && m_inputPopupMeter->isVisible()) m_inputPopupMeter->setValue(inputValue);
-    if (m_outputPopupMeter && m_outputPopupMeter->isVisible()) m_outputPopupMeter->setValue(outputValue);
+    if (inputValue != m_lastInputMeterValue) {
+        m_inputMeter->setValue(inputValue);
+        m_lastInputMeterValue = inputValue;
+    }
+    if (m_inputPopupMeter && m_inputPopupMeter->isVisible() && m_inputPopupMeter->value() != inputValue) {
+        m_inputPopupMeter->setValue(inputValue);
+    }
+    if (outputValue != m_lastOutputMeterValue) {
+        m_outputMeter->setValue(outputValue);
+        m_lastOutputMeterValue = outputValue;
+    }
+    if (m_outputPopupMeter && m_outputPopupMeter->isVisible() && m_outputPopupMeter->value() != outputValue) {
+        m_outputPopupMeter->setValue(outputValue);
+    }
 
     // Update XRun count
     const uint32_t xruns = m_engine.getXRunCount();
-    if (m_xrunButton) {
+    if (m_xrunButton && xruns != m_lastXrunCount) {
         m_xrunButton->setText(QString("XRuns: %1").arg(xruns));
         if (xruns > 0) {
             m_xrunButton->setStyleSheet(
@@ -2929,6 +3172,7 @@ void MainWindow::updateCPUStatus() {
                 "QToolButton:hover { background-color: #37474F; }"
             );
         }
+        m_lastXrunCount = xruns;
     }
 
     // Check clipping with hold decay (holds for ~1.5s after clipping stops)
@@ -3009,6 +3253,7 @@ void MainWindow::savePresetToFile(const QString& path) {
                 nodeObj["model_file_path"] = QString::fromStdString(node->getModelFilePath());
                 nodeObj["model_display_name"] = QString::fromStdString(node->getModelDisplayName());
                 nodeObj["model_source_url"] = QString::fromStdString(node->getModelSourceUrl());
+                nodeObj["model_image_url"] = QString::fromStdString(node->getModelMetadata().imageUrl);
                 
                 // Serialize file properties
                 QJsonObject filePropsObj;
@@ -3215,6 +3460,9 @@ void MainWindow::loadPresetFromFile(const QString& path) {
             }
             node->setModelDisplayName(nObj["model_display_name"].toString().toStdString());
             node->setModelSourceUrl(nObj["model_source_url"].toString().toStdString());
+            AudioNode::ModelMetadata restoredMetadata = node->getModelMetadata();
+            restoredMetadata.imageUrl = nObj["model_image_url"].toString().toStdString();
+            node->setModelMetadata(restoredMetadata);
             
             QJsonObject filePropsObj = nObj["file_properties"].toObject();
             for (auto it = filePropsObj.constBegin(); it != filePropsObj.constEnd(); ++it) {
@@ -4253,6 +4501,59 @@ static void parseNamFileMetadata(const QString& filePath, AudioNode::ModelMetada
     }
 }
 
+static QString modelImageCachePath(const QString& imageUrl) {
+    const QString cacheDir = QDir::homePath() + "/.cache/RigRoom/tone3000/images";
+    QDir().mkpath(cacheDir);
+    const QString key = QString::fromLatin1(QCryptographicHash::hash(imageUrl.toUtf8(), QCryptographicHash::Sha256).toHex());
+    return QDir(cacheDir).filePath(key + ".png");
+}
+
+static void applyModelImage(QLabel* label, const QPixmap& source) {
+    if (!label || source.isNull()) return;
+    const QSize target = label->size();
+    QPixmap scaled = source.scaled(target, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    const int x = std::max(0, (scaled.width() - target.width()) / 2);
+    const int y = std::max(0, (scaled.height() - target.height()) / 2);
+    label->setPixmap(scaled.copy(x, y, target.width(), target.height()));
+    label->setText({});
+}
+
+void MainWindow::loadModelImage(QLabel* label, const QString& imageUrl) {
+    if (!label || imageUrl.isEmpty()) return;
+    const QUrl url(imageUrl);
+    const QString host = url.host().toLower();
+    if (url.scheme() != "https" || (host != "tone3000.com" && !host.endsWith(".tone3000.com"))) {
+        label->setText("Image unavailable");
+        return;
+    }
+
+    const QString cachePath = modelImageCachePath(imageUrl);
+    QPixmap cached(cachePath);
+    if (!cached.isNull()) {
+        applyModelImage(label, cached);
+        return;
+    }
+
+    label->setText("Loading image...");
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = m_networkManager->get(request);
+    QPointer<QLabel> guardedLabel(label);
+    connect(reply, &QNetworkReply::finished, this, [reply, guardedLabel, cachePath]() {
+        const QByteArray data = reply->error() == QNetworkReply::NoError ? reply->readAll() : QByteArray{};
+        reply->deleteLater();
+        if (guardedLabel.isNull()) return;
+
+        QPixmap image;
+        if (data.size() <= 5 * 1024 * 1024 && image.loadFromData(data)) {
+            image.save(cachePath, "PNG");
+            applyModelImage(guardedLabel, image);
+        } else {
+            guardedLabel->setText("Image unavailable");
+        }
+    });
+}
+
 void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     // Clear parameters container
     m_parameterControlBindings.clear();
@@ -4295,17 +4596,37 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     }
 
     bool isPluginNode = (node->getType() == NodeType::LV2Plugin ||
-                         node->getType() == NodeType::VST3Plugin ||
-                         node->getType() == NodeType::CLAPPlugin);
+                          node->getType() == NodeType::VST3Plugin ||
+                          node->getType() == NodeType::CLAPPlugin);
+    QHBoxLayout* pluginActions = nullptr;
 
     if (isPluginNode) {
+        auto* pluginHeader = new QFrame(m_paramContainer);
+        pluginHeader->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        pluginHeader->setStyleSheet("QFrame { background: #202126; border: 1px solid #353741; border-radius: 6px; }");
+        auto* pluginHeaderLayout = new QHBoxLayout(pluginHeader);
+        pluginHeaderLayout->setContentsMargins(12, 7, 8, 7);
+        pluginHeaderLayout->setSpacing(8);
+
+        auto* pluginName = new QLabel(QString::fromStdString(node->getName()), pluginHeader);
+        pluginName->setStyleSheet("font-weight: bold; color: #F1F3F6; font-size: 13px; border: none;");
+        pluginHeaderLayout->addWidget(pluginName);
+
+        const QString format = node->getType() == NodeType::LV2Plugin ? "LV2"
+            : node->getType() == NodeType::VST3Plugin ? "VST3" : "CLAP";
+        auto* formatBadge = new QLabel(format, pluginHeader);
+        formatBadge->setStyleSheet("background: #273746; color: #80D8FF; border: none; border-radius: 3px; font-size: 10px; font-weight: bold; padding: 2px 5px;");
+        pluginHeaderLayout->addWidget(formatBadge);
+        pluginActions = pluginHeaderLayout;
+        m_paramLayout->addWidget(pluginHeader, 0, Qt::AlignHCenter);
+
         auto* presetsButton = new QPushButton("Plugin Presets ▾", m_paramContainer);
         presetsButton->setToolTip("Load, save, and manage reusable settings for this plugin");
         presetsButton->setStyleSheet(
             "QPushButton { background-color: #333338; color: #C5DDE8; padding: 5px 8px; font-size: 11px; font-weight: bold; border-radius: 4px; border: none; }"
             "QPushButton:hover { background-color: #44444A; color: #FFFFFF; }"
         );
-        m_paramLayout->addWidget(presetsButton);
+        pluginActions->addWidget(presetsButton);
 
         connect(presetsButton, &QPushButton::clicked, this, [this, node, presetsButton]() {
             QMenu menu(this);
@@ -4382,10 +4703,6 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             }
         });
     
-        auto* presetSeparator = new QFrame(m_paramContainer);
-        presetSeparator->setFrameShape(QFrame::HLine);
-        presetSeparator->setStyleSheet("background-color: #333333; margin-bottom: 4px;");
-        m_paramLayout->addWidget(presetSeparator);
     }
     
     // Add "Open Graphical UI..." button if plugin has UIs
@@ -4436,7 +4753,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
                 "QPushButton:hover { background-color: #009688; }"
             );
-            m_paramLayout->addWidget(uiBtn);
+            pluginActions->addWidget(uiBtn);
             
             connect(uiBtn, &QPushButton::clicked, this, [this, lv2Node, uiToOpen, isGtkUi, isX11Ui]() {
                 if (raisePluginUIForNode(lv2Node)) return;
@@ -4452,11 +4769,6 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 }
             });
             
-            QFrame* uiSeparator = new QFrame(m_paramContainer);
-            uiSeparator->setFrameShape(QFrame::HLine);
-            uiSeparator->setFrameShadow(QFrame::Sunken);
-            uiSeparator->setStyleSheet("background-color: #333333; margin-top: 6px; margin-bottom: 6px;");
-            m_paramLayout->addWidget(uiSeparator);
         }
     }
     
@@ -4468,7 +4780,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
             "QPushButton:hover { background-color: #009688; }"
         );
-        m_paramLayout->addWidget(uiBtn);
+        pluginActions->addWidget(uiBtn);
         
         connect(uiBtn, &QPushButton::clicked, this, [this, vst3Node]() {
             if (raisePluginUIForNode(vst3Node)) return;
@@ -4476,10 +4788,6 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             uiWin->show();
         });
         
-        QFrame* uiSeparator = new QFrame(m_paramContainer);
-        uiSeparator->setFrameShape(QFrame::HLine);
-        uiSeparator->setStyleSheet("background-color: #333333; margin-top: 6px; margin-bottom: 6px;");
-        m_paramLayout->addWidget(uiSeparator);
     }
 
     auto* clapNode = dynamic_cast<CLAPPluginNode*>(node.get());
@@ -4490,7 +4798,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 8px; font-size: 11px; border: none; }"
             "QPushButton:hover { background-color: #009688; }"
         );
-        m_paramLayout->addWidget(uiBtn);
+        pluginActions->addWidget(uiBtn);
         
         connect(uiBtn, &QPushButton::clicked, this, [this, clapNode]() {
             if (raisePluginUIForNode(clapNode)) return;
@@ -4498,47 +4806,140 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             uiWin->show();
         });
         
-        QFrame* uiSeparator = new QFrame(m_paramContainer);
-        uiSeparator->setFrameShape(QFrame::HLine);
-        uiSeparator->setStyleSheet("background-color: #333333; margin-top: 6px; margin-bottom: 6px;");
-        m_paramLayout->addWidget(uiSeparator);
     }
     
-    bool hasControlPorts = false;
+    const std::vector<AudioNode::FileProperty> fileProps = node->getFileProperties();
+    static constexpr const char* namModelUri = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model";
+    const auto namProperty = std::find_if(fileProps.begin(), fileProps.end(), [](const auto& property) {
+        return property.uri == namModelUri;
+    });
+    const bool hasNamModel = namProperty != fileProps.end();
+    const bool hasGenericResources = std::any_of(fileProps.begin(), fileProps.end(), [](const auto& property) {
+        return property.uri != namModelUri;
+    }) || (!hasNamModel && !node->getModelVariants().empty());
+    int controlPortCount = 0;
     for (const auto& param : node->getControlPorts()) {
-        if (!param.isOutput) {
-            hasControlPorts = true;
-            break;
-        }
+        if (!param.isOutput) ++controlPortCount;
     }
+    const bool hasControlPorts = controlPortCount > 0;
+
+    QWidget* parameterSection = nullptr;
+    QVBoxLayout* parameterSectionLayout = nullptr;
+    if (!hasNamModel) {
+        parameterSection = new QWidget(m_paramContainer);
+        parameterSection->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        parameterSectionLayout = new QVBoxLayout(parameterSection);
+        parameterSectionLayout->setContentsMargins(0, 0, 0, 0);
+        parameterSectionLayout->setSpacing(6);
+    }
+
+    QFrame* namModule = nullptr;
+    QVBoxLayout* namInfoLayout = nullptr;
+    QHBoxLayout* namFooterLayout = nullptr;
+    FlowLayout* namMainFlow = nullptr;
+    QWidget* namKnobBank = nullptr;
+    QVBoxLayout* controlHostLayout = parameterSectionLayout;
+    if (hasNamModel) {
+        namModule = new AmpModuleFrame(m_paramContainer);
+        namModule->setObjectName("namModelModule");
+        namModule->setMaximumWidth(1180);
+        namModule->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        namModule->setStyleSheet(
+            "QFrame#namModelModule { background: #20242A; border: 1px solid #3A424B; border-radius: 8px; }"
+            "QFrame#namModelModule QLabel { border: none; background: transparent; }"
+        );
+        auto* moduleLayout = new QVBoxLayout(namModule);
+        moduleLayout->setContentsMargins(16, 12, 16, 12);
+        moduleLayout->setSpacing(10);
+        auto* moduleHeader = new QHBoxLayout();
+        auto* moduleTitle = new QLabel("NAM MODEL", namModule);
+        moduleTitle->setStyleSheet("color: #F0A35A; font-size: 10px; font-weight: bold; letter-spacing: 1.2px;");
+        moduleHeader->addWidget(moduleTitle);
+        auto* moduleSubtitle = new QLabel("Neural Amp Modeler", namModule);
+        moduleSubtitle->setStyleSheet("color: #9AA6B4; font-size: 11px;");
+        moduleHeader->addWidget(moduleSubtitle);
+        moduleHeader->addStretch();
+        moduleLayout->addLayout(moduleHeader);
+
+        namMainFlow = new FlowLayout(nullptr, 16);
+        moduleLayout->addLayout(namMainFlow);
+        namKnobBank = new QWidget(namModule);
+        namKnobBank->setObjectName("namKnobBank");
+        const int visibleControls = std::min(controlPortCount, 6);
+        const int knobBankWidth = visibleControls * 96 + std::max(0, visibleControls - 1) * 8 + 8;
+        namKnobBank->setFixedWidth(visibleControls > 0 ? knobBankWidth : 220);
+        const int controlRows = std::max(1, (controlPortCount + 5) / 6);
+        namKnobBank->setFixedHeight(controlRows * 92);
+        namKnobBank->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        namKnobBank->setStyleSheet("QWidget#namKnobBank { background: transparent; border-left: 1px solid #3A424B; padding-left: 10px; }");
+        controlHostLayout = new QVBoxLayout(namKnobBank);
+        controlHostLayout->setContentsMargins(8, 0, 0, 0);
+        controlHostLayout->setSpacing(2);
+
+        auto* footerRule = new QFrame(namModule);
+        footerRule->setFrameShape(QFrame::HLine);
+        footerRule->setStyleSheet("color: #3A424B;");
+        moduleLayout->addWidget(footerRule);
+        namFooterLayout = new QHBoxLayout();
+        namFooterLayout->setContentsMargins(0, 0, 0, 0);
+        namFooterLayout->setSpacing(8);
+        moduleLayout->addLayout(namFooterLayout);
+        m_paramLayout->addWidget(namModule, 0, Qt::AlignHCenter | Qt::AlignTop);
+    }
+
+    QWidget* resourceSection = nullptr;
+    QVBoxLayout* resourceSectionLayout = nullptr;
+    if (hasGenericResources) {
+        resourceSection = new QFrame(m_paramContainer);
+        resourceSection->setObjectName("resourceSection");
+        resourceSection->setStyleSheet(
+            "QFrame#resourceSection { background: transparent; border-bottom: 1px solid #343640; }"
+        );
+        resourceSectionLayout = new QVBoxLayout(resourceSection);
+        resourceSectionLayout->setContentsMargins(0, 2, 0, 9);
+        resourceSectionLayout->setSpacing(5);
+        auto* resourcesTitle = new QLabel("RESOURCES", resourceSection);
+        resourcesTitle->setStyleSheet("color: #8F98A8; font-size: 10px; font-weight: bold; letter-spacing: 1px; border: none;");
+        resourceSectionLayout->addWidget(resourcesTitle);
+        m_paramLayout->addWidget(resourceSection);
+    }
+
+    if (!hasNamModel) m_paramLayout->addWidget(parameterSection);
 
     if (!hasControlPorts) {
+        QWidget* controlParent = hasNamModel ? namKnobBank : parameterSection;
         if (hasCustomUI) {
-            QLabel* infoLabel = new QLabel("All controls are managed directly in the graphical interface.", m_paramContainer);
+            QLabel* infoLabel = new QLabel("All controls are managed directly in the graphical interface.", controlParent);
             infoLabel->setStyleSheet("color: #888888; font-size: 11px; font-style: italic; margin: 4px;");
             infoLabel->setWordWrap(true);
-            m_paramLayout->addWidget(infoLabel);
+            controlHostLayout->addWidget(infoLabel);
         } else {
-            QLabel* noParamLabel = new QLabel("No parameters available for this plugin.", m_paramContainer);
+            QLabel* noParamLabel = new QLabel("No parameters available for this plugin.", controlParent);
             noParamLabel->setStyleSheet("color: #888888; font-size: 11px; font-style: italic; margin: 4px;");
-            m_paramLayout->addWidget(noParamLabel);
+            controlHostLayout->addWidget(noParamLabel);
         }
     }
 
-    // Create controls for parameters
+    auto* controlFlow = new FlowLayout(nullptr, 8);
+    if (hasControlPorts) controlHostLayout->addLayout(controlFlow);
+    int controlCount = 0;
+
     for (auto& param : node->getControlPorts()) {
         if (param.isOutput) continue; // Skip meter outputs
         
-        QWidget* rowWidget = new QWidget(m_paramContainer);
-        QHBoxLayout* rowLayout = new QHBoxLayout(rowWidget);
-        rowLayout->setContentsMargins(0, 4, 0, 4);
+        QWidget* rowWidget = new QWidget(hasNamModel ? namKnobBank : parameterSection);
+        rowWidget->setFixedWidth(hasNamModel ? 96 : 112);
+        rowWidget->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+        rowWidget->setStyleSheet("background: transparent; border: none;");
+        QVBoxLayout* rowLayout = new QVBoxLayout(rowWidget);
+        rowLayout->setContentsMargins(4, 3, 4, 3);
+        rowLayout->setSpacing(3);
         
         QLabel* label = new QLabel(QString::fromStdString(param.name), rowWidget);
         label->setToolTip(QString::fromStdString(param.name));
-        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-        label->setMinimumWidth(60);
-        label->setMaximumWidth(110);
-        label->setWordWrap(true);
+        label->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
+        label->setStyleSheet("color: #C9CDD5; font-size: 10px; border: none;");
+        label->setWordWrap(false);
         rowLayout->addWidget(label);
         
         uint32_t idx = param.index;
@@ -4551,11 +4952,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         };
 
         if (param.isToggle) {
-            auto* toggle = new QCheckBox(rowWidget);
+            auto* toggle = new QCheckBox("Enabled", rowWidget);
             toggle->setChecked(param.value > (min + max) * 0.5f);
             makeResettable(toggle);
-            rowLayout->addWidget(toggle);
-            rowLayout->addStretch();
+            rowLayout->addWidget(toggle, 0, Qt::AlignHCenter);
             connect(toggle, &QCheckBox::toggled, this, [this, node, idx, min, max](bool checked) {
                 node->setParameter(idx, checked ? max : min);
                 setUnsavedChanges(true);
@@ -4582,7 +4982,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             }
             combo->setCurrentIndex(selected);
             makeResettable(combo);
-            rowLayout->addWidget(combo, 1);
+            combo->setFixedWidth(102);
+            rowLayout->addWidget(combo, 0, Qt::AlignHCenter);
             connect(combo, &QComboBox::currentIndexChanged, this, [this, node, idx, combo](int selectedIndex) {
                 node->setParameter(idx, combo->itemData(selectedIndex).toFloat());
                 setUnsavedChanges(true);
@@ -4606,7 +5007,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             spinBox->setRange(qFloor(min), qCeil(max));
             spinBox->setValue(qRound(param.value));
             makeResettable(spinBox);
-            rowLayout->addWidget(spinBox, 1);
+            spinBox->setFixedWidth(82);
+            rowLayout->addWidget(spinBox, 0, Qt::AlignHCenter);
             connect(spinBox, &QSpinBox::valueChanged, this, [this, node, idx](int value) {
                 node->setParameter(idx, static_cast<float>(value));
                 setUnsavedChanges(true);
@@ -4618,111 +5020,183 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 }
             }});
         } else {
-            auto* slider = new QSlider(Qt::Horizontal, rowWidget);
-            slider->setRange(0, 1000);
+            auto* knob = new ModernKnob(rowWidget);
+            knob->setRange(0, 1000);
             const float normalized = max > min ? (param.value - min) / (max - min) : 0.0f;
-            slider->setValue(qRound(std::clamp(normalized, 0.0f, 1.0f) * 1000));
-            makeResettable(slider);
-            rowLayout->addWidget(slider);
+            knob->setValue(qRound(std::clamp(normalized, 0.0f, 1.0f) * 1000));
+            const float defaultNormalized = max > min ? (param.defaultVal - min) / (max - min) : 0.0f;
+            knob->setDefaultValue(qRound(std::clamp(defaultNormalized, 0.0f, 1.0f) * 1000));
+            knob->setToolTip("Drag to adjust. Double-click to reset.");
+            makeResettable(knob);
+            rowLayout->addWidget(knob, 0, Qt::AlignHCenter);
 
             auto* valueLabel = new QLabel(QString::number(param.value, 'f', 2), rowWidget);
-            valueLabel->setMinimumWidth(58);
+            valueLabel->setAlignment(Qt::AlignCenter);
             valueLabel->setCursor(Qt::IBeamCursor);
             valueLabel->setToolTip("Double-click to enter an exact value");
+            valueLabel->setStyleSheet("color: #80D8FF; font-size: 11px; border: none;");
             valueLabel->setProperty("parameterEdit", true);
             valueLabel->setProperty("parameterIndex", idx);
             valueLabel->setProperty("parameterMinimum", min);
             valueLabel->setProperty("parameterMaximum", max);
             valueLabel->installEventFilter(this);
             rowLayout->addWidget(valueLabel);
-            connect(slider, &QSlider::valueChanged, this, [this, node, idx, min, max, valueLabel](int value) {
+            connect(knob, &QDial::valueChanged, this, [this, node, idx, min, max, valueLabel](int value) {
                 const float floatVal = min + (value / 1000.0f) * (max - min);
                 node->setParameter(idx, floatVal);
                 valueLabel->setText(QString::number(floatVal, 'f', 2));
                 setUnsavedChanges(true);
             });
-            m_parameterControlBindings.push_back({idx, [slider, valueLabel, min, max](float value) {
-                if (slider->isSliderDown()) return;
+            m_parameterControlBindings.push_back({idx, [knob, valueLabel, min, max](float value) {
+                if (knob->isSliderDown()) return;
                 const float normalized = max > min ? (value - min) / (max - min) : 0.0f;
-                const QSignalBlocker blocker(slider);
-                slider->setValue(qRound(std::clamp(normalized, 0.0f, 1.0f) * 1000));
+                const QSignalBlocker blocker(knob);
+                knob->setValue(qRound(std::clamp(normalized, 0.0f, 1.0f) * 1000));
                 valueLabel->setText(QString::number(value, 'f', 2));
             }});
         }
         
-        m_paramLayout->addWidget(rowWidget);
+        controlFlow->addWidget(rowWidget);
+        ++controlCount;
     }
+    if (controlCount == 0) delete controlFlow;
     
     // Add custom file picker buttons dynamically for any file-loading parameters
-    std::vector<AudioNode::FileProperty> fileProps = node ? node->getFileProperties() : std::vector<AudioNode::FileProperty>{};
-    QLabel* namFileLabel = nullptr;
-    
     if (!fileProps.empty()) {
-        QFrame* separator = new QFrame(m_paramContainer);
-        separator->setFrameShape(QFrame::HLine);
-        separator->setFrameShadow(QFrame::Sunken);
-        separator->setStyleSheet("background-color: #333333; margin-top: 10px; margin-bottom: 10px;");
-        m_paramLayout->addWidget(separator);
         for (const auto& fp : fileProps) {
-        QFrame* fpFrame = new QFrame(m_paramContainer);
-        fpFrame->setStyleSheet("background-color: transparent; border: none; margin-bottom: 6px;");
+        if (fp.uri == namModelUri) {
+            const std::string currentPath = fp.fileValue;
+            AudioNode::ModelMetadata meta = node->getModelMetadata();
+            if (!currentPath.empty()) {
+                parseNamFileMetadata(QString::fromStdString(currentPath), meta);
+                node->setModelMetadata(meta);
+            }
+
+            auto* imageLabel = new AmpPreviewLabel(namModule);
+            imageLabel->setToolTip(meta.imageUrl.empty() ? "No model image supplied" : "Image supplied by TONE3000");
+            if (!meta.imageUrl.empty()) loadModelImage(imageLabel, QString::fromStdString(meta.imageUrl));
+            namMainFlow->addWidget(imageLabel);
+
+            auto* modelInfo = new QWidget(namModule);
+            modelInfo->setMinimumWidth(240);
+            modelInfo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            modelInfo->setStyleSheet("background: transparent;");
+            namInfoLayout = new QVBoxLayout(modelInfo);
+            namInfoLayout->setContentsMargins(0, 3, 0, 3);
+            namInfoLayout->setSpacing(4);
+            const QString fallbackName = currentPath.empty() ? "No model loaded" : QFileInfo(QString::fromStdString(currentPath)).completeBaseName();
+            const QString title = QString::fromStdString(meta.toneTitle.empty()
+                ? (node->getModelDisplayName().empty() ? fallbackName.toStdString() : node->getModelDisplayName())
+                : meta.toneTitle);
+            auto* titleLabel = new QLabel(title, modelInfo);
+            titleLabel->setWordWrap(true);
+            titleLabel->setStyleSheet("color: #F2F5F7; font-size: 16px; font-weight: bold;");
+            namInfoLayout->addWidget(titleLabel);
+            const QString author = QString::fromStdString(meta.author.empty() ? meta.modeledBy : meta.author);
+            auto* authorLabel = new QLabel(author.isEmpty() ? "Local model file" : "Captured by " + author, modelInfo);
+            authorLabel->setWordWrap(true);
+            authorLabel->setStyleSheet("color: #A6B1BC; font-size: 11px;");
+            namInfoLayout->addWidget(authorLabel);
+            namMainFlow->addWidget(modelInfo);
+            namMainFlow->addWidget(namKnobBank);
+
+            auto* browseBtn = new QPushButton("Browse TONE3000", namModule);
+            browseBtn->setToolTip("Browse and download a NAM model from TONE3000");
+            browseBtn->setStyleSheet(
+                "QPushButton { background: #D97B32; color: #16191D; font-weight: bold; border: none; border-radius: 4px; padding: 7px 11px; font-size: 11px; }"
+                "QPushButton:hover { background: #EE9146; } QPushButton:focus { outline: 1px solid #80D8FF; }"
+            );
+            auto* loadBtn = new QPushButton("Load Local File", namModule);
+            loadBtn->setStyleSheet(
+                "QPushButton { background: #303840; color: #DCE6EC; font-weight: bold; border: 1px solid #46515C; border-radius: 4px; padding: 6px 10px; font-size: 11px; }"
+                "QPushButton:hover { background: #3A454F; }"
+            );
+            namFooterLayout->addWidget(browseBtn);
+            namFooterLayout->addWidget(loadBtn);
+            if (!currentPath.empty()) {
+                auto* detailsBtn = new QPushButton("Model Details", namModule);
+                detailsBtn->setStyleSheet(
+                    "QPushButton { background: transparent; color: #80D8FF; font-weight: bold; border: 1px solid #3D5664; border-radius: 4px; padding: 6px 10px; font-size: 11px; }"
+                    "QPushButton:hover { background: #26343D; }"
+                );
+                namFooterLayout->addWidget(detailsBtn);
+                connect(detailsBtn, &QPushButton::clicked, this, [this, node]() {
+                    ModelDetailsDialog dialog(node, &m_engine, this);
+                    dialog.exec();
+                    QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+                });
+            }
+            namFooterLayout->addStretch();
+
+            const std::string uri = fp.uri;
+            connect(browseBtn, &QPushButton::clicked, this, [this, node, uri]() {
+                Tone3000Dialog dialog(node.get(), &m_engine, this);
+                if (dialog.exec() != QDialog::Accepted) return;
+                const std::string filePath = dialog.getDownloadedModelPath();
+                if (filePath.empty()) return;
+                m_engine.suspendProcessing();
+                node->setFileProperty(uri, filePath);
+                m_engine.resumeProcessing();
+                AudioNode::ModelMetadata metadata = dialog.getDownloadedMetadata();
+                parseNamFileMetadata(QString::fromStdString(filePath), metadata);
+                node->setModelMetadata(metadata);
+                node->setModelVariants(dialog.getDownloadedVariants());
+                const QString toneName = dialog.getDownloadedToneName();
+                node->setModelDisplayName((toneName.isEmpty() ? QFileInfo(QString::fromStdString(filePath)).fileName() : toneName).toStdString());
+                node->setModelSourceUrl(dialog.getDownloadedToneUrl().toStdString());
+                setUnsavedChanges(true);
+                saveConfigSettings();
+                QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+            });
+            connect(loadBtn, &QPushButton::clicked, this, [this, node, uri]() {
+                const QString filePath = QFileDialog::getOpenFileName(this, "Select File", "",
+                    "Neural Models (*.nam *.nammodel *.json *.aidax *.aidadspmodel);;All Files (*)");
+                if (filePath.isEmpty()) return;
+                m_engine.suspendProcessing();
+                node->setFileProperty(uri, filePath.toStdString());
+                m_engine.resumeProcessing();
+                AudioNode::ModelMetadata metadata;
+                metadata.toneTitle = QFileInfo(filePath).completeBaseName().toStdString();
+                parseNamFileMetadata(filePath, metadata);
+                node->setModelMetadata(metadata);
+                node->setModelDisplayName(metadata.toneTitle.empty() ? QFileInfo(filePath).fileName().toStdString() : metadata.toneTitle);
+                node->setModelSourceUrl({});
+                node->setModelVariants({});
+                setUnsavedChanges(true);
+                saveConfigSettings();
+                QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+            });
+            continue;
+        }
+        QFrame* fpFrame = new QFrame(resourceSection);
+        fpFrame->setStyleSheet("background: transparent; border: none;");
         QVBoxLayout* fpLayout = new QVBoxLayout(fpFrame);
-        fpLayout->setContentsMargins(0, 4, 0, 4);
-        fpLayout->setSpacing(4);
+        fpLayout->setContentsMargins(0, 2, 0, 2);
+        fpLayout->setSpacing(5);
+        auto* resourceInfoLayout = new QVBoxLayout();
+        resourceInfoLayout->setContentsMargins(0, 0, 0, 0);
+        resourceInfoLayout->setSpacing(2);
+        fpLayout->addLayout(resourceInfoLayout);
 
         QLabel* titleLabel = new QLabel(QString::fromStdString(fp.label), fpFrame);
         titleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 12px; background: transparent; border: none;");
-        fpLayout->addWidget(titleLabel);
+        resourceInfoLayout->addWidget(titleLabel);
 
         std::string currentPath = fp.fileValue;
-        if (fp.uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
-            const std::string& displayName = node->getModelDisplayName();
-            if (!currentPath.empty()) {
-                auto meta = node->getModelMetadata();
-                parseNamFileMetadata(QString::fromStdString(currentPath), meta);
-                node->setModelMetadata(meta);
-
-                size_t slash2 = currentPath.find_last_of("/\\");
-                std::string fname = (slash2 != std::string::npos) ? currentPath.substr(slash2 + 1) : currentPath;
-                QString titleText = QString::fromStdString(meta.toneTitle.empty() ? (displayName.empty() ? fname : displayName) : meta.toneTitle);
-                
-                QLabel* toneTitleLabel = new QLabel(QString("<b>%1</b>").arg(titleText.toHtmlEscaped()), fpFrame);
-                toneTitleLabel->setWordWrap(true);
-                toneTitleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-                toneTitleLabel->setMinimumWidth(0);
-                toneTitleLabel->setStyleSheet("font-size: 13px; color: #00B0FF; background: transparent; border: none;");
-                fpLayout->addWidget(toneTitleLabel);
-
-                QString authorStr = QString::fromStdString(meta.author.empty() ? meta.modeledBy : meta.author);
-                if (!authorStr.isEmpty()) {
-                    QLabel* authorLabel = new QLabel(QString("by <b>%1</b>").arg(authorStr.toHtmlEscaped()), fpFrame);
-                    authorLabel->setWordWrap(true);
-                    authorLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-                    authorLabel->setMinimumWidth(0);
-                    authorLabel->setStyleSheet("color: #A0A0A0; font-size: 11px; background: transparent; border: none;");
-                    fpLayout->addWidget(authorLabel);
-                }
-            } else {
-                QLabel* emptyLabel = new QLabel("No file loaded", fpFrame);
-                emptyLabel->setStyleSheet("color: #888888; font-size: 11px; font-style: italic; background: transparent; border: none;");
-                fpLayout->addWidget(emptyLabel);
-            }
+        QLabel* fileLabel = new QLabel(fpFrame);
+        fileLabel->setStyleSheet("color: #E0E0E0; font-size: 11px; font-style: italic; background: transparent; border: none;");
+        fileLabel->setWordWrap(true);
+        if (currentPath.empty()) {
+            fileLabel->setText("No file loaded");
         } else {
-            QLabel* fileLabel = new QLabel(fpFrame);
-            fileLabel->setStyleSheet("color: #E0E0E0; font-size: 11px; font-style: italic; background: transparent; border: none;");
-            fileLabel->setWordWrap(true);
-            if (currentPath.empty()) {
-                fileLabel->setText("No file loaded");
-            } else {
-                size_t slash = currentPath.find_last_of("/\\");
-                std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
-                fileLabel->setText("Loaded: " + QString::fromStdString(filename));
-            }
-            fpLayout->addWidget(fileLabel);
+            size_t slash = currentPath.find_last_of("/\\");
+            std::string filename = (slash != std::string::npos) ? currentPath.substr(slash + 1) : currentPath;
+            fileLabel->setText("Loaded: " + QString::fromStdString(filename));
         }
+        resourceInfoLayout->addWidget(fileLabel);
 
-        QVBoxLayout* btnLayout = new QVBoxLayout();
-        btnLayout->setContentsMargins(0, 4, 0, 0);
+        QHBoxLayout* btnLayout = new QHBoxLayout();
+        btnLayout->setContentsMargins(4, 0, 0, 0);
         btnLayout->setSpacing(4);
 
         QPushButton* loadBtn = new QPushButton("Load File...", fpFrame);
@@ -4733,57 +5207,6 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         btnLayout->addWidget(loadBtn);
 
         std::string uri = fp.uri;
-        if (uri == "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model") {
-            QPushButton* browseBtn = new QPushButton("Browse TONE3000...", fpFrame);
-            browseBtn->setStyleSheet(
-                "QPushButton { background-color: #2E7D32; color: white; font-weight: bold; border-radius: 4px; padding: 6px; font-size: 11px; border: none; }"
-                "QPushButton:hover { background-color: #388E3C; }"
-            );
-            btnLayout->addWidget(browseBtn);
-
-            if (!currentPath.empty()) {
-                QPushButton* detailsBtn = new QPushButton("ℹ️ Model Details...", fpFrame);
-                detailsBtn->setStyleSheet(
-                    "QPushButton { background-color: #1E2B37; color: #80DEEA; font-weight: bold; border-radius: 4px; padding: 6px; font-size: 11px; border: 1px solid #2B3A4A; }"
-                    "QPushButton:hover { background-color: #253748; color: #00B0FF; }"
-                );
-                btnLayout->addWidget(detailsBtn);
-
-                connect(detailsBtn, &QPushButton::clicked, this, [this, node]() {
-                    ModelDetailsDialog dialog(node, &m_engine, this);
-                    dialog.exec();
-                    QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
-                });
-            }
-
-            connect(browseBtn, &QPushButton::clicked, this, [this, node, uri]() {
-                Tone3000Dialog dialog(node.get(), &m_engine, this);
-                if (dialog.exec() == QDialog::Accepted) {
-                    std::string filePath = dialog.getDownloadedModelPath();
-                    if (!filePath.empty()) {
-                        m_engine.suspendProcessing();
-                        node->setFileProperty(uri, filePath);
-                        m_engine.resumeProcessing();
-                        
-                        AudioNode::ModelMetadata meta = dialog.getDownloadedMetadata();
-                        parseNamFileMetadata(QString::fromStdString(filePath), meta);
-                        node->setModelMetadata(meta);
-                        node->setModelVariants(dialog.getDownloadedVariants());
-
-                        size_t slash = filePath.find_last_of("/\\");
-                        std::string filename = (slash != std::string::npos) ? filePath.substr(slash + 1) : filePath;
-                        const QString toneName = dialog.getDownloadedToneName();
-                        node->setModelDisplayName((toneName.isEmpty() ? QString::fromStdString(filename) : toneName).toStdString());
-                        node->setModelSourceUrl(dialog.getDownloadedToneUrl().toStdString());
-                        
-                        setUnsavedChanges(true);
-                        saveConfigSettings();
-                        
-                        QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
-                    }
-                }
-            });
-        }
 
         fpLayout->addLayout(btnLayout);
 
@@ -4824,24 +5247,24 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             }
         });
 
-        m_paramLayout->addWidget(fpFrame);
+        resourceSectionLayout->addWidget(fpFrame);
     }
     }
 
     // Add variants dropdown combo box if variants list is populated
     if (node && !node->getModelVariants().empty()) {
-        QFrame* separator2 = new QFrame(m_paramContainer);
-        separator2->setFrameShape(QFrame::HLine);
-        separator2->setFrameShadow(QFrame::Sunken);
-        separator2->setStyleSheet("background-color: #333333; margin-top: 10px; margin-bottom: 10px;");
-        m_paramLayout->addWidget(separator2);
+        auto* variantPanel = new QWidget(resourceSection);
+        variantPanel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+        auto* variantLayout = new QVBoxLayout(variantPanel);
+        variantLayout->setContentsMargins(8, 0, 0, 0);
+        variantLayout->setSpacing(3);
 
-        QLabel* varTitleLabel = new QLabel("Profile Variants:", m_paramContainer);
-        varTitleLabel->setStyleSheet("font-weight: bold; color: #00B0FF; margin-bottom: 6px;");
-        m_paramLayout->addWidget(varTitleLabel);
+        QLabel* varTitleLabel = new QLabel("PROFILE VARIANT", variantPanel);
+        varTitleLabel->setStyleSheet("font-size: 10px; font-weight: bold; color: #8F98A8; letter-spacing: 1px; border: none;");
+        variantLayout->addWidget(varTitleLabel);
 
-        QComboBox* varCombo = new QComboBox(m_paramContainer);
-        varCombo->setMinimumWidth(200);
+        QComboBox* varCombo = new QComboBox(variantPanel);
+        varCombo->setFixedWidth(240);
 
         const auto& vars = node->getModelVariants();
         int activeIdx = -1;
@@ -4863,7 +5286,13 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             varCombo->setCurrentIndex(activeIdx);
         }
 
-        m_paramLayout->addWidget(varCombo);
+        variantLayout->addWidget(varCombo);
+        if (hasNamModel && namInfoLayout) {
+            namInfoLayout->addSpacing(5);
+            namInfoLayout->addWidget(variantPanel);
+        } else {
+            resourceSectionLayout->addWidget(variantPanel, 0, Qt::AlignLeft);
+        }
 
         connect(varCombo, &QComboBox::activated, this, [this, node, varCombo](int index) {
             int variantIdx = varCombo->itemData(index).toInt();
@@ -5273,7 +5702,9 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
     const QString activeKey = CredentialStore::tone3000ApiKey();
     bool useOfficial = !activeKey.isEmpty();
     if (!useOfficial) {
+        if (!combo.isNull()) combo->setEnabled(true);
         if (!fileLabel.isNull()) fileLabel->setText("TONE3000 secret key required.");
+        else if (!combo.isNull()) combo->setToolTip("Set a TONE3000 secret key in Settings to download this capture.");
         return;
     }
 

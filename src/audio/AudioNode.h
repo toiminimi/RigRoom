@@ -115,6 +115,7 @@ public:
         std::string modeledBy;
         std::string gearMake;
         std::string gearModel;
+        std::string imageUrl;
         double loudness = 0.0;
         double sampleRate = 0.0;
     };

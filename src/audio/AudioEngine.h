@@ -3,6 +3,7 @@
 #include <vector>
 #include <memory>
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include "AudioNode.h"
@@ -55,6 +56,12 @@ public:
     int getBufferSize() const { return m_bufferSize; }
     double getSampleRate() const { return m_sampleRate; }
     float getCPULoad() const;
+    uint64_t getMaxProcessDurationUsec() const {
+        return m_maxProcessDurationUsec.load(std::memory_order_relaxed);
+    }
+    void resetMaxProcessDurationUsec() {
+        m_maxProcessDurationUsec.store(0, std::memory_order_relaxed);
+    }
     
     std::vector<std::shared_ptr<AudioNode>> getNodes() const;
     std::vector<AudioConnection> getConnections() const;
@@ -121,6 +128,7 @@ private:
     std::atomic<float> m_inputPeak{0.0f};
     std::atomic<float> m_outputPeak{0.0f};
     std::atomic<uint32_t> m_xrunCount{0};
+    std::atomic<uint64_t> m_maxProcessDurationUsec{0};
     std::atomic<bool> m_inputClipped{false};
     std::atomic<bool> m_outputClipped{false};
     
@@ -141,7 +149,7 @@ private:
             float currentGain = 1.0f;
             std::shared_ptr<std::atomic<float>> liveGain;
         };
-        std::vector<RTConnection> rtConnections;
+        std::vector<std::vector<RTConnection>> outgoingConnections;
     };
     
     // A callback keeps its own shared reference while processing, so replacing a

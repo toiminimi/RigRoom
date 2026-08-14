@@ -12,6 +12,7 @@
 #include <QNetworkReply>
 #include <QSet>
 #include <QPointer>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include "../audio/AudioEngine.h"
@@ -132,6 +133,11 @@ private:
     int m_outputClipHoldTicks = 0;
     float m_smoothedCpuLoad = 0.0f;
     float m_peakCpuLoad = 0.0f;
+    int m_lastCpuDisplay = -1;
+    int m_lastCpuSeverity = -1;
+    int m_lastInputMeterValue = -1;
+    int m_lastOutputMeterValue = -1;
+    uint32_t m_lastXrunCount = UINT32_MAX;
     
     QWidget* m_paramContainer = nullptr;
     QVBoxLayout* m_paramLayout = nullptr;
@@ -157,6 +163,7 @@ private:
 
     QNetworkAccessManager* m_networkManager = nullptr;
     QNetworkReply* m_currentDownloadReply = nullptr;
+    void loadModelImage(QLabel* label, const QString& imageUrl);
     void downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect = false);
     
 public:

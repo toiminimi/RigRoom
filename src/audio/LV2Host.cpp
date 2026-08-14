@@ -14,6 +14,12 @@
 #include <cstring>
 #include <cstdint>
 
+const void* state_retrieve(LV2_State_Handle handle,
+                           uint32_t key,
+                           size_t* size,
+                           uint32_t* type,
+                           uint32_t* flags);
+
 // Global URID mapping for LV2 plugins
 static std::unordered_map<std::string, LV2_URID> s_uridMap;
 static std::mutex s_uridMutex;
@@ -76,8 +82,7 @@ static LV2_Worker_Status worker_respond(LV2_Worker_Respond_Handle handle,
     auto* node = static_cast<LV2PluginNode*>(handle);
     if (!node) return LV2_WORKER_ERR_UNKNOWN;
     
-    node->queueResponse(data, size);
-    return LV2_WORKER_SUCCESS;
+    return node->queueResponse(data, size);
 }
 
 static LV2_Worker_Status worker_schedule_work(LV2_Worker_Schedule_Handle handle,
@@ -86,8 +91,13 @@ static LV2_Worker_Status worker_schedule_work(LV2_Worker_Schedule_Handle handle,
     auto* node = static_cast<LV2PluginNode*>(handle);
     if (!node) return LV2_WORKER_ERR_UNKNOWN;
     
-    node->queueWork(data, size);
-    return LV2_WORKER_SUCCESS;
+    return node->queueWork(data, size);
+}
+
+LV2PluginNode::WorkerState::WorkerState() {
+    for (size_t i = 0; i < requests.size(); ++i) {
+        requests[i].sequence.store(i, std::memory_order_relaxed);
+    }
 }
 
 LV2PluginNode::LV2PluginNode(LilvWorld* world, const LilvPlugin* plugin)
@@ -159,6 +169,7 @@ LV2PluginNode::LV2PluginNode(LilvWorld* world, const LilvPlugin* plugin)
 }
 
 LV2PluginNode::~LV2PluginNode() {
+    stopWorkerThread();
     if (m_instance) {
         lilv_instance_deactivate(m_instance);
         lilv_instance_free(m_instance);
@@ -323,8 +334,10 @@ void LV2PluginNode::prepare(double sampleRate, int maxBlockSize) {
         map_uri(nullptr, "http://lv2plug.in/ns/ext/buf-size#maxBlockLength"), sizeof(int32_t),
         map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Int"), &m_optionBlockLength };
     m_options[3] = { LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, nullptr };
+    m_sequenceUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Sequence");
     
     if (m_instance) {
+        stopWorkerThread();
         lilv_instance_deactivate(m_instance);
         lilv_instance_free(m_instance);
         m_instance = nullptr;
@@ -335,12 +348,25 @@ void LV2PluginNode::prepare(double sampleRate, int maxBlockSize) {
         std::cerr << "Failed to instantiate LV2 plugin: " << m_name << std::endl;
         return;
     }
+
+    startWorkerThread();
     
     // Allocate local buffers for each port
     m_audioBuffers.resize(m_ports.size());
     for (size_t i = 0; i < m_ports.size(); ++i) {
         m_audioBuffers[i].assign(maxBlockSize, 0.0f);
         m_ports[i].buffer = m_audioBuffers[i].data();
+    }
+    m_audioInputPortIndices.clear();
+    m_audioOutputPortIndices.clear();
+    m_audioInputPortIndices.reserve(m_ports.size());
+    m_audioOutputPortIndices.reserve(m_ports.size());
+    for (size_t i = 0; i < m_ports.size(); ++i) {
+        if (m_ports[i].isInput) {
+            m_audioInputPortIndices.push_back(i);
+        } else {
+            m_audioOutputPortIndices.push_back(i);
+        }
     }
     
     // Connect ports
@@ -376,8 +402,7 @@ void LV2PluginNode::prepare(double sampleRate, int maxBlockSize) {
     // Reset and connect atom ports
     for (auto& atomPort : m_atomPorts) {
         LV2_Atom_Sequence* seq = reinterpret_cast<LV2_Atom_Sequence*>(atomPort.buffer.data());
-        LV2_URID sequenceUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Sequence");
-        seq->atom.type = sequenceUrid;
+        seq->atom.type = m_sequenceUrid;
         if (atomPort.isInput) {
             seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
         } else {
@@ -392,8 +417,17 @@ void LV2PluginNode::prepare(double sampleRate, int maxBlockSize) {
     lilv_instance_activate(m_instance);
     if (!m_modelFilePath.empty()) {
         loadModelFile(m_modelFilePath);
-    } else {
-        flushWorker();
+    } else if (!m_filePropertiesMap.empty()) {
+        const auto* stateInterface = static_cast<const LV2_State_Interface*>(
+            lilv_instance_get_extension_data(m_instance, "http://lv2plug.in/ns/ext/state#interface"));
+        if (stateInterface && stateInterface->restore) {
+            stateInterface->restore(
+                m_instance->lv2_handle,
+                state_retrieve,
+                this,
+                0,
+                m_features);
+        }
     }
 }
 
@@ -401,28 +435,20 @@ void LV2PluginNode::process(int numFrames) {
     if (!m_instance) return;
     
     if (isBypassed()) {
-        // Bypass logic: copy input buffers directly to output buffers
-        // Simple 1-to-1 copy for matching channels
-        int inIdx = 0;
-        int outIdx = 0;
-        std::vector<float*> inputs;
-        std::vector<float*> outputs;
-        
-        for (auto& port : m_ports) {
-            if (port.isInput) {
-                inputs.push_back(port.buffer);
-            } else {
-                outputs.push_back(port.buffer);
+        const size_t commonCount = std::min(m_audioInputPortIndices.size(), m_audioOutputPortIndices.size());
+        for (size_t i = 0; i < commonCount; ++i) {
+            float* input = m_ports[m_audioInputPortIndices[i]].buffer;
+            float* output = m_ports[m_audioOutputPortIndices[i]].buffer;
+            if (input && output) {
+                std::copy(input, input + numFrames, output);
             }
         }
-        
-        size_t commonCount = std::min(inputs.size(), outputs.size());
-        for (size_t i = 0; i < commonCount; ++i) {
-            std::copy(inputs[i], inputs[i] + numFrames, outputs[i]);
-        }
         // Zero out any remaining outputs
-        for (size_t i = commonCount; i < outputs.size(); ++i) {
-            std::fill(outputs[i], outputs[i] + numFrames, 0.0f);
+        for (size_t i = commonCount; i < m_audioOutputPortIndices.size(); ++i) {
+            float* output = m_ports[m_audioOutputPortIndices[i]].buffer;
+            if (output) {
+                std::fill(output, output + numFrames, 0.0f);
+            }
         }
         return;
     }
@@ -430,8 +456,7 @@ void LV2PluginNode::process(int numFrames) {
     // Reset both input and output atom ports to empty sequences before processing
     for (auto& atomPort : m_atomPorts) {
         LV2_Atom_Sequence* seq = reinterpret_cast<LV2_Atom_Sequence*>(atomPort.buffer.data());
-        LV2_URID sequenceUrid = map_uri(nullptr, "http://lv2plug.in/ns/ext/atom#Sequence");
-        seq->atom.type = sequenceUrid;
+        seq->atom.type = m_sequenceUrid;
         if (atomPort.isInput) {
             seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
         } else {
@@ -442,7 +467,7 @@ void LV2PluginNode::process(int numFrames) {
     }
     
     lilv_instance_run(m_instance, numFrames);
-    flushWorker();
+    deliverWorkerResponses();
 }
 
 void LV2PluginNode::setParameter(uint32_t index, float value) {
@@ -450,66 +475,137 @@ void LV2PluginNode::setParameter(uint32_t index, float value) {
     // Control ports values are modified directly since we connected the pointer in prepare()
 }
 
-void LV2PluginNode::queueWork(const void* data, uint32_t size) {
-    std::lock_guard<std::mutex> lock(m_workerMutex);
-    PendingWorkerTask task;
-    const uint8_t* byteData = static_cast<const uint8_t*>(data);
-    task.data.assign(byteData, byteData + size);
-    m_pendingWork.push_back(task);
-}
-
-void LV2PluginNode::queueResponse(const void* data, uint32_t size) {
-    std::lock_guard<std::mutex> lock(m_responseMutex);
-    PendingResponse resp;
-    const uint8_t* byteData = static_cast<const uint8_t*>(data);
-    resp.data.assign(byteData, byteData + size);
-    m_pendingResponses.push_back(resp);
-}
-
-void LV2PluginNode::flushWorker() {
+void LV2PluginNode::startWorkerThread() {
     if (!m_instance) return;
-    
-    const LV2_Worker_Interface* worker = (const LV2_Worker_Interface*)
-        lilv_instance_get_extension_data(m_instance, "http://lv2plug.in/ns/ext/worker#interface");
-    if (!worker || !worker->work) return;
-    
+
+    const auto* worker = static_cast<const LV2_Worker_Interface*>(
+        lilv_instance_get_extension_data(m_instance, LV2_WORKER__interface));
+    if (!worker || !worker->work) {
+        m_workerState.reset();
+        return;
+    }
+
+    if (!m_workerState) {
+        m_workerState = std::make_unique<WorkerState>();
+    }
+    if (m_workerState->thread.joinable()) return;
+
+    m_workerState->interface = worker;
+    m_workerState->thread = std::thread([this]() { workerLoop(); });
+}
+
+void LV2PluginNode::stopWorkerThread() {
+    if (!m_workerState) return;
+
+    m_workerState->stopping.store(true, std::memory_order_release);
+    m_workerState->wakeCondition.notify_one();
+    if (m_workerState->thread.joinable()) {
+        m_workerState->thread.join();
+    }
+    m_workerState.reset();
+}
+
+LV2_Worker_Status LV2PluginNode::queueWork(const void* data, uint32_t size) {
+    WorkerState* state = m_workerState.get();
+    if (!state && !m_instance) {
+        // Instantiation is non-RT, but plugins may schedule their first task
+        // before Lilv returns the completed instance to the host.
+        m_workerState = std::make_unique<WorkerState>();
+        state = m_workerState.get();
+    }
+    if (!state || size > kWorkerMessageCapacity || (size > 0 && !data)) {
+        return LV2_WORKER_ERR_NO_SPACE;
+    }
+
+    size_t write = state->requestWrite.load(std::memory_order_relaxed);
     while (true) {
-        std::vector<PendingWorkerTask> tasks;
-        {
-            std::lock_guard<std::mutex> lock(m_workerMutex);
-            if (m_pendingWork.empty()) break;
-            tasks.swap(m_pendingWork);
-        }
-        
-        for (const auto& task : tasks) {
-            // 1. Run the plugin work method (which calls worker_respond -> queueResponse)
-            worker->work(
-                m_instance->lv2_handle,
-                worker_respond,
-                this,
-                task.data.size(),
-                task.data.data()
-            );
-            
-            // 2. Retrieve responses queued during work execution
-            std::vector<PendingResponse> responses;
-            {
-                std::lock_guard<std::mutex> lock(m_responseMutex);
-                responses.swap(m_pendingResponses);
-            }
-            
-            // 3. Process the work_response callbacks sequentially (outside the work callback context)
-            for (const auto& resp : responses) {
-                if (worker->work_response) {
-                    worker->work_response(m_instance->lv2_handle, resp.data.size(), resp.data.data());
+        WorkerRequestSlot& slot = state->requests[write % kWorkerQueueCapacity];
+        const size_t sequence = slot.sequence.load(std::memory_order_acquire);
+        const intptr_t difference = static_cast<intptr_t>(sequence) - static_cast<intptr_t>(write);
+        if (difference == 0) {
+            if (state->requestWrite.compare_exchange_weak(
+                    write, write + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
+                if (size > 0) {
+                    std::memcpy(slot.message.data.data(), data, size);
                 }
+                slot.message.size = size;
+                slot.sequence.store(write + 1, std::memory_order_release);
+                state->wakeCondition.notify_one();
+                return LV2_WORKER_SUCCESS;
             }
-            
-            // 4. Notify the plugin that the run cycle has finished
-            if (worker->end_run) {
-                worker->end_run(m_instance->lv2_handle);
-            }
+        } else if (difference < 0) {
+            return LV2_WORKER_ERR_NO_SPACE;
+        } else {
+            write = state->requestWrite.load(std::memory_order_relaxed);
         }
+    }
+}
+
+LV2_Worker_Status LV2PluginNode::queueResponse(const void* data, uint32_t size) {
+    WorkerState* state = m_workerState.get();
+    if (!state || size > kWorkerMessageCapacity || (size > 0 && !data)) {
+        return LV2_WORKER_ERR_NO_SPACE;
+    }
+
+    const size_t write = state->responseWrite.load(std::memory_order_relaxed);
+    const size_t nextWrite = (write + 1) % kWorkerQueueCapacity;
+    if (nextWrite == state->responseRead.load(std::memory_order_acquire)) {
+        return LV2_WORKER_ERR_NO_SPACE;
+    }
+
+    WorkerMessage& message = state->responses[write];
+    if (size > 0) {
+        std::memcpy(message.data.data(), data, size);
+    }
+    message.size = size;
+    state->responseWrite.store(nextWrite, std::memory_order_release);
+    return LV2_WORKER_SUCCESS;
+}
+
+void LV2PluginNode::workerLoop() {
+    WorkerState* state = m_workerState.get();
+    if (!state) return;
+
+    while (!state->stopping.load(std::memory_order_acquire)) {
+        const size_t read = state->requestRead.load(std::memory_order_relaxed);
+        WorkerRequestSlot& slot = state->requests[read % kWorkerQueueCapacity];
+        const size_t sequence = slot.sequence.load(std::memory_order_acquire);
+        if (sequence != read + 1) {
+            std::unique_lock<std::mutex> lock(state->wakeMutex);
+            state->wakeCondition.wait(lock, [state, read]() {
+                return state->stopping.load(std::memory_order_acquire) ||
+                    state->requests[read % kWorkerQueueCapacity].sequence.load(std::memory_order_acquire) == read + 1;
+            });
+            continue;
+        }
+
+        state->interface->work(
+            m_instance->lv2_handle,
+            worker_respond,
+            this,
+            slot.message.size,
+            slot.message.data.data());
+        slot.sequence.store(read + kWorkerQueueCapacity, std::memory_order_release);
+        state->requestRead.store(read + 1, std::memory_order_relaxed);
+    }
+}
+
+void LV2PluginNode::deliverWorkerResponses() {
+    WorkerState* state = m_workerState.get();
+    if (!state) return;
+
+    while (state->responseRead.load(std::memory_order_relaxed) !=
+           state->responseWrite.load(std::memory_order_acquire)) {
+        const size_t read = state->responseRead.load(std::memory_order_relaxed);
+        WorkerMessage& message = state->responses[read];
+        if (state->interface->work_response) {
+            state->interface->work_response(m_instance->lv2_handle, message.size, message.data.data());
+        }
+        state->responseRead.store((read + 1) % kWorkerQueueCapacity, std::memory_order_release);
+    }
+
+    if (state->interface->end_run) {
+        state->interface->end_run(m_instance->lv2_handle);
     }
 }
 
@@ -668,7 +764,6 @@ void LV2PluginNode::loadModelFile(const std::string& path) {
             m_features
         );
         
-        flushWorker();
     }
 }
 
@@ -705,7 +800,6 @@ void LV2PluginNode::setFileProperty(const std::string& uri, const std::string& p
             m_features
         );
         
-        flushWorker();
     }
 }
 

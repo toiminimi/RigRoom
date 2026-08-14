@@ -1218,6 +1218,15 @@ void Tone3000Dialog::onDownloadClicked() {
         m_downloadedMetadata.author = username.toStdString();
         m_downloadedMetadata.gearType = tone["gear"].toString().toStdString();
 
+        const QJsonArray images = tone["images"].toArray();
+        if (!images.isEmpty()) {
+            const QJsonValue firstImage = images.first();
+            const QString imageUrl = firstImage.isString()
+                ? firstImage.toString()
+                : firstImage.toObject()["url"].toString();
+            m_downloadedMetadata.imageUrl = imageUrl.toStdString();
+        }
+
         QStringList tagList;
         if (tone.contains("tags") && tone["tags"].isArray()) {
             for (const auto& val : tone["tags"].toArray()) {

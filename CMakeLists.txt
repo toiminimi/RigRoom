@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(RigRoom VERSION 0.9.1 LANGUAGES CXX)
 
 option(RIGROOM_DEV_BUILD "Append a development suffix to the application version" ON)
+option(RIGROOM_ENABLE_RT_METRICS "Collect realtime callback timing diagnostics" OFF)
 set(RIGROOM_VERSION_STRING "${PROJECT_VERSION}")
 set(RIGROOM_IS_DEV_BUILD false)
 if(RIGROOM_DEV_BUILD)
@@ -74,6 +75,9 @@ add_executable(RigRoom
 
 target_include_directories(RigRoom PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(RigRoom PRIVATE -rdynamic)
+if(RIGROOM_ENABLE_RT_METRICS)
+    target_compile_definitions(RigRoom PRIVATE RIGROOM_ENABLE_RT_METRICS)
+endif()
 target_link_options(RigRoom PRIVATE -rdynamic)
 target_link_libraries(RigRoom PRIVATE
     Qt6::Widgets

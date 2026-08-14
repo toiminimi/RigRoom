@@ -9,8 +9,11 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <array>
+#include <condition_variable>
 #include <mutex>
 #include <cstdint>
+#include <thread>
 #include <unordered_map>
 
 class LV2PluginNode : public AudioNode {
@@ -38,23 +41,14 @@ public:
     double getSampleRate() const { return m_sampleRate; }
     int getMaxBlockSize() const { return m_maxBlockSize; }
     
-    struct PendingWorkerTask {
-        std::vector<uint8_t> data;
-    };
-    
-    struct PendingResponse {
-        std::vector<uint8_t> data;
-    };
-    
     struct AtomPortData {
         uint32_t index;
         bool isInput;
         std::vector<uint8_t> buffer;
     };
     
-    void queueWork(const void* data, uint32_t size);
-    void queueResponse(const void* data, uint32_t size);
-    void flushWorker();
+    LV2_Worker_Status queueWork(const void* data, uint32_t size);
+    LV2_Worker_Status queueResponse(const void* data, uint32_t size);
     
     void loadModelFile(const std::string& path) override;
     const std::string& getModelFilePath() const override { return m_modelFilePath; }
@@ -68,12 +62,42 @@ public:
 private:
     void scanPorts();
     void scanFileProperties();
-    
-    std::vector<PendingWorkerTask> m_pendingWork;
-    std::mutex m_workerMutex;
-    
-    std::vector<PendingResponse> m_pendingResponses;
-    std::mutex m_responseMutex;
+    void startWorkerThread();
+    void stopWorkerThread();
+    void workerLoop();
+    void deliverWorkerResponses();
+
+    static constexpr size_t kWorkerQueueCapacity = 16;
+    static constexpr size_t kWorkerMessageCapacity = 16384;
+
+    struct WorkerMessage {
+        std::array<uint8_t, kWorkerMessageCapacity> data{};
+        uint32_t size = 0;
+    };
+
+    // The request queue has multiple producers: run() and non-RT state restore.
+    struct WorkerRequestSlot {
+        std::atomic<size_t> sequence{0};
+        WorkerMessage message;
+    };
+
+    struct WorkerState {
+        WorkerState();
+
+        std::array<WorkerRequestSlot, kWorkerQueueCapacity> requests;
+        std::array<WorkerMessage, kWorkerQueueCapacity> responses;
+        std::atomic<size_t> requestWrite{0};
+        std::atomic<size_t> requestRead{0};
+        std::atomic<size_t> responseWrite{0};
+        std::atomic<size_t> responseRead{0};
+        std::atomic<bool> stopping{false};
+        const LV2_Worker_Interface* interface = nullptr;
+        std::thread thread;
+        std::mutex wakeMutex;
+        std::condition_variable wakeCondition;
+    };
+
+    std::unique_ptr<WorkerState> m_workerState;
     std::vector<AtomPortData> m_atomPorts;
     std::string m_modelFilePath;
     std::vector<FileProperty> m_fileProperties;
@@ -87,6 +111,8 @@ private:
     
     // Internal buffers for the plugin to process
     std::vector<std::vector<float>> m_audioBuffers;
+    std::vector<size_t> m_audioInputPortIndices;
+    std::vector<size_t> m_audioOutputPortIndices;
     
     // Persistent features for the plugin instance to prevent stack use-after-free
     LV2_URID_Map m_uridMap;
@@ -120,4 +146,5 @@ private:
     int m_maxBlockSize = 256;
     float m_optionSampleRate = 48000.0f;
     int32_t m_optionBlockLength = 256;
+    LV2_URID m_sequenceUrid = 0;
 };
