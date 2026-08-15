@@ -49,8 +49,11 @@ add_executable(RigRoom
     src/audio/CLAPHost.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.h
+    src/ui/InspectorComponents.cpp
+    src/ui/InspectorComponents.h
     src/ui/NodeCanvas.cpp
     src/ui/NodeCanvas.h
+    src/ui/CanvasMetrics.h
     src/ui/NodeWidget.cpp
     src/ui/NodeWidget.h
     src/ui/PortWidget.cpp
@@ -91,6 +94,36 @@ target_link_libraries(RigRoom PRIVATE
     PkgConfig::SECRET
     dl
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(RigRoomRoutingTests
+        tests/RoutingTests.cpp
+        src/audio/AudioEngine.cpp
+        src/audio/AudioEngine.h
+        src/audio/AudioNode.h
+        src/ui/NodeCanvas.cpp
+        src/ui/NodeCanvas.h
+        src/ui/CanvasMetrics.h
+        src/ui/NodeWidget.cpp
+        src/ui/NodeWidget.h
+        src/ui/PortWidget.cpp
+        src/ui/PortWidget.h
+        src/ui/ConnectionWire.cpp
+        src/ui/ConnectionWire.h
+        src/ui/PlusButtonWidget.cpp
+        src/ui/PlusButtonWidget.h
+        src/ui/RoutingHandleItem.cpp
+        src/ui/RoutingHandleItem.h
+        src/ui/GridRow.h
+    )
+    target_include_directories(RigRoomRoutingTests PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
+    target_compile_options(RigRoomRoutingTests PRIVATE -rdynamic)
+    target_link_options(RigRoomRoutingTests PRIVATE -rdynamic)
+    target_link_libraries(RigRoomRoutingTests PRIVATE Qt6::Widgets PkgConfig::JACK)
+    add_test(NAME RigRoomRoutingTests COMMAND RigRoomRoutingTests)
+    set_tests_properties(RigRoomRoutingTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
 
 include(GNUInstallDirs)
 install(TARGETS RigRoom RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

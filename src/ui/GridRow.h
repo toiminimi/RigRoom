@@ -10,8 +10,8 @@ struct GridRow {
     enum class SplitMode { Copy, AB };
 
     std::vector<std::shared_ptr<AudioNode>> plugins; // indexed 0..NUM_COLS-1
-    // Empty anchors refer to the system endpoints. Columns are derived from these
-    // stable IDs for display and legacy-preset compatibility only.
+    // Grid gaps are the canonical routing topology. IDs are refreshed from the
+    // effective adjacent nodes for display and legacy-preset compatibility.
     std::string splitAfterNodeId;
     std::string mergeBeforeNodeId;
     int splitCol = -1;
@@ -22,7 +22,7 @@ struct GridRow {
     float splitPosition = 0.0f; // -1 main/A, +1 branch/B
     bool mainInputEnabled = true;
     float mainMix = 1.0f;
-    float mix = 1.0f;  // Path level (0.0 to 1.0)
+    float mix = 1.0f;  // Path level (0.0 to 2.0)
     float pan = 0.0f;  // Stereo balance (-1.0 left to 1.0 right)
     bool enabled = false;
     bool levelConfigured = false;

@@ -21,6 +21,7 @@
 
 class ExternalPluginUIWindow;
 class QSplitter;
+class QScrollArea;
 class Tone3000ImageLoader;
 
 class MainWindow : public QMainWindow {
@@ -141,6 +142,7 @@ private:
     uint32_t m_lastXrunCount = UINT32_MAX;
     
     QWidget* m_paramContainer = nullptr;
+    QScrollArea* m_paramScroll = nullptr;
     QVBoxLayout* m_paramLayout = nullptr;
     QLabel* m_noParamLabel = nullptr;
     struct ParameterControlBinding {

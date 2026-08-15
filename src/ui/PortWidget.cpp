@@ -20,9 +20,9 @@ QRectF PortWidget::boundingRect() const {
 void PortWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     painter->setRenderHint(QPainter::Antialiasing);
     
-    painter->setPen(QPen(QColor(12, 12, 14), 1.5));
-    painter->setBrush(QColor(140, 145, 150));
-    painter->drawEllipse(QRectF(-4, -4, 8, 8));
+    painter->setPen(QPen(QColor(15, 16, 19), 1.2));
+    painter->setBrush(m_isStereo ? QColor(119, 132, 158) : QColor(104, 108, 116));
+    painter->drawEllipse(QRectF(-3.5, -3.5, 7, 7));
 }
 
 QPointF PortWidget::getAnchorPos() const {

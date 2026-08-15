@@ -34,16 +34,19 @@ protected:
     void mouseReleaseEvent(QGraphicsSceneMouseEvent* event) override;
     void mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event) override;
     void contextMenuEvent(QGraphicsSceneContextMenuEvent* event) override;
+    void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override;
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent* event) override;
 
 private:
     std::shared_ptr<AudioNode> m_audioNode;
     std::vector<PortWidget*> m_inputPorts;
     std::vector<PortWidget*> m_outputPorts;
     
-    int m_width = 136;
-    int m_height = 58;
+    int m_width = 120;
+    int m_height = 50;
     int m_gridSize = 20;
     bool m_isStereo = false;
+    bool m_hovered = false;
     
     QRectF m_bypassRect;
 

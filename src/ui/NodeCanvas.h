@@ -79,6 +79,9 @@ public:
     void setSplitPosition(int row, float position);
     bool isMainInputEnabled(int row) const;
     void setMainInputEnabled(int row, bool enabled);
+    bool isSharedSplitJunction(int row) const;
+    bool isSharedMixerJunction(int row) const;
+    std::vector<int> getMixerGroupRows(int row) const;
     float getMainMix(int row) const;
     void setMainMix(int row, float level);
     float getMix(int row) const { return (row != MAIN_ROW && row >= 0 && row < NUM_ROWS) ? m_rows[row].mix : 1.0f; }
@@ -113,6 +116,7 @@ public:
     double getZoomLevel() const { return m_zoomLevel; }
     void setZoomLevel(double zoom);
     void resetZoom();
+    void fitToCanvas();
     void zoomIn();
     void zoomOut();
 
@@ -135,11 +139,17 @@ protected:
 private:
     void clearSceneItems();
     void rebuildAudioConnections();
+    void normalizeRoutingTopology();
+    void refreshRoutingAnchors();
     void updateBranchGains(int row);
     int findNodeColumn(int row, const std::string& nodeId) const;
+    int splitGroupSize(int parentRow, int splitCol) const;
+    int splitGroupLeader(int parentRow, int splitCol) const;
+    int mixerGroupLeader(int parentRow, int mergeCol) const;
+    bool isCanonicalParent(int row, int parentRow) const;
     void setBranchDefaults(int row, float level);
-    float pathSplitGainAfter(int parentRow, const std::string& sourceNodeId, int ignoreBranchRow = -1) const;
-    float pathMixerGainBefore(int parentRow, const std::string& destinationNodeId) const;
+    float pathSplitGainBetween(int parentRow, int sourceCol, int destinationCol, int ignoreBranchRow = -1) const;
+    float pathMixerGainBetween(int parentRow, int sourceCol, int destinationCol) const;
     float branchSplitGain(int row) const;
     void layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, qreal trackW, qreal sysRightX, qreal sysLeftX, qreal sysMidY);
     void reflowLayoutWithDragGap();
@@ -186,6 +196,7 @@ private:
     QToolButton* m_zoomOverlayMinusBtn = nullptr;
     QToolButton* m_zoomOverlayPlusBtn = nullptr;
     QToolButton* m_zoomOverlayResetBtn = nullptr;
+    QToolButton* m_zoomOverlayFitBtn = nullptr;
     void setupZoomOverlay();
     void updateZoomOverlayPos();
 

@@ -11,9 +11,11 @@
 #include "Tone3000Dialog.h"
 #include "Tone3000ImageLoader.h"
 #include "ModelDetailsDialog.h"
+#include "InspectorComponents.h"
 #include "AboutDialog.h"
 #include <filesystem>
 #include <iostream>
+#include <unordered_set>
 #include "PortWidget.h"
 #include <QSplitter>
 #include <QHBoxLayout>
@@ -81,135 +83,11 @@
 #include <iostream>
 #include <QPainter>
 #include <QDial>
+#include <QButtonGroup>
 #include <cmath>
 #include <limits>
 #include <tuple>
 #include <QSet>
-
-class ModernKnob : public QDial {
-public:
-    explicit ModernKnob(QWidget* parent = nullptr) : QDial(parent) {
-        setFixedSize(52, 52);
-        setNotchesVisible(false);
-        setWrapping(false);
-        setCursor(Qt::SizeVerCursor);
-    }
-
-    void setDefaultValue(int value) { m_defaultValue = value; }
-protected:
-    void mousePressEvent(QMouseEvent* event) override {
-        if (event->button() == Qt::LeftButton) {
-            m_dragStartPosition = event->position();
-            m_dragStartValue = value();
-            m_dragging = true;
-            setSliderDown(true);
-            setCursor(Qt::ClosedHandCursor);
-            event->accept();
-            return;
-        }
-        QDial::mousePressEvent(event);
-    }
-
-    void mouseMoveEvent(QMouseEvent* event) override {
-        if (m_dragging) {
-            constexpr double normalTravel = 160.0;
-            constexpr double fineTravel = 1600.0;
-            const double travel = event->modifiers().testFlag(Qt::ShiftModifier) ? fineTravel : normalTravel;
-            const double delta = m_dragStartPosition.y() - event->position().y();
-            const int range = maximum() - minimum();
-            setValue(std::clamp(m_dragStartValue + qRound(delta * range / travel), minimum(), maximum()));
-            event->accept();
-            return;
-        }
-        QDial::mouseMoveEvent(event);
-    }
-
-    void mouseReleaseEvent(QMouseEvent* event) override {
-        if (m_dragging && event->button() == Qt::LeftButton) {
-            m_dragging = false;
-            setSliderDown(false);
-            setCursor(Qt::SizeVerCursor);
-            event->accept();
-            return;
-        }
-        QDial::mouseReleaseEvent(event);
-    }
-
-    void mouseDoubleClickEvent(QMouseEvent* event) override {
-        setValue(m_defaultValue);
-        event->accept();
-    }
-
-    void paintEvent(QPaintEvent* event) override {
-        Q_UNUSED(event);
-        QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing);
-
-        int side = qMin(width(), height());
-        QRectF rect((width() - side) / 2.0 + 3, (height() - side) / 2.0 + 3, side - 6, side - 6);
-
-        // Draw background track circle
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor("#252525"));
-        painter.drawEllipse(rect);
-
-        // Calculate value ratio
-        const int valueRange = std::max(1, maximum() - minimum());
-        double valueRatio = static_cast<double>(value() - minimum()) / valueRange;
-        if (valueRatio < 0.0) valueRatio = 0.0;
-        if (valueRatio > 1.0) valueRatio = 1.0;
-
-        // Angle math: bottom-left (225 degrees) to bottom-right (315 degrees is -45 degrees)
-        double startAngle = 225.0;
-        double spanAngle = -270.0 * valueRatio;
-
-        // Mark the default position so it is easy to return to a known value.
-        const double PI = 3.14159265358979323846;
-        const double defaultRatio = static_cast<double>(m_defaultValue - minimum()) / valueRange;
-        const double defaultAngle = (startAngle - 270.0 * std::clamp(defaultRatio, 0.0, 1.0)) * PI / 180.0;
-        const QPointF markerCenter = rect.center();
-        const double markerRadius = rect.width() / 2.0 - 1.5;
-        painter.setPen(QPen(QColor("#7B7F89"), 1.5, Qt::SolidLine, Qt::RoundCap));
-        painter.drawLine(markerCenter + QPointF((markerRadius - 4.0) * cos(defaultAngle), -(markerRadius - 4.0) * sin(defaultAngle)),
-                         markerCenter + QPointF(markerRadius * cos(defaultAngle), -markerRadius * sin(defaultAngle)));
-
-        // Draw active value arc (light blue #00B0FF)
-        QPen arcPen(QColor("#00B0FF"), 3);
-        arcPen.setCapStyle(Qt::RoundCap);
-        painter.setPen(arcPen);
-        painter.setBrush(Qt::NoBrush);
-        painter.drawArc(rect.adjusted(1.5, 1.5, -1.5, -1.5), startAngle * 16, spanAngle * 16);
-
-        // Draw inner cap
-        QRectF innerRect = rect.adjusted(4, 4, -4, -4);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor("#333333"));
-        painter.drawEllipse(innerRect);
-
-        // Draw indicator dot
-        double angleRad = (startAngle + spanAngle) * PI / 180.0;
-        
-        QPointF center = innerRect.center();
-        double innerR = innerRect.width() / 2.0;
-        QPointF dotPos(center.x() + (innerR - 2.5) * cos(angleRad), center.y() - (innerR - 2.5) * sin(angleRad));
-
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor("#FFFFFF"));
-        painter.drawEllipse(dotPos, 1.5, 1.5);
-
-        if (hasFocus()) {
-            painter.setPen(QPen(QColor("#80D8FF"), 1, Qt::DashLine));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawEllipse(rect.adjusted(-1, -1, 1, 1));
-        }
-    }
-
-private:
-    int m_defaultValue = 500;
-    int m_dragStartValue = 0;
-    QPointF m_dragStartPosition;
-    bool m_dragging = false;
-};
 
 class AmpPreviewLabel final : public QLabel {
 public:
@@ -264,86 +142,6 @@ protected:
         painter.setPen(QColor("#CDD3DA"));
         painter.drawText(QRectF(90, 10, 96, 24), Qt::AlignCenter, "NAM");
     }
-};
-
-class AmpModuleFrame final : public QFrame {
-public:
-    explicit AmpModuleFrame(QWidget* parent = nullptr) : QFrame(parent) {}
-
-    QSize sizeHint() const override {
-        QSize hint = QFrame::sizeHint();
-        hint.setWidth(1050);
-        return hint;
-    }
-
-    QSize minimumSizeHint() const override {
-        QSize hint = QFrame::minimumSizeHint();
-        hint.setWidth(320);
-        return hint;
-    }
-};
-
-class FlowLayout final : public QLayout {
-public:
-    explicit FlowLayout(QWidget* parent, int spacing = 8) : QLayout(parent) {
-        setContentsMargins(0, 0, 0, 0);
-        setSpacing(spacing);
-    }
-
-    ~FlowLayout() override {
-        while (QLayoutItem* item = takeAt(0)) delete item;
-    }
-
-    void addItem(QLayoutItem* item) override { m_items.push_back(item); }
-    int count() const override { return static_cast<int>(m_items.size()); }
-    QLayoutItem* itemAt(int index) const override {
-        return index >= 0 && index < count() ? m_items[index] : nullptr;
-    }
-    QLayoutItem* takeAt(int index) override {
-        if (index < 0 || index >= count()) return nullptr;
-        QLayoutItem* item = m_items[index];
-        m_items.erase(m_items.begin() + index);
-        return item;
-    }
-    Qt::Orientations expandingDirections() const override { return {}; }
-    bool hasHeightForWidth() const override { return true; }
-    int heightForWidth(int width) const override { return layoutItems(QRect(0, 0, width, 0), true); }
-    QSize minimumSize() const override {
-        QSize size;
-        for (QLayoutItem* item : m_items) size = size.expandedTo(item->minimumSize());
-        const QMargins margins = contentsMargins();
-        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom());
-    }
-    QSize sizeHint() const override { return minimumSize(); }
-    void setGeometry(const QRect& rect) override {
-        QLayout::setGeometry(rect);
-        layoutItems(rect, false);
-    }
-
-private:
-    int layoutItems(const QRect& rect, bool testOnly) const {
-        const QMargins margins = contentsMargins();
-        const QRect area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom());
-        int x = area.x();
-        int y = area.y();
-        int rowHeight = 0;
-
-        for (QLayoutItem* item : m_items) {
-            const QSize itemSize = item->sizeHint();
-            const int nextX = x + itemSize.width() + spacing();
-            if (nextX - spacing() > area.right() + 1 && rowHeight > 0) {
-                x = area.x();
-                y += rowHeight + spacing();
-                rowHeight = 0;
-            }
-            if (!testOnly) item->setGeometry(QRect(QPoint(x, y), itemSize));
-            x += itemSize.width() + spacing();
-            rowHeight = std::max(rowHeight, itemSize.height());
-        }
-        return y + rowHeight - rect.y() + margins.bottom();
-    }
-
-    std::vector<QLayoutItem*> m_items;
 };
 
 class ResetGainSlider final : public QSlider {
@@ -1866,21 +1664,27 @@ void MainWindow::setupUI() {
     midSplitter->addWidget(m_canvas);
     midSplitter->setStretchFactor(0, 1);
     
-    // Bottom inspector: centered control shelf
+    // Bottom inspector: responsive control deck
     m_paramContainer = new QWidget(this);
     m_paramContainer->setMinimumHeight(180);
     m_paramContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    m_paramContainer->setStyleSheet("background-color: #1E1E1E; border-top: 1px solid #333333;");
+    m_paramContainer->setObjectName("inspectorDeck");
+    m_paramContainer->setStyleSheet(
+        "QWidget#inspectorDeck { background:#18191D; border-top:1px solid #30323A; }"
+        "QWidget#inspectorDeck QCheckBox { color:#CDD3DC; spacing:7px; }"
+        "QWidget#inspectorDeck QPushButton:focus, QWidget#inspectorDeck QComboBox:focus, QWidget#inspectorDeck QSpinBox:focus { border:1px solid #73C6F1; }"
+    );
     
     QVBoxLayout* rightLayout = new QVBoxLayout(m_paramContainer);
-    rightLayout->setContentsMargins(12, 12, 12, 12);
+    rightLayout->setContentsMargins(12, 10, 12, 10);
+    rightLayout->setSpacing(8);
     
     m_noParamLabel = new QLabel("Select an effect node\nto show parameters", this);
     m_noParamLabel->setAlignment(Qt::AlignCenter);
     m_noParamLabel->setStyleSheet("color: #666666; font-style: italic;");
     rightLayout->addWidget(m_noParamLabel);
     
-    auto* paramScroll = new QScrollArea(m_paramContainer);
+    auto* paramScroll = m_paramScroll = new QScrollArea(m_paramContainer);
     paramScroll->setWidgetResizable(true);
     paramScroll->setFrameShape(QFrame::NoFrame);
     paramScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -1888,20 +1692,18 @@ void MainWindow::setupUI() {
     paramScroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* paramContent = new QWidget(paramScroll);
     auto* paramContentLayout = new QHBoxLayout(paramContent);
-    paramContentLayout->setContentsMargins(4, 0, 4, 0);
+    paramContentLayout->setContentsMargins(0, 0, 0, 0);
     paramContentLayout->setSpacing(0);
     auto* paramShelf = new QWidget(paramContent);
     paramShelf->setObjectName("paramShelf");
-    paramShelf->setMaximumWidth(1400);
+    paramShelf->setMaximumWidth(1280);
     paramShelf->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     paramShelf->setStyleSheet("QWidget#paramShelf { background: transparent; }");
     m_paramLayout = new QVBoxLayout(paramShelf);
     m_paramLayout->setContentsMargins(0, 0, 0, 0);
-    m_paramLayout->setSpacing(6);
+    m_paramLayout->setSpacing(10);
     m_paramLayout->setAlignment(Qt::AlignTop);
-    paramContentLayout->addStretch(1);
-    paramContentLayout->addWidget(paramShelf, 100, Qt::AlignTop);
-    paramContentLayout->addStretch(1);
+    paramContentLayout->addWidget(paramShelf, 1);
     paramScroll->setWidget(paramContent);
     rightLayout->addWidget(paramScroll, 1);
     
@@ -2610,10 +2412,13 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
                 }
             }
             bool accepted = false;
+            const bool integerValue = watched->property("parameterInteger").toBool();
             const double value = QInputDialog::getDouble(
-                this, "Set Parameter", "Value:", currentValue, minimum, maximum, 4, &accepted);
+                this, "Set Parameter", "Value:", currentValue, minimum, maximum,
+                integerValue ? 0 : 4, &accepted);
             if (accepted) {
-                m_parameterControlNode->setParameter(index, static_cast<float>(value));
+                m_parameterControlNode->setParameter(
+                    index, integerValue ? static_cast<float>(qRound(value)) : static_cast<float>(value));
                 syncParameterControls();
                 setUnsavedChanges(true);
             }
@@ -3237,7 +3042,7 @@ void MainWindow::onOutputGainChanged(int value) {
 
 void MainWindow::savePresetToFile(const QString& path) {
     QJsonObject presetObj;
-    presetObj["formatVersion"] = 4;
+    presetObj["formatVersion"] = 5;
     
     QJsonArray nodesArray;
     for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
@@ -3291,6 +3096,7 @@ void MainWindow::savePresetToFile(const QString& path) {
     }
     auto serializeBranch = [this](int row) {
         QJsonObject branch;
+        branch["row"] = row;
         branch["hasSplitSection"] = m_canvas->hasSplitSection(row);
         branch["parentRow"] = m_canvas->getSplitParentRow(row);
         branch["splitMode"] = m_canvas->getSplitMode(row) == GridRow::SplitMode::AB ? "ab" : "copy";
@@ -3354,9 +3160,14 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     updateSlotControls();
     
     QJsonArray nodesArray = presetObj["nodes"].toArray();
+    std::unordered_set<std::string> loadedNodeIds;
     for (int i = 0; i < nodesArray.size(); ++i) {
         QJsonObject nObj = nodesArray[i].toObject();
         std::string id = nObj["id"].toString().toStdString();
+        if (id.empty() || !loadedNodeIds.insert(id).second) {
+            id = "preset-node-" + std::to_string(i) + "-" + QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+            loadedNodeIds.insert(id);
+        }
         std::string uri = nObj["uri"].toString().toStdString();
         std::string typeStr = nObj["type"].toString().toStdString();
         int row = nObj["row"].toInt();
@@ -3532,12 +3343,22 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         m_canvas->setMainOutputEnabled(true);
         if (routing["model"].toString() == "nestedSplitSections5") {
             QJsonArray branches = routing["branches"].toArray();
-            int bIdx = 0;
-            for (int r : {0, 1, 3, 4}) {
-                if (bIdx < branches.size()) {
-                    restoreBranch(r, branches[bIdx].toObject(), false);
-                    bIdx++;
+            QJsonObject branchByRow[NodeCanvas::NUM_ROWS];
+            bool hasBranchForRow[NodeCanvas::NUM_ROWS] = {};
+            for (int index = 0; index < branches.size(); ++index) {
+                const QJsonObject branch = branches[index].toObject();
+                const int legacyRowOrder[] = {0, 1, 3, 4};
+                const int row = branch.contains("row") ? branch["row"].toInt(-1)
+                    : (index < 4 ? legacyRowOrder[index] : -1);
+                if (row != NodeCanvas::MAIN_ROW && row >= 0 && row < NodeCanvas::NUM_ROWS) {
+                    branchByRow[row] = branch;
+                    hasBranchForRow[row] = true;
                 }
+            }
+            // Restore each parent before its child so a nested section is normalized
+            // against the parent interval in the same batch.
+            for (int r : {1, 0, 3, 4}) {
+                if (hasBranchForRow[r]) restoreBranch(r, branchByRow[r], false);
             }
         } else {
             restoreBranch(1, routing["branchA"].toObject(), true);
@@ -4508,6 +4329,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     m_parameterControlBindings.clear();
     m_parameterControlNode = node;
     clearLayoutContents(m_paramLayout);
+    if (m_paramScroll) m_paramScroll->verticalScrollBar()->setValue(0);
     bool hasCustomUI = false;
     
     if (!node) {
@@ -4518,8 +4340,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     m_noParamLabel->hide();
 
     if (node->isMissing()) {
-        auto* missingBox = new QFrame(m_paramContainer);
-        missingBox->setStyleSheet("QFrame { background-color: #2A1717; border: 1px solid #FF5252; border-radius: 6px; padding: 12px; }");
+        auto* missingBox = new InspectorCard(m_paramContainer);
+        missingBox->setStyleSheet("QFrame#inspectorCard { background:#291B1E; border:1px solid #804147; border-radius:8px; }");
         auto* missingLayout = new QVBoxLayout(missingBox);
         
         auto* titleLabel = new QLabel("Plugin Missing", missingBox);
@@ -4550,9 +4372,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     QHBoxLayout* pluginActions = nullptr;
 
     if (isPluginNode) {
-        auto* pluginHeader = new QFrame(m_paramContainer);
-        pluginHeader->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
-        pluginHeader->setStyleSheet("QFrame { background: #202126; border: 1px solid #353741; border-radius: 6px; }");
+        auto* pluginHeader = new InspectorCard(m_paramContainer);
+        pluginHeader->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         auto* pluginHeaderLayout = new QHBoxLayout(pluginHeader);
         pluginHeaderLayout->setContentsMargins(12, 7, 8, 7);
         pluginHeaderLayout->setSpacing(8);
@@ -4566,8 +4387,9 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         auto* formatBadge = new QLabel(format, pluginHeader);
         formatBadge->setStyleSheet("background: #273746; color: #80D8FF; border: none; border-radius: 3px; font-size: 10px; font-weight: bold; padding: 2px 5px;");
         pluginHeaderLayout->addWidget(formatBadge);
+        pluginHeaderLayout->addStretch();
         pluginActions = pluginHeaderLayout;
-        m_paramLayout->addWidget(pluginHeader, 0, Qt::AlignHCenter);
+        m_paramLayout->addWidget(pluginHeader);
 
         auto* presetsButton = new QPushButton("Plugin Presets ▾", m_paramContainer);
         presetsButton->setToolTip("Load, save, and manage reusable settings for this plugin");
@@ -4684,6 +4506,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             }
         }
         if (uiToOpen) {
+            hasCustomUI = true;
             bool isGtkUi = false;
             bool isX11Ui = false;
             const LilvNodes* selectedClasses = lilv_ui_get_classes(uiToOpen);
@@ -4775,10 +4598,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     QWidget* parameterSection = nullptr;
     QVBoxLayout* parameterSectionLayout = nullptr;
     if (!hasNamModel) {
-        parameterSection = new QWidget(m_paramContainer);
+        parameterSection = new InspectorCard(m_paramContainer);
         parameterSection->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         parameterSectionLayout = new QVBoxLayout(parameterSection);
-        parameterSectionLayout->setContentsMargins(0, 0, 0, 0);
+        parameterSectionLayout->setContentsMargins(12, 10, 12, 12);
         parameterSectionLayout->setSpacing(6);
     }
 
@@ -4789,9 +4612,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
     QWidget* namKnobBank = nullptr;
     QVBoxLayout* controlHostLayout = parameterSectionLayout;
     if (hasNamModel) {
-        namModule = new AmpModuleFrame(m_paramContainer);
+        namModule = new InspectorCard(m_paramContainer);
         namModule->setObjectName("namModelModule");
-        namModule->setMaximumWidth(1180);
         namModule->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         namModule->setStyleSheet(
             "QFrame#namModelModule { background: #20242A; border: 1px solid #3A424B; border-radius: 8px; }"
@@ -4814,12 +4636,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         moduleLayout->addLayout(namMainFlow);
         namKnobBank = new QWidget(namModule);
         namKnobBank->setObjectName("namKnobBank");
-        const int visibleControls = std::min(controlPortCount, 6);
-        const int knobBankWidth = visibleControls * 96 + std::max(0, visibleControls - 1) * 8 + 8;
-        namKnobBank->setFixedWidth(visibleControls > 0 ? knobBankWidth : 220);
-        const int controlRows = std::max(1, (controlPortCount + 5) / 6);
-        namKnobBank->setFixedHeight(controlRows * 92);
-        namKnobBank->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        namKnobBank->setMinimumWidth(210);
+        namKnobBank->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         namKnobBank->setStyleSheet("QWidget#namKnobBank { background: transparent; border-left: 1px solid #3A424B; padding-left: 10px; }");
         controlHostLayout = new QVBoxLayout(namKnobBank);
         controlHostLayout->setContentsMargins(8, 0, 0, 0);
@@ -4833,27 +4651,29 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         namFooterLayout->setContentsMargins(0, 0, 0, 0);
         namFooterLayout->setSpacing(8);
         moduleLayout->addLayout(namFooterLayout);
-        m_paramLayout->addWidget(namModule, 0, Qt::AlignHCenter | Qt::AlignTop);
+        m_paramLayout->addWidget(namModule);
     }
 
     QWidget* resourceSection = nullptr;
     QVBoxLayout* resourceSectionLayout = nullptr;
     if (hasGenericResources) {
-        resourceSection = new QFrame(m_paramContainer);
+        resourceSection = new InspectorCard(m_paramContainer);
         resourceSection->setObjectName("resourceSection");
         resourceSection->setStyleSheet(
-            "QFrame#resourceSection { background: transparent; border-bottom: 1px solid #343640; }"
+            "QFrame#resourceSection { background:#22242A; border:1px solid #363941; border-radius:8px; }"
         );
         resourceSectionLayout = new QVBoxLayout(resourceSection);
-        resourceSectionLayout->setContentsMargins(0, 2, 0, 9);
+        resourceSectionLayout->setContentsMargins(12, 10, 12, 10);
         resourceSectionLayout->setSpacing(5);
-        auto* resourcesTitle = new QLabel("RESOURCES", resourceSection);
-        resourcesTitle->setStyleSheet("color: #8F98A8; font-size: 10px; font-weight: bold; letter-spacing: 1px; border: none;");
+        auto* resourcesTitle = new InspectorSectionHeader("RESOURCES", resourceSection);
         resourceSectionLayout->addWidget(resourcesTitle);
-        m_paramLayout->addWidget(resourceSection);
     }
 
-    if (!hasNamModel) m_paramLayout->addWidget(parameterSection);
+    if (!hasNamModel) {
+        parameterSectionLayout->insertWidget(0, new InspectorSectionHeader("PARAMETERS", parameterSection));
+        m_paramLayout->addWidget(parameterSection);
+    }
+    if (resourceSection) m_paramLayout->addWidget(resourceSection);
 
     if (!hasControlPorts) {
         QWidget* controlParent = hasNamModel ? namKnobBank : parameterSection;
@@ -4952,30 +4772,54 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 combo->setCurrentIndex(selected);
             }});
         } else if (param.isInteger) {
-            auto* spinBox = new QSpinBox(rowWidget);
-            spinBox->setRange(qFloor(min), qCeil(max));
-            spinBox->setValue(qRound(param.value));
-            makeResettable(spinBox);
-            spinBox->setFixedWidth(82);
-            rowLayout->addWidget(spinBox, 0, Qt::AlignHCenter);
-            connect(spinBox, &QSpinBox::valueChanged, this, [this, node, idx](int value) {
+            auto* knob = new InspectorKnob(rowWidget);
+            knob->setRange(qFloor(min), qCeil(max));
+            knob->setValue(qRound(param.value));
+            knob->setDefaultValue(qRound(param.defaultVal));
+            if (hasNamModel) knob->setAccentColor(QColor("#D98A45"));
+            knob->setToolTip("Drag to adjust. Hold Shift for fine control. Double-click to reset.");
+            knob->setAccessibleName(QString::fromStdString(param.name));
+            knob->setAccessibleValueText(QString::number(qRound(param.value)));
+            makeResettable(knob);
+            rowLayout->addWidget(knob, 0, Qt::AlignHCenter);
+
+            auto* valueLabel = new QLabel(QString::number(qRound(param.value)), rowWidget);
+            valueLabel->setAlignment(Qt::AlignCenter);
+            valueLabel->setCursor(Qt::IBeamCursor);
+            valueLabel->setToolTip("Double-click to enter an exact value");
+            valueLabel->setStyleSheet("color: #80D8FF; font-size: 11px; border: none;");
+            valueLabel->setProperty("parameterEdit", true);
+            valueLabel->setProperty("parameterIndex", idx);
+            valueLabel->setProperty("parameterMinimum", min);
+            valueLabel->setProperty("parameterMaximum", max);
+            valueLabel->setProperty("parameterInteger", true);
+            valueLabel->installEventFilter(this);
+            rowLayout->addWidget(valueLabel);
+
+            connect(knob, &QDial::valueChanged, this, [this, node, idx, valueLabel, knob](int value) {
                 node->setParameter(idx, static_cast<float>(value));
+                valueLabel->setText(QString::number(value));
+                knob->setAccessibleValueText(valueLabel->text());
                 setUnsavedChanges(true);
             });
-            m_parameterControlBindings.push_back({idx, [spinBox](float value) {
-                if (!spinBox->hasFocus()) {
-                    const QSignalBlocker blocker(spinBox);
-                    spinBox->setValue(qRound(value));
-                }
+            m_parameterControlBindings.push_back({idx, [knob, valueLabel](float value) {
+                if (knob->isSliderDown()) return;
+                const QSignalBlocker blocker(knob);
+                knob->setValue(qRound(value));
+                valueLabel->setText(QString::number(qRound(value)));
+                knob->setAccessibleValueText(valueLabel->text());
             }});
         } else {
-            auto* knob = new ModernKnob(rowWidget);
+            auto* knob = new InspectorKnob(rowWidget);
             knob->setRange(0, 1000);
             const float normalized = max > min ? (param.value - min) / (max - min) : 0.0f;
             knob->setValue(qRound(std::clamp(normalized, 0.0f, 1.0f) * 1000));
             const float defaultNormalized = max > min ? (param.defaultVal - min) / (max - min) : 0.0f;
             knob->setDefaultValue(qRound(std::clamp(defaultNormalized, 0.0f, 1.0f) * 1000));
+            if (hasNamModel) knob->setAccentColor(QColor("#D98A45"));
             knob->setToolTip("Drag to adjust. Double-click to reset.");
+            knob->setAccessibleName(QString::fromStdString(param.name));
+            knob->setAccessibleValueText(QString::number(param.value, 'f', 2));
             makeResettable(knob);
             rowLayout->addWidget(knob, 0, Qt::AlignHCenter);
 
@@ -4990,10 +4834,11 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             valueLabel->setProperty("parameterMaximum", max);
             valueLabel->installEventFilter(this);
             rowLayout->addWidget(valueLabel);
-            connect(knob, &QDial::valueChanged, this, [this, node, idx, min, max, valueLabel](int value) {
+            connect(knob, &QDial::valueChanged, this, [this, node, idx, min, max, valueLabel, knob](int value) {
                 const float floatVal = min + (value / 1000.0f) * (max - min);
                 node->setParameter(idx, floatVal);
                 valueLabel->setText(QString::number(floatVal, 'f', 2));
+                knob->setAccessibleValueText(valueLabel->text());
                 setUnsavedChanges(true);
             });
             m_parameterControlBindings.push_back({idx, [knob, valueLabel, min, max](float value) {
@@ -5002,6 +4847,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 const QSignalBlocker blocker(knob);
                 knob->setValue(qRound(std::clamp(normalized, 0.0f, 1.0f) * 1000));
                 valueLabel->setText(QString::number(value, 'f', 2));
+                knob->setAccessibleValueText(valueLabel->text());
             }});
         }
         
@@ -5460,6 +5306,7 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     m_parameterControlBindings.clear();
     m_parameterControlNode.reset();
     clearLayoutContents(m_paramLayout);
+    if (m_paramScroll) m_paramScroll->verticalScrollBar()->setValue(0);
     m_noParamLabel->hide();
 
     const QString pathName = m_canvas->getBranchName(row);
@@ -5467,10 +5314,21 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     if (pathLetter.startsWith("Path ")) {
         pathLetter = pathLetter.mid(5);
     }
-    const QString sectionType = isSplit ? "Split Section " : "Mixer Section ";
-    auto* header = new QLabel(sectionType + pathLetter, m_paramContainer);
-    header->setStyleSheet("font-weight: bold; color: #4f8cff; font-size: 14px;");
-    m_paramLayout->addWidget(header);
+    const std::vector<int> mixerRows = isSplit ? std::vector<int>{} : m_canvas->getMixerGroupRows(row);
+    const bool sharedMixer = mixerRows.size() > 1;
+    QString headerText = isSplit ? "Split Section " + pathLetter : "Mixer Section " + pathLetter;
+    if (sharedMixer) {
+        QStringList branches;
+        for (int mixerRow : mixerRows) branches.append(m_canvas->getBranchName(mixerRow));
+        headerText = "Shared Mixer A + " + branches.join(" + ");
+    }
+    auto* headerCard = new InspectorCard(m_paramContainer);
+    auto* headerLayout = new QVBoxLayout(headerCard);
+    headerLayout->setContentsMargins(12, 10, 12, 10);
+    headerLayout->setSpacing(5);
+    auto* header = new QLabel(headerText, headerCard);
+    header->setStyleSheet("font-weight:bold; color:#DCE8F5; font-size:14px; border:none; background:transparent;");
+    headerLayout->addWidget(header);
 
     const int sourceCol = m_canvas->getSplitCol(row);
     const int returnCol = m_canvas->getMergeCol(row);
@@ -5478,146 +5336,183 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     QString source = parentRow == NodeCanvas::MAIN_ROW ? "System Input" : m_canvas->getBranchName(parentRow) + " input";
     QString destination = parentRow == NodeCanvas::MAIN_ROW ? "System Output" : m_canvas->getBranchName(parentRow) + " return";
     if (sourceCol >= 0) {
-        if (auto node = m_canvas->getPluginAt(parentRow, sourceCol)) source = "After " + QString::fromStdString(node->getName());
-    }
-    if (returnCol >= 0) {
-        if (auto node = m_canvas->getPluginAt(parentRow, returnCol)) destination = "Before " + QString::fromStdString(node->getName());
-    }
-    auto* route = new QLabel(source + "  ->  " + destination, m_paramContainer);
-    route->setWordWrap(true);
-    route->setStyleSheet("color: #a6adb8; margin-bottom: 6px;");
-    m_paramLayout->addWidget(route);
-
-    auto* splitTitle = new QLabel("SPLIT", m_paramContainer);
-    splitTitle->setStyleSheet("font-weight: bold; color: #7da6ff; margin-top: 5px;");
-    m_paramLayout->addWidget(splitTitle);
-    auto* splitForm = new QFormLayout();
-    auto* type = new QComboBox(m_paramContainer);
-    type->addItem("Copy", static_cast<int>(GridRow::SplitMode::Copy));
-    type->addItem("A/B (Equal Power)", static_cast<int>(GridRow::SplitMode::AB));
-    type->setCurrentIndex(type->findData(static_cast<int>(m_canvas->getSplitMode(row))));
-    splitForm->addRow("Type", type);
-    m_paramLayout->addLayout(splitForm);
-
-class SliderResetFilter : public QObject {
-public:
-    int defaultValue;
-    SliderResetFilter(QObject* parent, int defVal) : QObject(parent), defaultValue(defVal) {}
-protected:
-    bool eventFilter(QObject* obj, QEvent* event) override {
-        if (event->type() == QEvent::MouseButtonDblClick) {
-            if (auto* slider = qobject_cast<QSlider*>(obj)) {
-                slider->setValue(defaultValue);
-                return true;
+        for (int col = sourceCol; col >= 0; --col) {
+            if (auto node = m_canvas->getPluginAt(parentRow, col)) {
+                source = "After " + QString::fromStdString(node->getName());
+                break;
             }
         }
-        return QObject::eventFilter(obj, event);
     }
-};
-
-    auto addSlider = [this](const QString& title, int minimum, int maximum, int value, int defaultValue) {
-        auto* titleRow = new QHBoxLayout();
-        auto* label = new QLabel(title, m_paramContainer);
-        auto* valueLabel = new QLabel(m_paramContainer);
-        valueLabel->setStyleSheet("color: #35c7ff; font-weight: bold;");
-        titleRow->addWidget(label);
-        titleRow->addStretch();
-        titleRow->addWidget(valueLabel);
-        auto* slider = new QSlider(Qt::Horizontal, m_paramContainer);
-        slider->setRange(minimum, maximum);
-        slider->setValue(value);
-        slider->installEventFilter(new SliderResetFilter(slider, defaultValue));
-        m_paramLayout->addLayout(titleRow);
-        m_paramLayout->addWidget(slider);
-        return std::make_tuple(slider, label, valueLabel);
-    };
-    auto [splitPosition, splitTitleLabel, splitPositionValue] = addSlider("Route A / B", -100, 100,
-                                                                         qRound(m_canvas->getSplitPosition(row) * 100.0f), 0);
-    auto updateSplitPosition = [splitPositionValue](int value) {
-        splitPositionValue->setText(value == 0 ? "A = B" : QString("%1 %2").arg(std::abs(value)).arg(value < 0 ? "to A" : "to B"));
-    };
-    updateSplitPosition(splitPosition->value());
-
-    auto updateABEnableState = [splitPosition, splitTitleLabel, splitPositionValue](bool isAB) {
-        splitPosition->setEnabled(isAB);
-        splitTitleLabel->setEnabled(isAB);
-        splitPositionValue->setEnabled(isAB);
-        splitTitleLabel->setStyleSheet(isAB ? "color: #e2e8f0;" : "color: #4a5568;");
-        splitPositionValue->setStyleSheet(isAB ? "color: #35c7ff; font-weight: bold;" : "color: #4a5568; font-weight: bold;");
-    };
-    updateABEnableState(m_canvas->getSplitMode(row) == GridRow::SplitMode::AB);
-
-    auto* mixerTitle = new QLabel("MIXER", m_paramContainer);
-    mixerTitle->setStyleSheet("font-weight: bold; color: #c18cff; margin-top: 9px;");
-    m_paramLayout->addWidget(mixerTitle);
-    auto [mainLevel, mainLevelTitle, mainLevelValue] = addSlider("Path A Level", 0, 200,
-                                                qRound(m_canvas->getMainMix(row) * 100.0f), 100);
-    auto updateMainLevel = [mainLevelValue](int value) {
-        if (value == 0) {
-            mainLevelValue->setText("-inf dB");
-        } else {
-            double db = 20.0 * std::log10(value / 100.0);
-            mainLevelValue->setText(QString("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1));
+    if (returnCol >= 0) {
+        for (int col = returnCol; col < m_canvas->getNumCols(); ++col) {
+            if (auto node = m_canvas->getPluginAt(parentRow, col)) {
+                destination = "Before " + QString::fromStdString(node->getName());
+                break;
+            }
         }
-    };
-    updateMainLevel(mainLevel->value());
+    }
+    auto* route = new QLabel(source + "  ->  " + destination, headerCard);
+    route->setWordWrap(true);
+    route->setStyleSheet("color:#AAB3C0; background:#191B20; border:1px solid #343842; border-radius:4px; padding:4px 7px;");
+    headerLayout->addWidget(route);
+    m_paramLayout->addWidget(headerCard);
 
-    auto [level, levelTitle, levelValue] = addSlider(pathName + " Level", 0, 200, qRound(m_canvas->getMix(row) * 100.0f), 100);
-    auto updateLevel = [levelValue](int value) {
-        if (value == 0) {
-            levelValue->setText("-inf dB");
+    auto addKnob = [this](QLayout* host, const QString& title, int minimum, int maximum, int value, int defaultValue, const QColor& accent = QColor("#55B8E8")) {
+        auto* cell = new QWidget(m_paramContainer); cell->setFixedWidth(104);
+        cell->setStyleSheet("background:transparent; border:none;");
+        auto* layout = new QVBoxLayout(cell); layout->setContentsMargins(4, 3, 4, 3); layout->setSpacing(3);
+        auto* label = new QLabel(title, cell); label->setAlignment(Qt::AlignCenter); label->setStyleSheet("color:#C9D0DA; font-size:10px;");
+        auto* valueLabel = new QLabel(cell); valueLabel->setAlignment(Qt::AlignCenter); valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold;");
+        auto* knob = new InspectorKnob(cell); knob->setRange(minimum, maximum); knob->setValue(value); knob->setDefaultValue(defaultValue); knob->setAccentColor(accent); knob->setAccessibleName(title);
+        layout->addWidget(label); layout->addWidget(knob, 0, Qt::AlignHCenter); layout->addWidget(valueLabel); host->addWidget(cell);
+        return std::make_tuple(knob, label, valueLabel);
+    };
+    if (isSplit) {
+        auto* splitCard = new InspectorCard(m_paramContainer);
+        auto* splitLayout = new QVBoxLayout(splitCard); splitLayout->setContentsMargins(12, 10, 12, 10); splitLayout->setSpacing(8);
+        splitLayout->addWidget(new InspectorSectionHeader("SPLIT", splitCard));
+
+        if (m_canvas->isSharedSplitJunction(row)) {
+            auto* fanout = new QLabel("Shared source fan-out: this path receives a full copy. Use the MIX controls to set its power and level.", m_paramContainer);
+            fanout->setWordWrap(true);
+            fanout->setStyleSheet("color: #a6adb8; margin-bottom: 6px;");
+            fanout->setStyleSheet("color:#A6ADB8; background:#1B2028; border-left:2px solid #5A86B6; padding:6px 8px;");
+            splitLayout->addWidget(fanout);
         } else {
-            double db = 20.0 * std::log10(value / 100.0);
-            levelValue->setText(QString("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1));
+            auto* typeRow = new QHBoxLayout(); typeRow->setSpacing(0);
+            auto* copy = new QPushButton("Copy", splitCard); auto* ab = new QPushButton("A / B", splitCard);
+            copy->setCheckable(true); ab->setCheckable(true); auto* modes = new QButtonGroup(splitCard); modes->setExclusive(true); modes->addButton(copy, static_cast<int>(GridRow::SplitMode::Copy)); modes->addButton(ab, static_cast<int>(GridRow::SplitMode::AB));
+            (m_canvas->getSplitMode(row) == GridRow::SplitMode::Copy ? copy : ab)->setChecked(true);
+            const QString segmentStyle = "QPushButton { background:#191B20; color:#AAB3C0; border:1px solid #3B404A; border-radius:0; padding:5px 12px; font-size:11px; } QPushButton:checked { background:#29445A; color:#DFF3FF; border-color:#5BAEDB; }";
+            copy->setStyleSheet(segmentStyle); ab->setStyleSheet(segmentStyle); typeRow->addWidget(copy); typeRow->addWidget(ab); typeRow->addStretch(); splitLayout->addLayout(typeRow);
+
+            auto* knobFlowHost = new QWidget(splitCard); knobFlowHost->setStyleSheet("background:transparent; border:none;"); auto* knobFlow = new FlowLayout(knobFlowHost, 8); splitLayout->addWidget(knobFlowHost);
+            auto [splitPosition, splitTitleLabel, splitPositionValue] = addKnob(knobFlow, "Route A / B", -100, 100,
+                qRound(m_canvas->getSplitPosition(row) * 100.0f), 0);
+            auto updateSplitPosition = [splitPositionValue](int value) {
+                splitPositionValue->setText(value == 0 ? "A = B" : QString("%1 %2").arg(std::abs(value)).arg(value < 0 ? "to A" : "to B"));
+            };
+            auto updateABEnableState = [splitPosition, splitTitleLabel, splitPositionValue](bool isAB) {
+                splitPosition->setEnabled(isAB);
+                splitTitleLabel->setEnabled(isAB);
+                splitPositionValue->setEnabled(isAB);
+                splitTitleLabel->setStyleSheet(isAB ? "color: #e2e8f0;" : "color: #4a5568;");
+                splitPositionValue->setStyleSheet(isAB ? "color: #35c7ff; font-weight: bold;" : "color: #4a5568; font-weight: bold;");
+            };
+            updateSplitPosition(splitPosition->value());
+            updateABEnableState(m_canvas->getSplitMode(row) == GridRow::SplitMode::AB);
+            connect(modes, &QButtonGroup::idClicked, this, [this, row, updateABEnableState](int id) {
+                const auto mode = static_cast<GridRow::SplitMode>(id);
+                m_canvas->setSplitMode(row, mode);
+                updateABEnableState(mode == GridRow::SplitMode::AB);
+            });
+            connect(splitPosition, &QDial::valueChanged, this, [this, row, updateSplitPosition](int value) {
+                m_canvas->setSplitPosition(row, value / 100.0f);
+                updateSplitPosition(value);
+            });
         }
-    };
-    updateLevel(level->value());
-    auto [pan, panTitle, panValue] = addSlider(m_canvas->getBranchOutputChannels(row) >= 2 ? pathName + " Balance" : pathName + " Pan",
-                                     -100, 100, qRound(m_canvas->getPan(row) * 100.0f), 0);
-    auto updatePan = [panValue](int value) {
-        panValue->setText(value == 0 ? "Center" : QString("%1% %2").arg(std::abs(value)).arg(value < 0 ? "Left" : "Right"));
-    };
-    updatePan(pan->value());
-    auto* polarity = new QCheckBox("Invert " + pathName + " polarity", m_paramContainer);
-    polarity->setChecked(m_canvas->isPolarityInverted(row));
-    m_paramLayout->addWidget(polarity);
-    auto* hint = new QLabel("Drag SPLIT to move the source. Drag MIX to move the return. Drag a new Split onto this Split to divide " + pathName + " again.", m_paramContainer);
-    hint->setWordWrap(true);
-    hint->setStyleSheet("color: #8b929d; margin-top: 9px;");
-    m_paramLayout->addWidget(hint);
+        auto* mainEnabled = new QCheckBox(m_canvas->isSharedSplitJunction(row) ? "Shared Path A enabled" : "Path A enabled", m_paramContainer);
+        mainEnabled->setChecked(m_canvas->isMainInputEnabled(row));
+        splitLayout->addWidget(mainEnabled);
+        connect(mainEnabled, &QCheckBox::toggled, this, [this, row](bool checked) { m_canvas->setMainInputEnabled(row, checked); });
+        auto* hint = new QLabel("Drag SPLIT to move this source. A shared source is a fan-out; separate source gaps remain independent binary splits.", m_paramContainer);
+        hint->setWordWrap(true);
+        hint->setStyleSheet("color: #8b929d; margin-top: 9px;");
+        splitLayout->addWidget(hint);
+        m_paramLayout->addWidget(splitCard);
+    } else {
+        auto* mixerHost = new QWidget(m_paramContainer);
+        mixerHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        mixerHost->setStyleSheet("background:transparent; border:none;");
+        auto* mixerFlow = new FlowLayout(mixerHost, 10);
+        auto makeStrip = [this, mixerFlow, mixerHost](const QString& title) {
+            auto* card = new InspectorCard(mixerHost); card->setFixedWidth(250);
+            auto* layout = new QVBoxLayout(card); layout->setContentsMargins(10, 9, 10, 10); layout->setSpacing(6);
+            layout->setAlignment(Qt::AlignTop);
+            auto* heading = new QLabel(title.toUpper(), card); heading->setStyleSheet("color:#D8B8FF; font-size:10px; font-weight:bold; letter-spacing:1px;"); layout->addWidget(heading);
+            mixerFlow->addWidget(card); return layout;
+        };
+        auto* mainStrip = makeStrip(sharedMixer ? "Shared Path A" : "Path A");
+        auto* mainKnobs = new QWidget(m_paramContainer); mainKnobs->setStyleSheet("background:transparent; border:none;"); auto* mainKnobFlow = new FlowLayout(mainKnobs, 6); mainStrip->addWidget(mainKnobs);
+
+        auto [mainLevel, mainLevelTitle, mainLevelValue] = addKnob(mainKnobFlow, "Level", 0, 200,
+            qRound(m_canvas->getMainMix(row) * 100.0f), 100, QColor("#B58BDE"));
+        auto updateMainLevel = [mainLevelValue](int value) {
+            if (value == 0) mainLevelValue->setText("-inf dB");
+            else {
+                const double db = 20.0 * std::log10(value / 100.0);
+                mainLevelValue->setText(QString("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1));
+            }
+        };
+        updateMainLevel(mainLevel->value());
+
+        const auto addBranchControls = [this, &addKnob, &makeStrip](int branchRow, bool showHeading) {
+            const QString branchName = m_canvas->getBranchName(branchRow);
+            auto* strip = makeStrip(showHeading ? branchName : "Branch " + branchName);
+            auto* branchEnabled = new QCheckBox("Enabled", m_paramContainer);
+            branchEnabled->setChecked(m_canvas->isBranchEnabled(branchRow));
+            strip->addWidget(branchEnabled);
+            auto* knobs = new QWidget(m_paramContainer); knobs->setStyleSheet("background:transparent; border:none;"); auto* knobFlow = new FlowLayout(knobs, 6); strip->addWidget(knobs);
+            auto [level, levelTitle, levelValue] = addKnob(knobFlow, "Level", 0, 200,
+                qRound(m_canvas->getMix(branchRow) * 100.0f), 100, QColor("#B58BDE"));
+            auto updateLevel = [levelValue](int value) {
+                if (value == 0) levelValue->setText("-inf dB");
+                else {
+                    const double db = 20.0 * std::log10(value / 100.0);
+                    levelValue->setText(QString("%1%2 dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1));
+                }
+            };
+            updateLevel(level->value());
+            auto [pan, panTitle, panValue] = addKnob(knobFlow, m_canvas->getBranchOutputChannels(branchRow) >= 2 ? "Balance" : "Pan",
+                -100, 100, qRound(m_canvas->getPan(branchRow) * 100.0f), 0, QColor("#B58BDE"));
+            auto updatePan = [panValue](int value) {
+                panValue->setText(value == 0 ? "Center" : QString("%1% %2").arg(std::abs(value)).arg(value < 0 ? "Left" : "Right"));
+            };
+            updatePan(pan->value());
+            auto* polarity = new QCheckBox("Invert polarity", m_paramContainer);
+            polarity->setChecked(m_canvas->isPolarityInverted(branchRow));
+            strip->addWidget(polarity);
+
+            connect(branchEnabled, &QCheckBox::toggled, this, [this, branchRow](bool checked) { m_canvas->setBranchEnabled(branchRow, checked); });
+            connect(level, &QDial::valueChanged, this, [this, branchRow, updateLevel](int value) {
+                m_canvas->setMix(branchRow, value / 100.0f);
+                updateLevel(value);
+            });
+            connect(pan, &QDial::valueChanged, this, [this, branchRow, updatePan](int value) {
+                m_canvas->setPan(branchRow, value / 100.0f);
+                updatePan(value);
+            });
+            connect(polarity, &QCheckBox::toggled, this, [this, branchRow](bool checked) { m_canvas->setPolarityInverted(branchRow, checked); });
+        };
+
+        for (int mixerRow : mixerRows) addBranchControls(mixerRow, sharedMixer);
+        m_paramLayout->addWidget(mixerHost);
+        auto* hint = new QLabel(sharedMixer
+            ? "This return is shared: Path A level is common, while every branch control remains independent. Drag a MIX handle away to create a separate mixer."
+            : "Drag MIX to move this return. Path A level is independent until another section returns at this exact gap.", m_paramContainer);
+        hint->setWordWrap(true);
+        hint->setStyleSheet("color: #8b929d; margin-top: 9px;");
+        m_paramLayout->addWidget(hint);
+
+        connect(mainLevel, &QDial::valueChanged, this, [this, row, updateMainLevel](int value) {
+            m_canvas->setMainMix(row, value / 100.0f);
+            updateMainLevel(value);
+        });
+    }
 
     auto* remove = new QPushButton("Remove Split Section", m_paramContainer);
     remove->setEnabled(true);
     remove->setToolTip("Remove this Split and Mixer along with all plugins on this branch.");
-    m_paramLayout->addWidget(remove);
+    remove->setStyleSheet(
+        "QPushButton { background:transparent; color:#D9959D; border:1px solid #694047; border-radius:5px; padding:6px 10px; font-size:11px; }"
+        "QPushButton:hover { background:#321F23; color:#FFB2BA; border-color:#95545D; }"
+    );
+    m_paramLayout->addWidget(remove, 0, Qt::AlignRight);
 
-    connect(type, &QComboBox::currentIndexChanged, this, [this, row, type, updateABEnableState](int) {
-        const auto mode = static_cast<GridRow::SplitMode>(type->currentData().toInt());
-        m_canvas->setSplitMode(row, mode);
-        updateABEnableState(mode == GridRow::SplitMode::AB);
-    });
-    connect(splitPosition, &QSlider::valueChanged, this, [this, row, updateSplitPosition](int value) {
-        m_canvas->setSplitPosition(row, value / 100.0f);
-        updateSplitPosition(value);
-    });
-    connect(polarity, &QCheckBox::toggled, this, [this, row](bool checked) { m_canvas->setPolarityInverted(row, checked); });
-    connect(mainLevel, &QSlider::valueChanged, this, [this, row, updateMainLevel](int value) {
-        m_canvas->setMainMix(row, value / 100.0f);
-        updateMainLevel(value);
-    });
-    connect(level, &QSlider::valueChanged, this, [this, row, updateLevel](int value) {
-        m_canvas->setMix(row, value / 100.0f);
-        updateLevel(value);
-    });
-    connect(pan, &QSlider::valueChanged, this, [this, row, updatePan](int value) {
-        m_canvas->setPan(row, value / 100.0f);
-        updatePan(value);
-    });
     connect(remove, &QPushButton::clicked, this, [this, row] {
         m_canvas->removeSplitSection(row);
         showPluginControls(nullptr);
     });
-    Q_UNUSED(isSplit);
 }
 
 void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect) {

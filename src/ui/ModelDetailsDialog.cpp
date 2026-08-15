@@ -8,7 +8,7 @@ ModelDetailsDialog::ModelDetailsDialog(std::shared_ptr<AudioNode> node, AudioEng
     : QDialog(parent), m_node(node), m_engine(engine) {
     setWindowTitle("Model Details - TONE3000");
     resize(560, 560);
-    setStyleSheet("QDialog { background-color: #1A1A1D; color: #E0E0E0; }");
+    setStyleSheet("QDialog { background-color: #18191D; color: #E0E0E0; } QScrollBar:vertical { background:#18191D; width:10px; } QScrollBar::handle:vertical { background:#3B404A; border-radius:5px; }");
 
     if (m_node) {
         m_filePath = QString::fromStdString(m_node->getModelFilePath());
@@ -37,7 +37,7 @@ void ModelDetailsDialog::setupUI() {
 
     // --- HERO BANNER ---
     QFrame* headerCard = new QFrame(scrollContent);
-    headerCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
+    headerCard->setStyleSheet("QFrame { background-color:#22242A; border-radius:8px; border:1px solid #3B3E46; padding:14px; }");
     auto* headerLayout = new QVBoxLayout(headerCard);
     headerLayout->setContentsMargins(0, 0, 0, 0);
     headerLayout->setSpacing(6);
@@ -65,7 +65,7 @@ void ModelDetailsDialog::setupUI() {
     badgeLayout->setSpacing(6);
 
     QLabel* namBadge = new QLabel("NAM", headerCard);
-    namBadge->setStyleSheet("background-color: #00B0FF; color: #000000; font-weight: bold; font-size: 10px; border-radius: 3px; padding: 2px 6px;");
+    namBadge->setStyleSheet("background-color:#D97B32; color:#18191D; font-weight:bold; font-size:10px; border-radius:3px; padding:2px 6px;");
     badgeLayout->addWidget(namBadge);
 
     QString verStr = QString::fromStdString(m_meta.version);
@@ -95,7 +95,7 @@ void ModelDetailsDialog::setupUI() {
     QString descStr = QString::fromStdString(m_meta.description).trimmed();
     if (!descStr.isEmpty()) {
         QFrame* descCard = new QFrame(scrollContent);
-        descCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
+        descCard->setStyleSheet("QFrame { background-color:#22242A; border-radius:8px; border:1px solid #3B3E46; padding:14px; }");
         auto* descLayout = new QVBoxLayout(descCard);
         descLayout->setContentsMargins(0, 0, 0, 0);
         descLayout->setSpacing(6);
@@ -116,7 +116,7 @@ void ModelDetailsDialog::setupUI() {
 
     // --- GEAR SPECIFICATIONS ---
     QFrame* gearCard = new QFrame(scrollContent);
-    gearCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
+    gearCard->setStyleSheet("QFrame { background-color:#22242A; border-radius:8px; border:1px solid #3B3E46; padding:14px; }");
     auto* gearLayout = new QVBoxLayout(gearCard);
     gearLayout->setContentsMargins(0, 0, 0, 0);
     gearLayout->setSpacing(6);
@@ -162,7 +162,7 @@ void ModelDetailsDialog::setupUI() {
 
     // --- TECHNICAL SPECIFICATIONS ---
     QFrame* techCard = new QFrame(scrollContent);
-    techCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
+    techCard->setStyleSheet("QFrame { background-color:#22242A; border-radius:8px; border:1px solid #3B3E46; padding:14px; }");
     auto* techLayout = new QVBoxLayout(techCard);
     techLayout->setContentsMargins(0, 0, 0, 0);
     techLayout->setSpacing(6);
@@ -190,7 +190,7 @@ void ModelDetailsDialog::setupUI() {
 
     // --- FILE LOCATION ---
     QFrame* pathCard = new QFrame(scrollContent);
-    pathCard->setStyleSheet("QFrame { background-color: #242528; border-radius: 8px; border: 1px solid #333438; padding: 14px; }");
+    pathCard->setStyleSheet("QFrame { background-color:#22242A; border-radius:8px; border:1px solid #3B3E46; padding:14px; }");
     auto* pathLayout = new QVBoxLayout(pathCard);
     pathLayout->setContentsMargins(0, 0, 0, 0);
     pathLayout->setSpacing(4);

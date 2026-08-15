@@ -1,6 +1,7 @@
 #include "RoutingHandleItem.h"
 #include "NodeCanvas.h"
 #include "PlusButtonWidget.h"
+#include "CanvasMetrics.h"
 #include <QPainter>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsScene>
@@ -109,11 +110,13 @@ void RoutingHandleItem::clearPreview() {
 }
 
 QRectF RoutingHandleItem::boundingRect() const {
-    return QRectF(-44, -20, 88, 40);
+    return QRectF(-CanvasMetrics::junctionWidth / 2.0, -CanvasMetrics::junctionHeight / 2.0,
+                  CanvasMetrics::junctionWidth, CanvasMetrics::junctionHeight);
 }
 
 void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
     painter->setRenderHint(QPainter::Antialiasing);
+    const bool sharedMixer = !m_isSplit && m_canvas->isSharedMixerJunction(m_branchRow);
 
     QColor accent;
     if (m_dragInvalid) {
@@ -121,42 +124,30 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
     } else if (m_dragging) {
         accent = QColor(255, 200, 50);
     } else if (isSelected() || m_hovered) {
-        accent = QColor(53, 199, 255);
+        accent = QColor(139, 158, 214);
     } else if (!m_isSplit) {
         float mixVal = m_canvas->getMix(m_branchRow);
         if (mixVal > 1.05f) {
-            accent = QColor(255, 200, 50); // Boosted Golden Amber!
+            accent = QColor(159, 143, 202);
         } else if (mixVal < 0.95f) {
             accent = QColor(100, 110, 130); // Attenuated
         } else {
-            accent = QColor(106, 120, 153);
+            accent = QColor(105, 114, 147);
         }
     } else {
-        accent = QColor(106, 120, 153);
+        accent = QColor(105, 114, 147);
     }
 
     painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging || m_dragInvalid || (!m_isSplit && m_canvas->getMix(m_branchRow) > 1.05f) ? 2.0 : 1.2));
-    painter->setBrush(m_dragInvalid ? QColor(45, 18, 18) : QColor(36, 40, 51));
-    painter->drawRoundedRect(QRectF(-42, -18, 84, 36), 6, 6);
-
-    painter->setPen(Qt::NoPen);
-    painter->setBrush(m_dragInvalid ? QColor(220, 38, 38)
-        : (m_isSplit ? QColor(37, 99, 235) : QColor(126, 70, 180)));
-    painter->drawRoundedRect(QRectF(-42, -18, 84, 16), 6, 6);
-    painter->drawRect(QRectF(-42, -10, 84, 8));
+    const QRectF pill = boundingRect().adjusted(1, 1, -1, -1);
+    painter->setBrush(m_dragInvalid ? QColor(55, 28, 35) : QColor(39, 42, 52));
+    painter->drawRoundedRect(pill, CanvasMetrics::junctionHeight / 2.0, CanvasMetrics::junctionHeight / 2.0);
 
     QFont labelFont = painter->font();
     labelFont.setPixelSize(9);
     labelFont.setBold(true);
     painter->setFont(labelFont);
-    painter->setPen(QColor(245, 247, 250));
-    painter->drawText(QRectF(-42, -18, 84, 16), Qt::AlignCenter, m_isSplit ? "SPLIT" : "MIX");
-
-    QFont detailFont = painter->font();
-    detailFont.setPixelSize(9);
-    detailFont.setBold(false);
-    painter->setFont(detailFont);
-    painter->setPen(QColor(200, 205, 215));
+    painter->setPen(QColor(232, 235, 242));
     const QString pathName = m_canvas->getBranchName(m_branchRow);
     QString pathLetter = pathName;
     if (pathLetter.startsWith("Path ")) {
@@ -165,31 +156,15 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
 
     QString detail;
     if (m_isSplit) {
-        detail = QString("%1 · %2").arg(pathLetter).arg(
+        detail = QString("SPLIT %1 %2").arg(pathLetter).arg(
             m_canvas->getSplitMode(m_branchRow) == GridRow::SplitMode::AB ? "A/B" : "COPY");
+    } else if (sharedMixer) {
+        detail = QString("MIX A+%1").arg(pathLetter);
     } else {
-        const float level = m_canvas->getMix(m_branchRow);
-        QString lvlStr;
-        if (level <= 0.0f) {
-            lvlStr = "-inf";
-        } else {
-            double db = 20.0 * std::log10(level);
-            if (std::abs(db) < 0.05) {
-                lvlStr = "0dB";
-            } else {
-                lvlStr = QString("%1%2dB").arg(db > 0.05 ? "+" : "").arg(db, 0, 'f', 1);
-            }
-        }
-        const float pan = m_canvas->getPan(m_branchRow);
-        if (std::abs(pan) < 0.05f) {
-            detail = QString("%1 · %2").arg(pathLetter).arg(lvlStr);
-        } else {
-            QString panStr = pan < 0.0f ? QString("L%1").arg(qRound(-pan * 100.0f))
-                                        : QString("R%1").arg(qRound(pan * 100.0f));
-            detail = QString("%1 · %2 %3").arg(pathLetter).arg(lvlStr).arg(panStr);
-        }
+        detail = QString("MIX %1").arg(pathLetter);
     }
-    painter->drawText(QRectF(-42, -2, 84, 20), Qt::AlignCenter, detail);
+    painter->drawText(pill.adjusted(5, 0, -5, 0), Qt::AlignCenter,
+                      QFontMetrics(labelFont).elidedText(detail, Qt::ElideRight, qRound(pill.width() - 10)));
 
     // Set tooltip dynamically
     QString tooltipText;
@@ -202,8 +177,18 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
             if (pos == 0.0f) tooltipText += "Mode: A/B (50/50 Equal Power)";
             else tooltipText += QString("Mode: A/B (%1% to %2)").arg(qRound(std::abs(pos) * 100.0f)).arg(pos < 0 ? "A" : "B");
         }
+    } else if (sharedMixer) {
+        QStringList branches;
+        for (int mixerRow : m_canvas->getMixerGroupRows(m_branchRow)) {
+            branches.append(m_canvas->getBranchName(mixerRow));
+        }
+        tooltipText = QString("Shared Mix Return A + %1\nShared Path A level\n%2 level: %3\nPan: %4\nDrag this handle to create a separate mixer.")
+            .arg(branches.join(" + "))
+            .arg(pathLetter)
+            .arg(m_canvas->getMix(m_branchRow) <= 0.0f ? "-inf dB" : QString("%1 dB").arg(20.0 * std::log10(m_canvas->getMix(m_branchRow)), 0, 'f', 1))
+            .arg(m_canvas->getPan(m_branchRow) == 0.0f ? "Center" : QString("%1% %2").arg(qRound(std::abs(m_canvas->getPan(m_branchRow)) * 100.0f)).arg(m_canvas->getPan(m_branchRow) < 0 ? "Left" : "Right"));
     } else {
-        tooltipText = QString("Mix Return %1\nLevel: %2\nPan: %3")
+        tooltipText = QString("Mix Return %1\nPath A level: independent\nLevel: %2\nPan: %3")
             .arg(pathLetter)
             .arg(m_canvas->getMix(m_branchRow) <= 0.0f ? "-inf dB" : QString("%1 dB").arg(20.0 * std::log10(m_canvas->getMix(m_branchRow)), 0, 'f', 1))
             .arg(m_canvas->getPan(m_branchRow) == 0.0f ? "Center" : QString("%1% %2").arg(qRound(std::abs(m_canvas->getPan(m_branchRow)) * 100.0f)).arg(m_canvas->getPan(m_branchRow) < 0 ? "Left" : "Right"));
