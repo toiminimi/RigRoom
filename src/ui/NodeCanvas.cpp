@@ -89,19 +89,20 @@ public:
         painter->drawRoundedRect(boundingRect().adjusted(1, 1, -1, -1), 5, 5);
 
         painter->setPen(QPen(accent, 1.8, Qt::SolidLine, Qt::RoundCap));
-        painter->drawLine(QPointF(8, 14), QPointF(18, 14));
-        painter->drawLine(QPointF(18, 14), QPointF(24, 8));
-        painter->drawLine(QPointF(18, 14), QPointF(24, 20));
+        const qreal centerY = CanvasMetrics::splitToolHeight / 2.0;
+        painter->drawLine(QPointF(7, centerY), QPointF(16, centerY));
+        painter->drawLine(QPointF(16, centerY), QPointF(22, centerY - 5));
+        painter->drawLine(QPointF(16, centerY), QPointF(22, centerY + 5));
         painter->setBrush(accent);
         painter->setPen(Qt::NoPen);
-        painter->drawEllipse(QPointF(18, 14), 2.5, 2.5);
+        painter->drawEllipse(QPointF(16, centerY), 2.2, 2.2);
 
         QFont font = painter->font();
         font.setPixelSize(10);
         font.setBold(true);
         painter->setFont(font);
         painter->setPen(QColor(235, 240, 246));
-        painter->drawText(QRectF(30, 0, 40, CanvasMetrics::splitToolHeight), Qt::AlignVCenter | Qt::AlignLeft, "SPLIT");
+        painter->drawText(QRectF(27, 0, 35, CanvasMetrics::splitToolHeight), Qt::AlignVCenter | Qt::AlignLeft, "SPLIT");
     }
 
 protected:
@@ -265,45 +266,6 @@ private:
     TargetGap m_activeTarget;
     bool m_hovered = false;
     bool m_dragging = false;
-};
-
-class BranchLabelItem final : public QGraphicsItem {
-public:
-    BranchLabelItem(NodeCanvas* canvas, int row, bool enabled)
-        : m_canvas(canvas), m_row(row), m_enabled(enabled) {
-        setAcceptHoverEvents(true);
-        setCursor(Qt::PointingHandCursor);
-        setZValue(8);
-    }
-
-    QRectF boundingRect() const override { return QRectF(0, 0, 84, 20); }
-
-    void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
-        painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(QPen(m_enabled ? QColor(65, 74, 86) : QColor(55, 58, 66), 1));
-        painter->setBrush(m_hovered ? QColor(38, 43, 51) : QColor(25, 27, 32));
-        painter->drawRoundedRect(boundingRect(), 4, 4);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(m_enabled ? QColor(53, 199, 255) : QColor(80, 84, 94));
-        painter->drawEllipse(QRectF(7, 7, 6, 6));
-        painter->setPen(m_enabled ? QColor(225, 229, 236) : QColor(130, 135, 145));
-        painter->drawText(QRectF(18, 0, 62, 20), Qt::AlignVCenter | Qt::AlignLeft,
-                          m_canvas->getBranchName(m_row));
-    }
-
-protected:
-    void mousePressEvent(QGraphicsSceneMouseEvent* event) override {
-        m_canvas->selectBranch(m_row);
-        event->accept();
-    }
-    void hoverEnterEvent(QGraphicsSceneHoverEvent*) override { m_hovered = true; update(); }
-    void hoverLeaveEvent(QGraphicsSceneHoverEvent*) override { m_hovered = false; update(); }
-
-private:
-    NodeCanvas* m_canvas;
-    int m_row;
-    bool m_enabled;
-    bool m_hovered = false;
 };
 
 // ─── Constructor ──────────────────────────────────────────────────────────────
@@ -748,11 +710,10 @@ bool NodeCanvas::isSharedSplitJunction(int row) const {
 }
 
 bool NodeCanvas::isSharedMixerJunction(int row) const {
-    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS || !m_rows[row].hasSplitSection || !m_rows[row].enabled) return false;
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS || !m_rows[row].hasSplitSection) return false;
     int count = 0;
     for (int candidate : {0, 1, 3, 4}) {
-        if (m_rows[candidate].hasSplitSection && m_rows[candidate].enabled &&
-            m_rows[candidate].parentRow == m_rows[row].parentRow &&
+        if (m_rows[candidate].hasSplitSection && m_rows[candidate].parentRow == m_rows[row].parentRow &&
             m_rows[candidate].mergeCol == m_rows[row].mergeCol) {
             ++count;
         }
@@ -763,13 +724,8 @@ bool NodeCanvas::isSharedMixerJunction(int row) const {
 std::vector<int> NodeCanvas::getMixerGroupRows(int row) const {
     std::vector<int> rows;
     if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS || !m_rows[row].hasSplitSection) return rows;
-    if (!m_rows[row].enabled) {
-        rows.push_back(row);
-        return rows;
-    }
     for (int candidate : {0, 1, 3, 4}) {
-        if (m_rows[candidate].hasSplitSection && m_rows[candidate].enabled &&
-            m_rows[candidate].parentRow == m_rows[row].parentRow &&
+        if (m_rows[candidate].hasSplitSection && m_rows[candidate].parentRow == m_rows[row].parentRow &&
             m_rows[candidate].mergeCol == m_rows[row].mergeCol) {
             rows.push_back(candidate);
         }
@@ -809,43 +765,39 @@ void NodeCanvas::onPlusButtonClicked(int row, int col, QPoint screenPos, bool is
 }
 
 // ─── Layout Engine ────────────────────────────────────────────────────────────
-void NodeCanvas::calculateRowCenters(qreal rowCenters[NUM_ROWS], qreal H) const {
-    // Fixed lane spacing keeps nested branches aligned without stretching the grid.
-    constexpr qreal LANE_HEIGHT = CanvasMetrics::laneHeight;
+int NodeCanvas::activeLaneSteps() const {
+    const int topSteps = m_rows[0].hasSplitSection ? 2 : (m_rows[1].hasSplitSection ? 1 : 0);
+    const int bottomSteps = m_rows[4].hasSplitSection ? 2 : (m_rows[3].hasSplitSection ? 1 : 0);
+    return topSteps + bottomSteps;
+}
 
-    // Calculate Y offsets relative to Main Row (Row 2, offset = 0)
+qreal NodeCanvas::canvasHeightFor(qreal viewportHeight) const {
+    const int steps = activeLaneSteps();
+    const qreal minimumHeight = CanvasMetrics::requiredHeight(
+        steps + 1, CanvasMetrics::cardHeight, CanvasMetrics::minimumLaneHeight);
+    return std::max(viewportHeight, minimumHeight);
+}
+
+void NodeCanvas::calculateRowCenters(qreal rowCenters[NUM_ROWS], qreal H) const {
+    const int steps = activeLaneSteps();
+    qreal laneHeight = CanvasMetrics::preferredLaneHeight;
+    if (steps > 0) {
+        const qreal availableHeight = H - 2.0 * CanvasMetrics::marginY - CanvasMetrics::cardHeight;
+        laneHeight = std::clamp(availableHeight / steps,
+                                CanvasMetrics::minimumLaneHeight,
+                                CanvasMetrics::preferredLaneHeight);
+    }
+
     qreal offset[NUM_ROWS] = {0.0};
-    
-    // Row 2 is MAIN_ROW
-    offset[2] = 0.0;
-    
-    // Row 1 (B1) and Row 0 (B2) are top branches
     if (m_rows[1].hasSplitSection) {
-        offset[1] = -LANE_HEIGHT;
-        if (m_rows[0].hasSplitSection) {
-            offset[0] = -2 * LANE_HEIGHT;
-        } else {
-            offset[0] = -LANE_HEIGHT;
-        }
-    } else {
-        offset[1] = 0.0;
-        offset[0] = 0.0;
+        offset[1] = -laneHeight;
+        offset[0] = m_rows[0].hasSplitSection ? -2.0 * laneHeight : -laneHeight;
     }
-    
-    // Row 3 (C1) and Row 4 (C2) are bottom branches
     if (m_rows[3].hasSplitSection) {
-        offset[3] = LANE_HEIGHT;
-        if (m_rows[4].hasSplitSection) {
-            offset[4] = 2 * LANE_HEIGHT;
-        } else {
-            offset[4] = LANE_HEIGHT;
-        }
-    } else {
-        offset[3] = 0.0;
-        offset[4] = 0.0;
+        offset[3] = laneHeight;
+        offset[4] = m_rows[4].hasSplitSection ? 2.0 * laneHeight : laneHeight;
     }
-    
-    // Find min and max active offsets
+
     qreal minY = 0.0;
     qreal maxY = 0.0;
     for (int r = 0; r < NUM_ROWS; ++r) {
@@ -854,14 +806,9 @@ void NodeCanvas::calculateRowCenters(qreal rowCenters[NUM_ROWS], qreal H) const 
             maxY = std::max(maxY, offset[r]);
         }
     }
-    
-    // Center the whole group around H / 2
-    qreal midOffset = (minY + maxY) / 2.0;
-    qreal mainY = snapToGrid(H / 2.0 - midOffset);
 
-    for (int r = 0; r < NUM_ROWS; ++r) {
-        rowCenters[r] = mainY + offset[r];
-    }
+    const qreal mainY = H / 2.0 - (minY + maxY) / 2.0;
+    for (int r = 0; r < NUM_ROWS; ++r) rowCenters[r] = mainY + offset[r];
 }
 
 qreal NodeCanvas::getRowCenterY(int row) const {
@@ -869,7 +816,7 @@ qreal NodeCanvas::getRowCenterY(int row) const {
     qreal rowCenters[NUM_ROWS];
     qreal H = m_scene->sceneRect().height();
     if (H <= 0.0) {
-        H = std::max((qreal)viewport()->height(), CanvasMetrics::requiredHeight());
+        H = canvasHeightFor(viewport()->height());
     }
     calculateRowCenters(rowCenters, H);
     return rowCenters[row];
@@ -901,27 +848,7 @@ void NodeCanvas::updateLayout() {
         setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     }
     
-    qreal H = viewport()->height();
-    constexpr qreal LANE_HEIGHT = CanvasMetrics::laneHeight;
-    qreal offset[NUM_ROWS] = {0.0};
-    if (m_rows[1].hasSplitSection) {
-        offset[1] = -LANE_HEIGHT;
-        offset[0] = m_rows[0].hasSplitSection ? -2 * LANE_HEIGHT : -LANE_HEIGHT;
-    }
-    if (m_rows[3].hasSplitSection) {
-        offset[3] = LANE_HEIGHT;
-        offset[4] = m_rows[4].hasSplitSection ? 2 * LANE_HEIGHT : LANE_HEIGHT;
-    }
-    qreal minY = 0.0;
-    qreal maxY = 0.0;
-    for (int r = 0; r < NUM_ROWS; ++r) {
-        if (r == MAIN_ROW || m_rows[r].hasSplitSection) {
-            minY = std::min(minY, offset[r]);
-            maxY = std::max(maxY, offset[r]);
-        }
-    }
-    qreal activeSpan = maxY - minY;
-    H = std::max(H, 2.0 * CanvasMetrics::marginY + CanvasMetrics::cardHeight + activeSpan);
+    qreal H = canvasHeightFor(viewport()->height());
 
     m_scene->setSceneRect(0, 0, W, H);
 
@@ -960,7 +887,9 @@ void NodeCanvas::updateLayout() {
     layoutRow(4, rowCenters[4], trackLeft, trackRight, trackW, sysRightX, sysLeftX, rowCenters[m_rows[4].parentRow]);
 
     auto* splitTool = new SplitToolItem(this);
-    splitTool->setPos(trackLeft, MARGIN_Y / 2.0);
+    splitTool->setPos(MARGIN_X,
+                      sysCY - CanvasMetrics::cardHeight / 2.0
+                          - CanvasMetrics::splitToolHeight - 6.0);
     m_scene->addItem(splitTool);
     m_dynamicItems.push_back(splitTool);
     
@@ -1051,14 +980,6 @@ void NodeCanvas::layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
 
         startX = parentSplitX;
         endX = parentMergeX;
-    }
-
-    if (r != MAIN_ROW) {
-        auto* branchLabel = new BranchLabelItem(this, r, row.enabled);
-        // Dedicated left rail: never obscures the column-zero card.
-        branchLabel->setPos(trackLeft - branchLabel->boundingRect().width() - 8.0, cy - 10.0);
-        m_scene->addItem(branchLabel);
-        m_dynamicItems.push_back(branchLabel);
     }
 
     // Clear stale node widgets not in active range
@@ -1309,8 +1230,8 @@ void NodeCanvas::rebuildAudioConnections() {
             connect(src.id, 0, dst.id, 0, fixedGain, gains.left);
             connect(src.id, 1, dst.id, 1, fixedGain, gains.right);
         } else if (src.channels >= 2 && dst.channels == 1) {
-            connect(src.id, 0, dst.id, 0, fixedGain, gains.monoHalf);
-            connect(src.id, 1, dst.id, 0, fixedGain, gains.monoHalf);
+            connect(src.id, 0, dst.id, 0, fixedGain * 0.5f, gains.left);
+            connect(src.id, 1, dst.id, 0, fixedGain * 0.5f, gains.right);
         } else if (dst.channels >= 2) {
             connect(src.id, 0, dst.id, 0, fixedGain, gains.left);
             connect(src.id, 0, dst.id, 1, fixedGain, gains.right);
@@ -1544,7 +1465,6 @@ void NodeCanvas::updateBranchGains(int row) {
     m_branchGains[row].left->store(polarity * level * (pan > 0.0f ? 1.0f - pan : 1.0f), std::memory_order_relaxed);
     m_branchGains[row].right->store(polarity * level * (pan < 0.0f ? 1.0f + pan : 1.0f), std::memory_order_relaxed);
     m_branchGains[row].mono->store(polarity * level, std::memory_order_relaxed);
-    m_branchGains[row].monoHalf->store(polarity * level * 0.5f, std::memory_order_relaxed);
 }
 
 float NodeCanvas::branchSplitGain(int row) const {
@@ -1676,6 +1596,26 @@ int NodeCanvas::getBranchDestinationChannels(int row) const {
     return 2;
 }
 
+QString NodeCanvas::getBranchStereoCollapseReason(int row) const {
+    if (row == MAIN_ROW || row < 0 || row >= NUM_ROWS || !m_rows[row].hasSplitSection) return {};
+
+    int pathRow = m_rows[row].parentRow;
+    int startCol = m_rows[row].mergeCol < 0 ? m_numCols : m_rows[row].mergeCol;
+    while (pathRow >= 0 && pathRow < NUM_ROWS) {
+        for (int col = startCol; col < m_numCols; ++col) {
+            const auto& node = m_rows[pathRow].plugins[col];
+            if (node && (node->getAudioInputCount() < 2 || node->getAudioOutputCount() < 2)) {
+                return QString::fromStdString(node->getName());
+            }
+        }
+        if (pathRow == MAIN_ROW) break;
+        startCol = m_rows[pathRow].mergeCol < 0 ? m_numCols : m_rows[pathRow].mergeCol;
+        pathRow = m_rows[pathRow].parentRow;
+    }
+
+    return m_engine->isHardwareOutputStereo() ? QString{} : QStringLiteral("the mono hardware output");
+}
+
 PlusButtonWidget* NodeCanvas::findPlusButton(int row, int col) const {
     for (auto* item : m_scene->items()) {
         if (auto* pb = dynamic_cast<PlusButtonWidget*>(item)) {
@@ -1693,7 +1633,8 @@ void NodeCanvas::setDragGap(int row, int plusIdx, bool isSecondOfCol) {
     m_dragGapIsSecondOfCol = isSecondOfCol;
 
     if (row >= 0 && row < NUM_ROWS && plusIdx >= 0 && plusIdx < NUM_COLS && m_dragPlaceholderItem) {
-        qreal H = std::max(200.0, (qreal)viewport()->height());
+        qreal H = m_scene->sceneRect().height();
+        if (H <= 0.0) H = canvasHeightFor(viewport()->height());
         qreal rowCenters[NUM_ROWS];
         calculateRowCenters(rowCenters, H);
         qreal inputW = m_sysInputWidget ? m_sysInputWidget->width() : SYS_NODE_W;
@@ -1721,27 +1662,7 @@ void NodeCanvas::reflowLayoutWithDragGap() {
     for (const auto& row : m_rows) longestChain = std::max(longestChain, row.count());
     qreal minimumChainW = longestChain * PLUG_NODE_W + (longestChain + 1) * (INSERT_BTN_W + 2 * MIN_SPACING);
     W = std::max(W, 2 * MARGIN_X + 2 * SYS_NODE_W + 32.0 + minimumChainW);
-    qreal H = std::max(200.0, (qreal)viewport()->height());
-    constexpr qreal LANE_HEIGHT = CanvasMetrics::laneHeight;
-    qreal offset[NUM_ROWS] = {0.0};
-    if (m_rows[1].hasSplitSection) {
-        offset[1] = -LANE_HEIGHT;
-        offset[0] = m_rows[0].hasSplitSection ? -2 * LANE_HEIGHT : -LANE_HEIGHT;
-    }
-    if (m_rows[3].hasSplitSection) {
-        offset[3] = LANE_HEIGHT;
-        offset[4] = m_rows[4].hasSplitSection ? 2 * LANE_HEIGHT : LANE_HEIGHT;
-    }
-    qreal minY = 0.0;
-    qreal maxY = 0.0;
-    for (int r = 0; r < NUM_ROWS; ++r) {
-        if (r == MAIN_ROW || m_rows[r].hasSplitSection) {
-            minY = std::min(minY, offset[r]);
-            maxY = std::max(maxY, offset[r]);
-        }
-    }
-    qreal activeSpan = maxY - minY;
-    H = std::max(H, activeSpan + 2 * MARGIN_Y + 40.0);
+    qreal H = canvasHeightFor(std::max(200.0, (qreal)viewport()->height()));
 
     qreal rowCenters[NUM_ROWS];
     calculateRowCenters(rowCenters, H);
@@ -1946,6 +1867,10 @@ void NodeCanvas::reflowRow(int r, qreal cy, qreal trackLeft, qreal trackRight, q
 void NodeCanvas::movePluginToGap(int fromRow, int fromCol, int toRow, int toColGap, bool isSecondOfCol) {
     if (fromRow < 0 || fromRow >= NUM_ROWS || fromCol < 0 || fromCol >= NUM_COLS) return;
     if (toRow < 0 || toRow >= NUM_ROWS || toColGap < 0 || toColGap >= NUM_COLS) return;
+    if (fromRow == toRow && fromCol == toColGap) {
+        updateLayout();
+        return;
+    }
 
     auto plugin = m_rows[fromRow].plugins[fromCol];
     if (!plugin) return;
@@ -2155,12 +2080,17 @@ void NodeCanvas::resetZoom() {
 }
 
 void NodeCanvas::fitToCanvas() {
-    const QRectF content = m_scene->sceneRect();
+    QRectF content;
+    for (QGraphicsItem* item : m_scene->items()) {
+        if (!item->isVisible() || item == m_dragPlaceholderItem) continue;
+        content = content.isNull() ? item->sceneBoundingRect() : content.united(item->sceneBoundingRect());
+    }
     if (content.isEmpty() || viewport()->width() <= 0 || viewport()->height() <= 0) return;
-    const qreal padding = 32.0;
+    const qreal padding = 48.0;
     const qreal fit = std::min((viewport()->width() - padding) / content.width(),
                                (viewport()->height() - padding) / content.height());
-    setZoomLevel(std::clamp<double>(fit, 0.5, 1.0));
+    setZoomLevel(std::clamp<double>(fit, 0.5, 1.5));
+    centerOn(content.center());
 }
 
 void NodeCanvas::zoomIn() {

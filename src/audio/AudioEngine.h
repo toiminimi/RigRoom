@@ -78,8 +78,10 @@ public:
     
     void setInputGain(float db);
     void setOutputGain(float db);
+    void setPresetOutputLevel(float db);
     float getInputGainDB() const;
     float getOutputGainDB() const;
+    float getPresetOutputLevelDB() const;
     float getInputPeak() { return m_inputPeak.exchange(0.0f, std::memory_order_relaxed); }
     float getOutputPeak() { return m_outputPeak.exchange(0.0f, std::memory_order_relaxed); }
     uint32_t getXRunCount() const { return m_xrunCount.load(std::memory_order_relaxed); }
@@ -125,6 +127,9 @@ private:
     
     std::atomic<float> m_inputGain{1.0f};
     std::atomic<float> m_outputGain{1.0f};
+    std::atomic<float> m_presetOutputLevel{1.0f};
+    // Accessed only from the audio callback to ramp preset changes smoothly.
+    float m_currentPresetOutputLevel = 1.0f;
     std::atomic<float> m_inputPeak{0.0f};
     std::atomic<float> m_outputPeak{0.0f};
     std::atomic<uint32_t> m_xrunCount{0};

@@ -118,7 +118,7 @@ if(BUILD_TESTING)
         src/ui/GridRow.h
     )
     target_include_directories(RigRoomRoutingTests PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
-    target_compile_options(RigRoomRoutingTests PRIVATE -rdynamic)
+    target_compile_options(RigRoomRoutingTests PRIVATE -rdynamic -UNDEBUG)
     target_link_options(RigRoomRoutingTests PRIVATE -rdynamic)
     target_link_libraries(RigRoomRoutingTests PRIVATE Qt6::Widgets PkgConfig::JACK)
     add_test(NAME RigRoomRoutingTests COMMAND RigRoomRoutingTests)

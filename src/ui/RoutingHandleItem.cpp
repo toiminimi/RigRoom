@@ -139,12 +139,16 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
     }
 
     painter->setPen(QPen(accent, isSelected() || m_hovered || m_dragging || m_dragInvalid || (!m_isSplit && m_canvas->getMix(m_branchRow) > 1.05f) ? 2.0 : 1.2));
-    const QRectF pill = boundingRect().adjusted(1, 1, -1, -1);
+    const QRectF pill(-CanvasMetrics::junctionWidth / 2.0 + 1.0,
+                      -CanvasMetrics::junctionVisualHeight / 2.0,
+                      CanvasMetrics::junctionWidth - 2.0,
+                      CanvasMetrics::junctionVisualHeight);
     painter->setBrush(m_dragInvalid ? QColor(55, 28, 35) : QColor(39, 42, 52));
-    painter->drawRoundedRect(pill, CanvasMetrics::junctionHeight / 2.0, CanvasMetrics::junctionHeight / 2.0);
+    painter->drawRoundedRect(pill, CanvasMetrics::junctionVisualHeight / 2.0,
+                             CanvasMetrics::junctionVisualHeight / 2.0);
 
     QFont labelFont = painter->font();
-    labelFont.setPixelSize(9);
+    labelFont.setPixelSize(8);
     labelFont.setBold(true);
     painter->setFont(labelFont);
     painter->setPen(QColor(232, 235, 242));
@@ -156,7 +160,7 @@ void RoutingHandleItem::paint(QPainter* painter, const QStyleOptionGraphicsItem*
 
     QString detail;
     if (m_isSplit) {
-        detail = QString("SPLIT %1 %2").arg(pathLetter).arg(
+        detail = QString("%1 %2").arg(pathLetter).arg(
             m_canvas->getSplitMode(m_branchRow) == GridRow::SplitMode::AB ? "A/B" : "COPY");
     } else if (sharedMixer) {
         detail = QString("MIX A+%1").arg(pathLetter);

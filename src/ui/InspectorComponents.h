@@ -6,6 +6,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QMouseEvent>
+#include <functional>
 #include <vector>
 
 class InspectorCard final : public QFrame {
@@ -59,4 +60,24 @@ private:
   QPointF m_dragStartPosition;
   QColor m_accent = QColor("#55B8E8");
   bool m_dragging = false;
+  bool m_resetOnRelease = false;
+};
+
+class InspectorValueLabel final : public QLabel {
+public:
+  explicit InspectorValueLabel(QWidget *parent = nullptr);
+  void setEditor(const QString &title, double minimum, double maximum,
+                 int decimals, std::function<double()> currentValue,
+                 std::function<void(double)> valueChanged);
+
+protected:
+  void mouseReleaseEvent(QMouseEvent *event) override;
+
+private:
+  QString m_title;
+  double m_minimum = 0.0;
+  double m_maximum = 1.0;
+  int m_decimals = 2;
+  std::function<double()> m_currentValue;
+  std::function<void(double)> m_valueChanged;
 };

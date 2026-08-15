@@ -19,7 +19,6 @@ class NodeCanvas : public QGraphicsView {
     Q_OBJECT
 signals:
     void routingChanged();
-    void branchSelected(int row);
     void routingNodeSelected(int row, bool isSplit);
     void canvasAboutToBeCleared();
     void nodeAboutToBeRemoved(AudioNode* node);
@@ -98,9 +97,9 @@ public:
     void setMainOutputEnabled(bool enabled);
     int getBranchOutputChannels(int row) const;
     int getBranchDestinationChannels(int row) const;
+    QString getBranchStereoCollapseReason(int row) const;
     void beginRoutingUpdate();
     void endRoutingUpdate();
-    void selectBranch(int row) { emit branchSelected(row); }
     void selectRoutingNode(int row, bool isSplit) { emit routingNodeSelected(row, isSplit); }
     
     static constexpr int NUM_ROWS = 5;
@@ -155,6 +154,8 @@ private:
     void reflowLayoutWithDragGap();
     void reflowRow(int r, qreal cy, qreal trackLeft, qreal trackRight, qreal trackW);
     PlusButtonWidget* findPlusButton(int row, int col) const;
+    int activeLaneSteps() const;
+    qreal canvasHeightFor(qreal viewportHeight) const;
     void calculateRowCenters(qreal rowCenters[NUM_ROWS], qreal H) const;
 
     AudioEngine* m_engine;
@@ -165,7 +166,6 @@ private:
         std::shared_ptr<std::atomic<float>> left = std::make_shared<std::atomic<float>>(1.0f);
         std::shared_ptr<std::atomic<float>> right = std::make_shared<std::atomic<float>>(1.0f);
         std::shared_ptr<std::atomic<float>> mono = std::make_shared<std::atomic<float>>(1.0f);
-        std::shared_ptr<std::atomic<float>> monoHalf = std::make_shared<std::atomic<float>>(0.5f);
     };
     BranchGainControls m_branchGains[NUM_ROWS];
 

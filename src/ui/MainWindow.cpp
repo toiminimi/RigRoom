@@ -86,6 +86,7 @@
 #include <QButtonGroup>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <tuple>
 #include <QSet>
 
@@ -891,15 +892,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (!windowGeometry.isEmpty()) restoreGeometry(windowGeometry);
     const QList<int> workspaceSizes = windowSettings.value("main_workspace_vertical_splitter").value<QList<int>>();
     QTimer::singleShot(0, this, [this, workspaceSizes]() {
+        constexpr int minimumCanvasHeight = 260;
+        constexpr int minimumInspectorHeight = 180;
+        constexpr int defaultInspectorHeight = 260;
+        const int workspaceHeight = std::max(1, m_workspaceSplitter->height());
+        const int maximumInspectorHeight = std::max(minimumInspectorHeight,
+                                                    workspaceHeight - minimumCanvasHeight);
+
+        int requestedInspectorHeight = defaultInspectorHeight;
         if (workspaceSizes.size() == m_workspaceSplitter->count()) {
-            m_workspaceSplitter->setSizes(workspaceSizes);
-            return;
+            const int savedTotal = std::accumulate(workspaceSizes.cbegin(), workspaceSizes.cend(), 0,
+                                                   [](int total, int size) { return total + std::max(0, size); });
+            if (savedTotal > 0) {
+                requestedInspectorHeight = qRound(static_cast<double>(workspaceSizes.constLast())
+                                                   / savedTotal * workspaceHeight);
+            }
         }
 
-        constexpr int defaultInspectorHeight = 280;
-        const int inspectorHeight = std::clamp(defaultInspectorHeight, 180,
-                                                std::max(180, m_workspaceSplitter->height() - 260));
-        m_workspaceSplitter->setSizes({std::max(260, m_workspaceSplitter->height() - inspectorHeight), inspectorHeight});
+        const int inspectorHeight = std::clamp(requestedInspectorHeight, minimumInspectorHeight,
+                                               maximumInspectorHeight);
+        m_workspaceSplitter->setSizes({std::max(minimumCanvasHeight, workspaceHeight - inspectorHeight),
+                                       inspectorHeight});
     });
     m_canvas->setSystemChannelModes(m_engine.isHardwareInputStereo(), m_engine.isHardwareOutputStereo());
     m_canvas->applyRoutingChange(true);
@@ -914,7 +927,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_canvas, &NodeCanvas::nodeSelected, this, &MainWindow::onNodeSelected);
     connect(m_canvas, &NodeCanvas::plusButtonClicked, this, &MainWindow::onPlusButtonClicked);
     connect(m_canvas, &NodeCanvas::nodeContextMenuRequested, this, &MainWindow::onNodeContextMenuRequested);
-    connect(m_canvas, &NodeCanvas::branchSelected, this, &MainWindow::showBranchControls);
     connect(m_canvas, &NodeCanvas::routingNodeSelected, this, &MainWindow::showRoutingNodeControls);
     connect(m_canvas, &NodeCanvas::canvasAboutToBeCleared, this, &MainWindow::closeAllPluginUIs);
     connect(m_canvas, &NodeCanvas::nodeAboutToBeRemoved, this, &MainWindow::closePluginUIForNode);
@@ -1610,7 +1622,7 @@ void MainWindow::setupUI() {
     
     // Top bar Out controls
     m_outputGainLabel = new QToolButton(this);
-    m_outputGainLabel->setText(QString("Out  %1 dB").arg(m_engine.getOutputGainDB(), 0, 'f', 1));
+    m_outputGainLabel->setText(QString("Master Out  %1 dB").arg(m_engine.getOutputGainDB(), 0, 'f', 1));
     m_outputGainLabel->setToolTip("Open output gain fader");
     m_outputGainLabel->setStyleSheet(m_inputGainLabel->styleSheet());
     topBar->addWidget(m_outputGainLabel);
@@ -1628,7 +1640,7 @@ void MainWindow::setupUI() {
         "Output Gain", m_engine.getOutputGainDB(),
         [this](float value) {
             m_engine.setOutputGain(value);
-            m_outputGainLabel->setText(QString("Out  %1 dB").arg(value, 0, 'f', 1));
+            m_outputGainLabel->setText(QString("Master Out  %1 dB").arg(value, 0, 'f', 1));
         },
         [this] { saveConfigSettings(); }, this);
     m_outputPopupMeter = outputPopover->meter();
@@ -1667,7 +1679,8 @@ void MainWindow::setupUI() {
     // Bottom inspector: responsive control deck
     m_paramContainer = new QWidget(this);
     m_paramContainer->setMinimumHeight(180);
-    m_paramContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    // The scroll area owns overflow; inspector content must not resize the workspace splitter.
+    m_paramContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     m_paramContainer->setObjectName("inspectorDeck");
     m_paramContainer->setStyleSheet(
         "QWidget#inspectorDeck { background:#18191D; border-top:1px solid #30323A; }"
@@ -1696,7 +1709,6 @@ void MainWindow::setupUI() {
     paramContentLayout->setSpacing(0);
     auto* paramShelf = new QWidget(paramContent);
     paramShelf->setObjectName("paramShelf");
-    paramShelf->setMaximumWidth(1280);
     paramShelf->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     paramShelf->setStyleSheet("QWidget#paramShelf { background: transparent; }");
     m_paramLayout = new QVBoxLayout(paramShelf);
@@ -3036,13 +3048,14 @@ void MainWindow::onInputGainChanged(int value) {
 
 void MainWindow::onOutputGainChanged(int value) {
     m_engine.setOutputGain(static_cast<float>(value));
-    m_outputGainLabel->setText(QString::number(value) + " dB");
+    m_outputGainLabel->setText(QString("Master Out  %1 dB").arg(value));
     saveConfigSettings();
 }
 
 void MainWindow::savePresetToFile(const QString& path) {
     QJsonObject presetObj;
-    presetObj["formatVersion"] = 5;
+    presetObj["formatVersion"] = 6;
+    presetObj["outputLevelDb"] = m_engine.getPresetOutputLevelDB();
     
     QJsonArray nodesArray;
     for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
@@ -3151,6 +3164,8 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     showPluginControls(nullptr);
     
     QJsonObject presetObj = doc.object();
+    // Older presets did not have a final output stage, so their neutral value is 0 dB.
+    m_engine.setPresetOutputLevel(static_cast<float>(presetObj["outputLevelDb"].toDouble(0.0)));
     
     m_canvas->beginRoutingUpdate();
     m_canvas->clearCanvas();
@@ -3386,6 +3401,7 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     QTimer::singleShot(0, this, [this]() {
         m_isLoadingPreset = false;
         setUnsavedChanges(false);
+        m_canvas->fitToCanvas();
     });
 }
 
@@ -4339,6 +4355,58 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
 
     m_noParamLabel->hide();
 
+    if (node->getType() == NodeType::SystemOutput) {
+        auto* outputCard = new InspectorCard(m_paramContainer);
+        auto* outputLayout = new QVBoxLayout(outputCard);
+        outputLayout->setContentsMargins(12, 10, 12, 12);
+        outputLayout->setSpacing(6);
+        outputLayout->addWidget(new InspectorSectionHeader("PRESET OUTPUT", outputCard));
+
+        auto* description = new QLabel(
+            "Matches this preset's level before the global Master Out control.", outputCard);
+        description->setWordWrap(true);
+        description->setStyleSheet("color:#AAB3C0; font-size:11px; border:none;");
+        outputLayout->addWidget(description);
+
+        auto* cell = new QWidget(outputCard);
+        cell->setStyleSheet("background:transparent; border:none;");
+        auto* cellLayout = new QVBoxLayout(cell);
+        cellLayout->setContentsMargins(4, 3, 4, 3);
+        cellLayout->setSpacing(3);
+        auto* title = new QLabel("Preset Level", cell);
+        title->setAlignment(Qt::AlignCenter);
+        title->setStyleSheet("color:#C9D0DA; font-size:10px; border:none;");
+        auto* knob = new InspectorKnob(cell);
+        knob->setRange(-240, 120);
+        knob->setDefaultValue(0);
+        knob->setValue(qRound(m_engine.getPresetOutputLevelDB() * 10.0f));
+        knob->setAccessibleName("Preset Level");
+        knob->setToolTip("Drag to adjust. Double-click to reset.");
+        auto* valueLabel = new InspectorValueLabel(cell);
+        valueLabel->setAlignment(Qt::AlignCenter);
+        valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold; border:none;");
+        auto updateValue = [knob, valueLabel](int value) {
+            const QString text = QString::number(value / 10.0, 'f', 1) + " dB";
+            valueLabel->setText(text);
+            knob->setAccessibleValueText(text);
+        };
+        updateValue(knob->value());
+        valueLabel->setEditor("Set Preset Level", -24.0, 12.0, 1,
+            [knob] { return knob->value() / 10.0; },
+            [knob](double value) { knob->setValue(qRound(value * 10.0)); });
+        cellLayout->addWidget(title);
+        cellLayout->addWidget(knob, 0, Qt::AlignHCenter);
+        cellLayout->addWidget(valueLabel);
+        outputLayout->addWidget(cell, 0, Qt::AlignHCenter);
+        connect(knob, &QDial::valueChanged, this, [this, updateValue](int value) {
+            m_engine.setPresetOutputLevel(value / 10.0f);
+            updateValue(value);
+            setUnsavedChanges(true);
+        });
+        m_paramLayout->addWidget(outputCard);
+        return;
+    }
+
     if (node->isMissing()) {
         auto* missingBox = new InspectorCard(m_paramContainer);
         missingBox->setStyleSheet("QFrame#inspectorCard { background:#291B1E; border:1px solid #804147; border-radius:8px; }");
@@ -4620,8 +4688,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             "QFrame#namModelModule QLabel { border: none; background: transparent; }"
         );
         auto* moduleLayout = new QVBoxLayout(namModule);
-        moduleLayout->setContentsMargins(16, 12, 16, 12);
-        moduleLayout->setSpacing(10);
+        moduleLayout->setContentsMargins(16, 10, 16, 10);
+        moduleLayout->setSpacing(6);
         auto* moduleHeader = new QHBoxLayout();
         auto* moduleTitle = new QLabel("NAM MODEL", namModule);
         moduleTitle->setStyleSheet("color: #F0A35A; font-size: 10px; font-weight: bold; letter-spacing: 1.2px;");
@@ -4636,21 +4704,13 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         moduleLayout->addLayout(namMainFlow);
         namKnobBank = new QWidget(namModule);
         namKnobBank->setObjectName("namKnobBank");
-        namKnobBank->setMinimumWidth(210);
+        // Three standard 96px controls, their gaps, and the bank inset fit on one row.
+        namKnobBank->setMinimumWidth(312);
         namKnobBank->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         namKnobBank->setStyleSheet("QWidget#namKnobBank { background: transparent; border-left: 1px solid #3A424B; padding-left: 10px; }");
         controlHostLayout = new QVBoxLayout(namKnobBank);
         controlHostLayout->setContentsMargins(8, 0, 0, 0);
         controlHostLayout->setSpacing(2);
-
-        auto* footerRule = new QFrame(namModule);
-        footerRule->setFrameShape(QFrame::HLine);
-        footerRule->setStyleSheet("color: #3A424B;");
-        moduleLayout->addWidget(footerRule);
-        namFooterLayout = new QHBoxLayout();
-        namFooterLayout->setContentsMargins(0, 0, 0, 0);
-        namFooterLayout->setSpacing(8);
-        moduleLayout->addLayout(namFooterLayout);
         m_paramLayout->addWidget(namModule);
     }
 
@@ -4783,17 +4843,13 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             makeResettable(knob);
             rowLayout->addWidget(knob, 0, Qt::AlignHCenter);
 
-            auto* valueLabel = new QLabel(QString::number(qRound(param.value)), rowWidget);
+            auto* valueLabel = new InspectorValueLabel(rowWidget);
+            valueLabel->setText(QString::number(qRound(param.value)));
             valueLabel->setAlignment(Qt::AlignCenter);
-            valueLabel->setCursor(Qt::IBeamCursor);
-            valueLabel->setToolTip("Double-click to enter an exact value");
             valueLabel->setStyleSheet("color: #80D8FF; font-size: 11px; border: none;");
-            valueLabel->setProperty("parameterEdit", true);
-            valueLabel->setProperty("parameterIndex", idx);
-            valueLabel->setProperty("parameterMinimum", min);
-            valueLabel->setProperty("parameterMaximum", max);
-            valueLabel->setProperty("parameterInteger", true);
-            valueLabel->installEventFilter(this);
+            valueLabel->setEditor(QString::fromStdString(param.name), min, max, 0,
+                [knob] { return static_cast<double>(knob->value()); },
+                [knob](double value) { knob->setValue(qRound(value)); });
             rowLayout->addWidget(valueLabel);
 
             connect(knob, &QDial::valueChanged, this, [this, node, idx, valueLabel, knob](int value) {
@@ -4823,16 +4879,16 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             makeResettable(knob);
             rowLayout->addWidget(knob, 0, Qt::AlignHCenter);
 
-            auto* valueLabel = new QLabel(QString::number(param.value, 'f', 2), rowWidget);
+            auto* valueLabel = new InspectorValueLabel(rowWidget);
+            valueLabel->setText(QString::number(param.value, 'f', 2));
             valueLabel->setAlignment(Qt::AlignCenter);
-            valueLabel->setCursor(Qt::IBeamCursor);
-            valueLabel->setToolTip("Double-click to enter an exact value");
             valueLabel->setStyleSheet("color: #80D8FF; font-size: 11px; border: none;");
-            valueLabel->setProperty("parameterEdit", true);
-            valueLabel->setProperty("parameterIndex", idx);
-            valueLabel->setProperty("parameterMinimum", min);
-            valueLabel->setProperty("parameterMaximum", max);
-            valueLabel->installEventFilter(this);
+            valueLabel->setEditor(QString::fromStdString(param.name), min, max, 4,
+                [knob, min, max] { return min + (knob->value() / 1000.0) * (max - min); },
+                [knob, min, max](double value) {
+                    const float normalized = max > min ? (static_cast<float>(value) - min) / (max - min) : 0.0f;
+                    knob->setValue(qRound(std::clamp(normalized, 0.0f, 1.0f) * 1000));
+                });
             rowLayout->addWidget(valueLabel);
             connect(knob, &QDial::valueChanged, this, [this, node, idx, min, max, valueLabel, knob](int value) {
                 const float floatVal = min + (value / 1000.0f) * (max - min);
@@ -4873,7 +4929,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             namMainFlow->addWidget(imageLabel);
 
             auto* modelInfo = new QWidget(namModule);
-            modelInfo->setMinimumWidth(240);
+            modelInfo->setMinimumWidth(220);
             modelInfo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
             modelInfo->setStyleSheet("background: transparent;");
             namInfoLayout = new QVBoxLayout(modelInfo);
@@ -4892,6 +4948,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             authorLabel->setWordWrap(true);
             authorLabel->setStyleSheet("color: #A6B1BC; font-size: 11px;");
             namInfoLayout->addWidget(authorLabel);
+            namFooterLayout = new QHBoxLayout();
+            namFooterLayout->setContentsMargins(0, 3, 0, 0);
+            namFooterLayout->setSpacing(6);
+            namInfoLayout->addLayout(namFooterLayout);
             namMainFlow->addWidget(modelInfo);
             namMainFlow->addWidget(namKnobBank);
 
@@ -4995,11 +5055,13 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         btnLayout->setSpacing(4);
 
         QPushButton* loadBtn = new QPushButton("Load File...", fpFrame);
+        loadBtn->setFixedWidth(112);
         loadBtn->setStyleSheet(
             "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 6px; font-size: 11px; border: none; }"
             "QPushButton:hover { background-color: #009688; }"
         );
         btnLayout->addWidget(loadBtn);
+        btnLayout->addStretch();
 
         std::string uri = fp.uri;
 
@@ -5294,10 +5356,6 @@ void MainWindow::onPluginDoubleClicked(std::shared_ptr<AudioNode> node) {
     }
 }
 
-void MainWindow::showBranchControls(int row) {
-    showRoutingNodeControls(row, true);
-}
-
 void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     if (row == NodeCanvas::MAIN_ROW || row < 0 || row >= NodeCanvas::NUM_ROWS) {
         showPluginControls(nullptr);
@@ -5362,8 +5420,12 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
         cell->setStyleSheet("background:transparent; border:none;");
         auto* layout = new QVBoxLayout(cell); layout->setContentsMargins(4, 3, 4, 3); layout->setSpacing(3);
         auto* label = new QLabel(title, cell); label->setAlignment(Qt::AlignCenter); label->setStyleSheet("color:#C9D0DA; font-size:10px;");
-        auto* valueLabel = new QLabel(cell); valueLabel->setAlignment(Qt::AlignCenter); valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold;");
+        auto* valueLabel = new InspectorValueLabel(cell); valueLabel->setAlignment(Qt::AlignCenter); valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold;");
         auto* knob = new InspectorKnob(cell); knob->setRange(minimum, maximum); knob->setValue(value); knob->setDefaultValue(defaultValue); knob->setAccentColor(accent); knob->setAccessibleName(title);
+        knob->setToolTip("Drag to adjust. Double-click to reset.");
+        valueLabel->setEditor("Set " + title, minimum, maximum, 0,
+            [knob] { return static_cast<double>(knob->value()); },
+            [knob](double exactValue) { knob->setValue(qRound(exactValue)); });
         layout->addWidget(label); layout->addWidget(knob, 0, Qt::AlignHCenter); layout->addWidget(valueLabel); host->addWidget(cell);
         return std::make_tuple(knob, label, valueLabel);
     };
@@ -5463,12 +5525,36 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
                 }
             };
             updateLevel(level->value());
-            auto [pan, panTitle, panValue] = addKnob(knobFlow, m_canvas->getBranchOutputChannels(branchRow) >= 2 ? "Balance" : "Pan",
+            const int sourceChannels = m_canvas->getBranchOutputChannels(branchRow);
+            const int destinationChannels = m_canvas->getBranchDestinationChannels(branchRow);
+            const bool hasSpatialControl = sourceChannels >= 2 || destinationChannels >= 2;
+            const QString spatialTitle = sourceChannels >= 2 ? "Balance" : (destinationChannels >= 2 ? "Pan" : "Mono");
+            auto [pan, panTitle, panValue] = addKnob(knobFlow, spatialTitle,
                 -100, 100, qRound(m_canvas->getPan(branchRow) * 100.0f), 0, QColor("#B58BDE"));
-            auto updatePan = [panValue](int value) {
-                panValue->setText(value == 0 ? "Center" : QString("%1% %2").arg(std::abs(value)).arg(value < 0 ? "Left" : "Right"));
+            auto updatePan = [panValue, hasSpatialControl](int value) {
+                panValue->setText(!hasSpatialControl ? "Fixed"
+                    : (value == 0 ? "Center" : QString("%1% %2").arg(std::abs(value)).arg(value < 0 ? "Left" : "Right")));
             };
             updatePan(pan->value());
+            if (!hasSpatialControl) {
+                pan->setEnabled(false);
+                pan->setToolTip("Mono source returning to a mono destination has no spatial control.");
+                panTitle->setToolTip(pan->toolTip());
+                panValue->setToolTip(pan->toolTip());
+            }
+            const QString collapseReason = m_canvas->getBranchStereoCollapseReason(branchRow);
+            if (!collapseReason.isEmpty()) {
+                const QString warningText = QString(
+                    "Stereo placement is collapsed downstream by %1. Move this MIX return after it to preserve Balance/Pan.")
+                    .arg(collapseReason);
+                auto* warning = new QLabel(warningText, m_paramContainer);
+                warning->setWordWrap(true);
+                warning->setStyleSheet(
+                    "color:#E2B66E; background:#2B261D; border:1px solid #5A4930; border-radius:4px; padding:5px 7px;");
+                warning->setToolTip(warningText);
+                strip->addWidget(warning);
+                pan->setToolTip(warningText);
+            }
             auto* polarity = new QCheckBox("Invert polarity", m_paramContainer);
             polarity->setChecked(m_canvas->isPolarityInverted(branchRow));
             strip->addWidget(polarity);
@@ -5478,10 +5564,12 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
                 m_canvas->setMix(branchRow, value / 100.0f);
                 updateLevel(value);
             });
-            connect(pan, &QDial::valueChanged, this, [this, branchRow, updatePan](int value) {
-                m_canvas->setPan(branchRow, value / 100.0f);
-                updatePan(value);
-            });
+            if (hasSpatialControl) {
+                connect(pan, &QDial::valueChanged, this, [this, branchRow, updatePan](int value) {
+                    m_canvas->setPan(branchRow, value / 100.0f);
+                    updatePan(value);
+                });
+            }
             connect(polarity, &QCheckBox::toggled, this, [this, branchRow](bool checked) { m_canvas->setPolarityInverted(branchRow, checked); });
         };
 

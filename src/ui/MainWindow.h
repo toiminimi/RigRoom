@@ -60,7 +60,6 @@ private slots:
     void onInputGainChanged(int value);
     void onOutputGainChanged(int value);
     void onNodeContextMenuRequested(int row, int col, QPoint screenPos);
-    void showBranchControls(int row);
     void showRoutingNodeControls(int row, bool isSplit);
 
 private:

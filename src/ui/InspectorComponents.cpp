@@ -1,4 +1,5 @@
 #include "InspectorComponents.h"
+#include <QInputDialog>
 #include <QMouseEvent>
 #include <QPainter>
 #include <algorithm>
@@ -127,13 +128,21 @@ void InspectorKnob::mouseReleaseEvent(QMouseEvent *event) {
     m_dragging = false;
     setSliderDown(false);
     setCursor(Qt::SizeVerCursor);
+    if (m_resetOnRelease) {
+      m_resetOnRelease = false;
+      setValue(m_defaultValue);
+    }
     event->accept();
     return;
   }
   QDial::mouseReleaseEvent(event);
 }
 void InspectorKnob::mouseDoubleClickEvent(QMouseEvent *event) {
-  setValue(m_defaultValue);
+  // The double-click event precedes its final release. Reset there so that
+  // Qt's final dial click handling cannot overwrite the default value.
+  m_dragging = true;
+  setSliderDown(true);
+  m_resetOnRelease = true;
   event->accept();
 }
 void InspectorKnob::paintEvent(QPaintEvent *) {
@@ -180,4 +189,33 @@ void InspectorKnob::paintEvent(QPaintEvent *) {
     p.setBrush(Qt::NoBrush);
     p.drawEllipse(r.adjusted(-1, -1, 1, 1));
   }
+}
+
+InspectorValueLabel::InspectorValueLabel(QWidget *parent) : QLabel(parent) {
+  setCursor(Qt::IBeamCursor);
+  setToolTip("Click to enter an exact value");
+}
+
+void InspectorValueLabel::setEditor(const QString &title, double minimum,
+                                    double maximum, int decimals,
+                                    std::function<double()> currentValue,
+                                    std::function<void(double)> valueChanged) {
+  m_title = title;
+  m_minimum = minimum;
+  m_maximum = maximum;
+  m_decimals = decimals;
+  m_currentValue = std::move(currentValue);
+  m_valueChanged = std::move(valueChanged);
+}
+
+void InspectorValueLabel::mouseReleaseEvent(QMouseEvent *event) {
+  if (event->button() == Qt::LeftButton && m_currentValue && m_valueChanged) {
+    bool accepted = false;
+    const double value = QInputDialog::getDouble(this, m_title, "Value:",
+        m_currentValue(), m_minimum, m_maximum, m_decimals, &accepted);
+    if (accepted) m_valueChanged(value);
+    event->accept();
+    return;
+  }
+  QLabel::mouseReleaseEvent(event);
 }

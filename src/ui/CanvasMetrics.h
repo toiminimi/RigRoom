@@ -4,9 +4,10 @@
 // Visual-only geometry for the fixed signal-path canvas. Grid indices stay in GridRow.
 namespace CanvasMetrics {
 inline constexpr qreal cardWidth = 120.0, cardHeight = 50.0, columnPitch = 136.0;
-inline constexpr qreal clearGap = 16.0, laneHeight = 128.0;
-inline constexpr qreal junctionWidth = 68.0, junctionHeight = 26.0;
-inline constexpr qreal splitToolWidth = 72.0, splitToolHeight = 28.0;
+inline constexpr qreal clearGap = 16.0;
+inline constexpr qreal preferredLaneHeight = 96.0, minimumLaneHeight = 84.0;
+inline constexpr qreal junctionWidth = 68.0, junctionHeight = 26.0, junctionVisualHeight = 22.0;
+inline constexpr qreal splitToolWidth = 64.0, splitToolHeight = 22.0;
 inline constexpr qreal marginX = 16.0, marginY = 28.0;
 constexpr qreal columnX(qreal trackLeft, int column) { return trackLeft + column * columnPitch; }
 constexpr qreal gapX(qreal trackLeft, int gap, int columns) {
@@ -15,7 +16,8 @@ constexpr qreal gapX(qreal trackLeft, int gap, int columns) {
 constexpr qreal requiredWidth(int columns, qreal systemWidth = cardWidth) {
     return 2 * marginX + 2 * systemWidth + 2 * clearGap + (columns - 1) * columnPitch + cardWidth;
 }
-constexpr qreal requiredHeight(int activeLanes = 5, qreal tallestCard = cardHeight) {
+constexpr qreal requiredHeight(int activeLanes = 5, qreal tallestCard = cardHeight,
+                               qreal laneHeight = preferredLaneHeight) {
     return 2 * marginY + tallestCard + (activeLanes - 1) * laneHeight;
 }
 }

@@ -391,6 +391,7 @@ void NodeWidget::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     
     // Record drag start
     m_dragStartPos = event->scenePos();
+    m_dragStartItemPos = pos();
     m_dragging = false;
     
     QGraphicsItem::mousePressEvent(event);
@@ -422,6 +423,16 @@ void NodeWidget::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         // Find nearest PlusButtonWidget to mouse cursor to visually split nodes and show the slot
         auto* canvas = dynamic_cast<NodeCanvas*>(scene()->views().first());
         if (canvas) {
+            const auto [fromRow, fromCol] = canvas->findNode(m_audioNode);
+            const QPointF originCenter = m_dragStartItemPos + QPointF(m_width / 2.0, m_height / 2.0);
+            const QPointF originDelta = event->scenePos() - originCenter;
+            if (fromRow >= 0 && std::abs(originDelta.x()) <= m_width / 2.0
+                && std::abs(originDelta.y()) <= m_height / 2.0 + 16.0) {
+                canvas->setDragGap(fromRow, fromCol);
+                event->accept();
+                return;
+            }
+
             PlusButtonWidget* closestPb = nullptr;
             qreal minDist = 1e9;
             QPointF mousePos = event->scenePos();
@@ -433,7 +444,7 @@ void NodeWidget::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
                     qreal dy = mousePos.y() - pbPos.y();
                     qreal d = std::sqrt(dx * dx + dy * dy);
                     
-                    if (std::abs(dy) < 80.0 && d < minDist) {
+                    if (std::abs(dy) < 80.0 && d < 96.0 && d < minDist) {
                         minDist = d;
                         closestPb = pb;
                     }

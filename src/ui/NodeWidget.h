@@ -53,4 +53,5 @@ private:
     // Drag-and-drop
     bool m_dragging = false;
     QPointF m_dragStartPos;
+    QPointF m_dragStartItemPos;
 };

@@ -539,21 +539,27 @@ void AudioEngine::processAudio(int numFrames) {
         }
     }
     
-    // 4. Copy SystemOutput node buffers to physical JACK, apply output gain & measure output peak
+    // 4. Copy SystemOutput node buffers to physical JACK, apply preset and global output gains.
     float outPeak = 0.0f;
-    float outGain = m_outputGain.load(std::memory_order_relaxed);
+    const float targetPresetOutputLevel = m_presetOutputLevel.load(std::memory_order_relaxed);
+    const float presetOutputLevelStep =
+        (targetPresetOutputLevel - m_currentPresetOutputLevel) / std::max(1, numFrames);
+    const float outputGain = m_outputGain.load(std::memory_order_relaxed);
     for (int i = 0; i < 2; ++i) {
         float* src = m_sysOutputNode->getPorts()[i].buffer;
         float* dst = jackOutBuffers[i];
         if (src && dst) {
+            float presetOutputLevel = m_currentPresetOutputLevel;
             for (int k = 0; k < numFrames; ++k) {
-                float val = src[k] * outGain;
+                presetOutputLevel += presetOutputLevelStep;
+                float val = src[k] * presetOutputLevel * outputGain;
                 dst[k] = val;
                 float absVal = std::abs(val);
                 if (absVal > outPeak) outPeak = absVal;
             }
         }
     }
+    m_currentPresetOutputLevel = targetPresetOutputLevel;
     if (outPeak >= 1.0f) {
         m_outputClipped.store(true, std::memory_order_relaxed);
     }
@@ -598,6 +604,12 @@ void AudioEngine::setOutputGain(float db) {
     m_outputGain.store(gain, std::memory_order_relaxed);
 }
 
+void AudioEngine::setPresetOutputLevel(float db) {
+    const float clampedDb = std::clamp(db, -24.0f, 12.0f);
+    const float gain = std::pow(10.0f, clampedDb / 20.0f);
+    m_presetOutputLevel.store(gain, std::memory_order_relaxed);
+}
+
 float AudioEngine::getInputGainDB() const {
     float gain = m_inputGain.load(std::memory_order_relaxed);
     return 20.0f * std::log10(std::max(0.0001f, gain));
@@ -605,5 +617,10 @@ float AudioEngine::getInputGainDB() const {
 
 float AudioEngine::getOutputGainDB() const {
     float gain = m_outputGain.load(std::memory_order_relaxed);
+    return 20.0f * std::log10(std::max(0.0001f, gain));
+}
+
+float AudioEngine::getPresetOutputLevelDB() const {
+    const float gain = m_presetOutputLevel.load(std::memory_order_relaxed);
     return 20.0f * std::log10(std::max(0.0001f, gain));
 }
