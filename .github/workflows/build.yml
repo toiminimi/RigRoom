@@ -20,3 +20,20 @@ jobs:
         run: cmake --build build -j2
       - name: Validate install layout
         run: DESTDIR="$PWD/stage" cmake --install build --prefix /usr
+
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build AppImage
+        run: ./packaging/build-appimage.sh
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RigRoom-AppImage
+          path: |
+            RigRoom-*.AppImage
+            RigRoom-*.AppImage.sha256
+          if-no-files-found: error
