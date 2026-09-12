@@ -22,12 +22,12 @@
 ### 🔀 Parallel Signal Routing Canvas
 - **Multi-Lane Canvas**: Interactive node graph supporting up to 5 parallel audio lanes (`Main`, `Path B1`, `Path B2`, `Path C1`, `Path C2`) with configurable slot capacity (6 to 12 slots).
 - **Drag-and-Drop Workflow**: Drag `DRAG SPLIT` to create parallel branches, drag pedal blocks between slots and lanes, and drag split/merge handles to adjust routing positions.
-- **Split Modes**: Configurable branch routing modes (Copy, A/B Split, Equal Power blend).
+- **Split Modes**: **Copy** (full duplicate of the source) or **A/B** (power split between Path A and the branch).
 - **Visual Signal Flow**: Animated glowing connection wires showing active signal paths, zoom controls (wheel zoom, 100% reset), and missing plugin alerts.
 
 ### ☁️ TONE3000 Neural Model Integration
 - **In-App Search**: Search and filter thousands of open-source neural amp and pedal captures on TONE3000.
-- **One-Click Loading**: View model details, tags, and sample rates, and download models directly into NAM plugin nodes.
+- **One-Click Loading**: View model details, tags, sample rates, and profile images, and download models directly into NAM plugin nodes.
 - **Requirements**: A **Neural Amp Modeler LV2 plugin** must be installed on the system. Users must provide their own **TONE3000 secret key** (available at tone3000.com/settings) in the application settings. Secure key storage requires a running Secret Service provider — **gnome-keyring** on GNOME or **KDE Wallet** (with the Secrets DBus interface enabled) on KDE Plasma.
 
 ### 🎚️ Audio Engine & Display Compatibility
@@ -38,6 +38,7 @@
 
 ### 💾 Preset Management
 - **Pedalboard Presets**: Save, load, rename, and delete rigroom configurations.
+- **Preset Level**: Per-preset loudness (−24 to +12 dB), applied before the global Master Out. Click the System Output node to adjust it; the level is stored with the preset.
 - **Top Bar Quick Selector**: Active preset bar with prev/next navigation arrows.
 - **Parameter Synchronization**: Automatic parameter and preset state sync upon loading presets.
 
