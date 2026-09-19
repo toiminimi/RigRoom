@@ -84,11 +84,34 @@ void testLibraryNavigationAndReconcile() {
     lib.renameFile("new.json", "renamed.json");
     assert(lib.nameAt(1) == "renamed");
 
-    // Shrinking the layout re-homes presets that no longer fit.
-    lib.setLayout(4, 2); // 8 slots; "c" at 10 must move
-    assert(lib.slotCount() == 8);
-    assert(lib.slotOfName("c") >= 0 && lib.slotOfName("c") < 8);
-    assert(lib.occupiedCount() == 4);
+    // Bank count never drops below the highest bank in use, and never moves a preset.
+    assert(lib.minBanks() == 3); // "c" is at 03C
+    lib.setNumBanks(2);
+    assert(lib.numBanks() == 3 && lib.slotOfName("c") == 10);
+    lib.setNumBanks(10);
+    assert(lib.numBanks() == 10 && lib.slotOfName("c") == 10);
+}
+
+void testLegacyBankSizeKeepsPositions() {
+    // Older builds allowed 8 presets per bank but kept flat slot numbers;
+    // loading them with 4 per bank puts every preset back where it was.
+    QTemporaryDir tmp;
+    const QString presets = tmp.filePath("presets");
+    QDir().mkpath(presets);
+    touch(presets + "/lead.json");
+    touch(presets + "/clean.json");
+    {
+        QFile f(tmp.filePath("library.json"));
+        assert(f.open(QFile::WriteOnly));
+        f.write(R"({"version":1,"slotsPerBank":8,"numBanks":32,
+                    "slots":{"12":"lead.json","3":"clean.json"},"bankNames":{"3":"Floyd"}})");
+    }
+    PresetLibrary lib(presets, tmp.filePath("library.json"));
+    lib.load();
+    assert(lib.slotsPerBank() == 4);
+    assert(lib.slotLabel(lib.slotOfName("lead")) == "04A");
+    assert(lib.slotLabel(lib.slotOfName("clean")) == "01D");
+    assert(lib.bankLabel(3) == "04 Floyd");
 }
 
 SceneModel::BoardState board(bool driveOff, bool delayOff, float gain) {
@@ -229,8 +252,8 @@ void testBankNamesAndSceneSummaries() {
     assert(again.bankLabel(3) == "04 Floyd" && again.bankName(0) == "Gig");
     again.setBankName(0, "");
     assert(again.bankLabel(0) == "01");
-    again.setLayout(4, 2); // bank 3 no longer exists
-    assert(again.bankName(3).isEmpty());
+    again.setNumBanks(2); // empty library: allowed; the name is kept for later
+    assert(again.numBanks() >= 1);
 
     assert(lib.sceneNamesAt(lib.slotOfName("multi")) == QStringList({"Clean", "Lead", "Solo"}));
     assert(lib.sceneNamesAt(lib.slotOfName("single")).isEmpty());
@@ -311,6 +334,7 @@ int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLibraryLabelsAndMigration();
     testLibraryNavigationAndReconcile();
+    testLegacyBankSizeKeepsPositions();
     testScenesSwitchAndRecall();
     testScenesJsonRoundTripAndPrune();
     testBankNamesAndSceneSummaries();

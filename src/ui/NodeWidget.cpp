@@ -333,12 +333,17 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
 
     // Scene-controlled blocks get a small "S" pill before the channel badge.
     bool sceneMarked = false;
+    bool midiMarked = false;
     if (!isSystemNode && scene() && !scene()->views().isEmpty()) {
         if (auto* canvas = dynamic_cast<NodeCanvas*>(scene()->views().first())) {
             sceneMarked = canvas->isSceneMarked(m_audioNode->uniqueId);
+            midiMarked = canvas->isMidiMarked(m_audioNode->uniqueId);
         }
     }
     const QRectF sceneBadgeRect(badgeRect.left() - 14, m_height - 16, 11, 10);
+    // "M" (MIDI assignment) sits left of "S", or in its place when there is no "S".
+    const QRectF midiBadgeRect((sceneMarked ? sceneBadgeRect.left() : badgeRect.left()) - 14, m_height - 16, 11, 10);
+    const qreal badgesLeft = midiMarked ? midiBadgeRect.left() : (sceneMarked ? sceneBadgeRect.left() : badgeRect.left());
 
     const QColor categoryTextColor = bypass ? QColor(125, 128, 135) : headerColor.lighter(125);
     drawEffectIcon(painter, iconType, QPointF(13, m_height - 10), categoryTextColor);
@@ -348,7 +353,7 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     categoryFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.5);
     painter->setFont(categoryFont);
     painter->setPen(categoryTextColor);
-    QRectF categoryRect(23, m_height - 17, (sceneMarked ? sceneBadgeRect.left() : badgeRect.left()) - 27, 12);
+    QRectF categoryRect(23, m_height - 17, badgesLeft - 27, 12);
     painter->drawText(categoryRect, Qt::AlignVCenter | Qt::AlignLeft,
                       QFontMetrics(categoryFont).elidedText(categoryLabel(iconType), Qt::ElideRight,
                                                             qRound(categoryRect.width())));
@@ -360,6 +365,13 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
         painter->drawRoundedRect(sceneBadgeRect, 3, 3);
         painter->setPen(QColor(20, 20, 22));
         painter->drawText(sceneBadgeRect, Qt::AlignCenter, "S");
+    }
+    if (midiMarked) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(206, 147, 216, bypass ? 120 : 220));
+        painter->drawRoundedRect(midiBadgeRect, 3, 3);
+        painter->setPen(QColor(20, 20, 22));
+        painter->drawText(midiBadgeRect, Qt::AlignCenter, "M");
     }
     painter->setPen(Qt::NoPen);
     painter->setBrush(isMissing ? QColor(150, 62, 68) : QColor(57, 60, 68));

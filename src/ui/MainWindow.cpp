@@ -15,6 +15,7 @@
 #include "AboutDialog.h"
 #include "PresetBrowser.h"
 #include "FootswitchTile.h"
+#include "../control/MidiRouter.h"
 #include <filesystem>
 #include <iostream>
 #include <unordered_set>
@@ -58,6 +59,8 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QDialogButtonBox>
+#include <QTableWidget>
+#include <QTabWidget>
 #include <QRegularExpression>
 #include <QCloseEvent>
 #include <QCryptographicHash>
@@ -857,6 +860,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 savedOutputGain = obj["outputGain"].toDouble();
             }
             m_audioConfigured = obj["audioConfigured"].toBool(false);
+            if (obj.contains("midi")) m_midiConfig = GlobalMidiConfig::fromJson(obj["midi"].toObject());
 
             if (obj.contains("customLV2Paths")) {
                 m_customLV2Paths.clear();
@@ -884,6 +888,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     // JACK must be active before asking it to restore the saved buffer size.
     m_engine.start();
+    if (!m_midiConfig.inputPort.empty()) m_engine.setMidiInputPort(m_midiConfig.inputPort);
     m_engine.setBufferSize(savedBufferSize);
 
     // Scan plugins
@@ -891,6 +896,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     // Setup UI
     setupUI();
+    setupMidi();
     QSettings windowSettings("RigRoom", "RigRoom");
     const QByteArray windowGeometry = windowSettings.value("main_window_geometry").toByteArray();
     if (!windowGeometry.isEmpty()) restoreGeometry(windowGeometry);
@@ -1130,6 +1136,8 @@ void MainWindow::setupUI() {
     QAction* duplicateAct = m_presetMenu->addAction("Duplicate to Next Free Slot");
     QAction* deleteAct = m_presetMenu->addAction("Delete...");
     m_presetMenu->addSeparator();
+    QAction* midiAct = m_presetMenu->addAction("MIDI Assignments...");
+    connect(midiAct, &QAction::triggered, this, [this]() { showMidiAssignmentsDialog(); });
     QAction* browseAct = m_presetMenu->addAction("All Banks...");
     browseAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
     // Shortcuts are handled by window-level QShortcuts; these only display them.
@@ -1223,8 +1231,9 @@ void MainWindow::setupUI() {
     // Setup Settings Dialog
     m_settingsDialog = new QDialog(this);
     m_settingsDialog->setWindowTitle("Application Settings");
-    m_settingsDialog->setMinimumWidth(620);
-    m_settingsDialog->setMinimumHeight(520);
+    m_settingsDialog->setMinimumWidth(860);
+    m_settingsDialog->setMinimumHeight(640);
+    m_settingsDialog->resize(920, 860);
     m_settingsDialog->setStyleSheet(styleSheet());
     
     QVBoxLayout* dialogLayout = new QVBoxLayout(m_settingsDialog);
@@ -1298,38 +1307,33 @@ void MainWindow::setupUI() {
     formLayout->addRow("Buffer Size:", m_bufferSizeCombo);
     formLayout->addRow("Default Columns:", defaultTrackSlotsCombo);
 
-    // Preset library layout (bank x slot). Program Change numbers follow the flat slot order.
-    QComboBox* slotsPerBankCombo = new QComboBox(m_settingsDialog);
-    slotsPerBankCombo->addItems({"3", "4", "5", "6", "8", "10"});
-    slotsPerBankCombo->setToolTip("How many presets each bank holds (A, B, C, ...)");
+    // Preset library: banks of 4 (A-D). Presets stay pinned to their bank and
+    // letter; the bank count can't drop below the highest bank in use.
     QSpinBox* numBanksSpin = new QSpinBox(m_settingsDialog);
     numBanksSpin->setRange(1, 128);
-    numBanksSpin->setToolTip("Number of preset banks");
-    numBanksSpin->setKeyboardTracking(false); // don't reflow the library while typing "32"
-    auto syncLibraryLayoutControls = [this, slotsPerBankCombo, numBanksSpin]() {
-        QSignalBlocker b1(slotsPerBankCombo);
-        QSignalBlocker b2(numBanksSpin);
-        const int idx = slotsPerBankCombo->findText(QString::number(m_presetLibrary.slotsPerBank()));
-        if (idx >= 0) slotsPerBankCombo->setCurrentIndex(idx);
+    numBanksSpin->setToolTip("Number of preset banks (4 presets each, A-D). "
+                             "Can't be set below the highest bank that holds a preset.");
+    numBanksSpin->setKeyboardTracking(false);
+    auto syncLibraryLayoutControls = [this, numBanksSpin]() {
+        QSignalBlocker blocker(numBanksSpin);
+        numBanksSpin->setMinimum(m_presetLibrary.minBanks());
         numBanksSpin->setValue(m_presetLibrary.numBanks());
     };
-    auto applyLibraryLayout = [this, slotsPerBankCombo, numBanksSpin]() {
-        m_presetLibrary.setLayout(slotsPerBankCombo->currentText().toInt(), numBanksSpin->value());
+    connect(numBanksSpin, &QSpinBox::valueChanged, this, [this](int banks) {
+        m_presetLibrary.setNumBanks(banks);
         m_presetLibrary.save();
-        m_currentSlot = m_currentPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(m_currentPresetName);
-        setUnsavedChanges(m_unsavedChanges);
-        saveConfigSettings();
-    };
-    connect(slotsPerBankCombo, &QComboBox::currentTextChanged, this, applyLibraryLayout);
-    connect(numBanksSpin, &QSpinBox::valueChanged, this, applyLibraryLayout);
+        rebuildSlotButtons();
+    });
+    // The minimum depends on where presets are; refresh it each time Settings opens.
     connect(m_settingsDialog, &QDialog::finished, this, syncLibraryLayoutControls);
     QTimer::singleShot(0, this, syncLibraryLayoutControls);
-    formLayout->addRow("Presets per Bank:", slotsPerBankCombo);
     formLayout->addRow("Preset Banks:", numBanksSpin);
     
     audioTabLayout->addWidget(ioBox);
     audioTabLayout->addStretch();
     int audioTabIdx = mainSettingsTab->addTab(audioTab, "Audio");
+    m_settingsTabs = mainSettingsTab;
+    m_midiTabIndex = mainSettingsTab->addTab(buildMidiSettingsTab(), "MIDI");
     mainSettingsTab->setTabIcon(audioTabIdx, style()->standardIcon(QStyle::SP_MediaVolume));
 
     // TAB 2: Plugins & Formats
@@ -1669,13 +1673,7 @@ void MainWindow::setupUI() {
     // Settings Button
     QPushButton* settingsBtn = new QPushButton("Settings", this);
     settingsBtn->setToolTip("Open audio input/output and buffer settings");
-    connect(settingsBtn, &QPushButton::clicked, this, [this]() {
-        if (m_apiKeyEdit) {
-            m_apiKeyEdit->setText(CredentialStore::tone3000ApiKey());
-            if (m_updateKeyStatusFunc) m_updateKeyStatusFunc();
-        }
-        m_settingsDialog->exec();
-    });
+    connect(settingsBtn, &QPushButton::clicked, this, [this]() { openSettings(); });
     topBar->addWidget(settingsBtn);
 
     topBar->addSpacing(15);
@@ -1905,6 +1903,17 @@ void MainWindow::setupUI() {
     m_statusLabel->setStyleSheet("color: #888888; font-size: 11px;");
     statusLayout->addWidget(m_statusLabel);
     statusLayout->addStretch();
+
+    m_midiIndicator = new QToolButton(this);
+    m_midiIndicator->setText(QString::fromUtf8("● MIDI"));
+    m_midiIndicator->setCursor(Qt::PointingHandCursor);
+    m_midiIndicator->setToolTip("MIDI input activity. Click for MIDI settings.");
+    m_midiIndicator->setStyleSheet(
+        "QToolButton { background-color: #263238; color: #546E7A; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+        "QToolButton:hover { background-color: #37474F; }");
+    connect(m_midiIndicator, &QToolButton::clicked, this, [this]() { openSettings(m_midiTabIndex); });
+    statusLayout->addWidget(m_midiIndicator);
+    statusLayout->addSpacing(8);
 
     m_dspCpuButton = new QToolButton(this);
     m_dspCpuButton->setText("DSP 0%");
@@ -2441,13 +2450,25 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
     )");
     
     QAction* bypassAct = menu.addAction(node->isBypassed() ? "Enable" : "Bypass");
+    menu.addSeparator();
+    const MidiAssignment* midiOnOff = m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Bypass);
+    QAction* midiLearnAct = menu.addAction(midiOnOff ? QString("MIDI On/Off: CC %1 - Learn Again...").arg(midiOnOff->cc)
+                                                     : QString("MIDI Learn On/Off..."));
+    QAction* midiRemoveAct = midiOnOff ? menu.addAction(QString("Remove MIDI On/Off (CC %1)").arg(midiOnOff->cc)) : nullptr;
+    menu.addSeparator();
     QAction* removeAct = menu.addAction("Remove Effect");
     QAction* replaceAct = menu.addAction("Replace Effect");
     
     QAction* selected = menu.exec(screenPos);
     if (!selected) return;
     
-    if (selected == bypassAct) {
+    if (selected == midiLearnAct) {
+        learnBlockMidi(node);
+    } else if (midiRemoveAct && selected == midiRemoveAct) {
+        m_presetMidi.removeFor(node->uniqueId, MidiAssignment::Target::Bypass);
+        setUnsavedChanges(true);
+        refreshSceneMarkers();
+    } else if (selected == bypassAct) {
         node->setBypassed(!node->isBypassed());
         m_canvas->updateLayout();
         emit m_canvas->nodeBypassToggled(node);
@@ -2656,6 +2677,7 @@ void MainWindow::onNewPreset() {
     updateSlotControls();
     m_currentSlot = -1;
     m_currentPresetName.clear();
+    m_presetMidi.clear();
     resetScenesFromBoard();
     m_isLoadingPreset = false;
     setUnsavedChanges(true);
@@ -2883,7 +2905,7 @@ void MainWindow::onDeletePreset() {
     if (m_currentSlot >= 0) deletePresetInSlot(m_currentSlot);
 }
 
-bool MainWindow::loadSlot(int slot) {
+bool MainWindow::loadSlot(int slot, bool remote) {
     if (!m_presetLibrary.isOccupied(slot)) return false;
     // Selecting the preset that is already loaded is not a preset change, so
     // it must not ask about unsaved edits (use Reload to discard them).
@@ -2891,7 +2913,17 @@ bool MainWindow::loadSlot(int slot) {
         setViewBank(m_presetLibrary.bankOf(slot));
         return true;
     }
-    if (!promptUnsavedChanges()) return false;
+    QString discardedNote;
+    if (remote) {
+        // A modal prompt would stall a live switch; say what was dropped instead.
+        if (m_unsavedChanges) {
+            discardedNote = QString("Unsaved edits to %1 discarded. ")
+                .arg(m_currentSlot >= 0 ? m_presetLibrary.slotLabel(m_currentSlot) : QString("Untitled"));
+            m_unsavedChanges = false;
+        }
+    } else if (!promptUnsavedChanges()) {
+        return false;
+    }
 
     const QString path = m_presetLibrary.pathAt(slot);
     if (!QFile::exists(path)) {
@@ -2904,6 +2936,10 @@ bool MainWindow::loadSlot(int slot) {
     m_viewBank = m_presetLibrary.bankOf(slot);
     setUnsavedChanges(false);
     saveConfigSettings();
+    if (remote && m_statusLabel) {
+        m_statusLabel->setText(discardedNote + QString("MIDI: loaded %1 %2")
+            .arg(m_presetLibrary.slotLabel(slot), m_currentPresetName));
+    }
     emit m_rig->slotChanged(slot);
     return true;
 }
@@ -2961,7 +2997,7 @@ void MainWindow::onPresetButtonClicked() {
 void MainWindow::setupRigController() {
     m_rig = new RigController(this);
     RigController::Backend backend;
-    backend.loadSlot = [this](int slot) { return loadSlot(slot); };
+    backend.loadSlot = [this](int slot, bool remote) { return loadSlot(slot, remote); };
     backend.currentSlot = [this]() { return m_currentSlot; };
     backend.nextOccupiedSlot = [this](int from, int dir) { return m_presetLibrary.nextOccupied(from, dir); };
     backend.viewBank = [this]() { return m_viewBank; };
@@ -2981,6 +3017,15 @@ void MainWindow::setupRigController() {
         onNodeBypassToggled(node);
         return true;
     };
+    backend.setBlockEnabled = [this](const std::string& nodeId, bool enabled) {
+        auto node = findNodeById(nodeId);
+        if (!node) return false;
+        if (node->isBypassed() == !enabled) return true;
+        node->setBypassed(!enabled);
+        if (m_canvas) m_canvas->viewport()->update();
+        onNodeBypassToggled(node);
+        return true;
+    };
     backend.setParam = [this](const std::string& nodeId, uint32_t index, float normalized) {
         auto node = findNodeById(nodeId);
         if (!node) return false;
@@ -2988,8 +3033,9 @@ void MainWindow::setupRigController() {
             if (port.index != index || port.isOutput) continue;
             float value = port.minVal + std::clamp(normalized, 0.0f, 1.0f) * (port.maxVal - port.minVal);
             if (port.isInteger || port.isToggle) value = std::round(value);
+            // A performance control (expression pedal): the knob follows via
+            // syncParameterControls, but the preset is not marked edited.
             node->setParameter(index, value);
-            setUnsavedChanges(true);
             return true;
         }
         return false;
@@ -3299,6 +3345,8 @@ void MainWindow::refreshSceneMarkers() {
     if (!m_canvas) return;
     const auto ids = m_scenes.sceneControlledBlocks(captureBoardState());
     m_canvas->setSceneMarkedNodes(std::unordered_set<std::string>(ids.begin(), ids.end()));
+    const auto midiIds = m_presetMidi.nodeIds();
+    m_canvas->setMidiMarkedNodes(std::unordered_set<std::string>(midiIds.begin(), midiIds.end()));
 }
 
 void MainWindow::updateCanvasInfo() {
@@ -3463,6 +3511,570 @@ void MainWindow::startSceneRename(int index, QWidget* tile) {
     connect(editor, &QLineEdit::editingFinished, this, [finish]() { finish(true); });
     auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), editor, nullptr, nullptr, Qt::WidgetShortcut);
     connect(escape, &QShortcut::activated, this, [finish]() { finish(false); });
+}
+
+void MainWindow::openSettings(int tabIndex) {
+    if (m_apiKeyEdit) {
+        m_apiKeyEdit->setText(CredentialStore::tone3000ApiKey());
+        if (m_updateKeyStatusFunc) m_updateKeyStatusFunc();
+    }
+    if (m_settingsTabs && tabIndex >= 0) m_settingsTabs->setCurrentIndex(tabIndex);
+    m_settingsDialog->exec();
+    if (m_midi) m_midi->cancelLearn();
+}
+
+void MainWindow::setupMidi() {
+    m_midi = new MidiRouter(m_engine, this);
+    m_midi->setConfig(&m_midiConfig);
+    m_midi->setPresetMap(&m_presetMidi);
+    m_midi->setActionHandler([this](const MidiAction& action) { applyMidiAction(action); });
+    // Always drain: the input may also be wired by hand (qjackctl, Helvum).
+    m_midi->setActive(true);
+
+    m_midiIndicatorTimer = new QTimer(this);
+    m_midiIndicatorTimer->setSingleShot(true);
+    m_midiIndicatorTimer->setInterval(160);
+    const QString idleStyle = m_midiIndicator ? m_midiIndicator->styleSheet() : QString();
+    connect(m_midiIndicatorTimer, &QTimer::timeout, this, [this, idleStyle]() {
+        if (m_midiIndicator) m_midiIndicator->setStyleSheet(idleStyle);
+    });
+    connect(m_midi, &MidiRouter::activity, this, [this](const MidiMessage& msg) {
+        const QString text = msg.describe();
+        if (m_midiIndicator) {
+            if (!m_midiIndicatorTimer->isActive()) {
+                m_midiIndicator->setStyleSheet(
+                    "QToolButton { background-color: #263238; color: #CE93D8; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+                    "QToolButton:hover { background-color: #37474F; }");
+            }
+            m_midiIndicator->setToolTip("Last MIDI: " + text + "\nClick for MIDI settings.");
+        }
+        m_midiIndicatorTimer->start();
+        if (m_midiLastMessageSink) m_midiLastMessageSink(text);
+    });
+}
+
+void MainWindow::setMidiInput(const QString& port) {
+    m_midiConfig.inputPort = port.toStdString();
+    m_engine.setMidiInputPort(m_midiConfig.inputPort);
+    saveConfigSettings();
+}
+
+void MainWindow::applyMidiAction(const MidiAction& action) {
+    auto status = [this](const QString& text) { if (m_statusLabel) m_statusLabel->setText("MIDI: " + text); };
+    switch (action.kind) {
+    case MidiAction::Kind::SelectSlot:
+        if (!m_presetLibrary.isOccupied(action.value)) {
+            status(m_presetLibrary.isValidSlot(action.value)
+                ? QString("slot %1 is empty").arg(m_presetLibrary.slotLabel(action.value))
+                : QString("no slot for program %1").arg(action.value));
+            return;
+        }
+        m_rig->selectSlot(action.value, true);
+        break;
+    case MidiAction::Kind::StepPreset:
+        m_rig->stepPreset(action.value, true);
+        break;
+    case MidiAction::Kind::StepBank:
+        m_rig->stepBank(action.value);
+        break;
+    case MidiAction::Kind::SelectInBank: {
+        if (action.value >= m_presetLibrary.slotsPerBank()) return;
+        const int slot = m_presetLibrary.slotFor(m_viewBank, action.value);
+        if (!m_presetLibrary.isOccupied(slot)) {
+            status(QString("slot %1 is empty").arg(m_presetLibrary.slotLabel(slot)));
+            return;
+        }
+        m_rig->selectInBank(action.value, true);
+        break;
+    }
+    case MidiAction::Kind::SelectScene:
+        if (action.value < m_scenes.count()) m_rig->selectScene(action.value);
+        else status(QString("preset has no scene %1").arg(action.value + 1));
+        break;
+    case MidiAction::Kind::StepScene:
+        m_rig->stepScene(action.value);
+        break;
+    case MidiAction::Kind::ToggleBlock:
+        m_rig->toggleBlock(action.nodeId);
+        break;
+    case MidiAction::Kind::SetBlockEnabled:
+        m_rig->setBlockEnabled(action.nodeId, action.enabled);
+        break;
+    case MidiAction::Kind::SetParam:
+        m_rig->setParam(action.nodeId, action.paramIndex, action.normalized);
+        break;
+    }
+}
+
+bool MainWindow::rejectGlobalMidiConflict(int cc) {
+    QString reason;
+    if (m_midiConfig.bankSelect && (cc == 0 || cc == 32)) {
+        reason = QString("CC %1 is Bank Select, used with Program Change.").arg(cc);
+    } else if (const auto command = m_midiConfig.commandForCC(cc)) {
+        reason = QString("CC %1 is used for \"%2\" in Settings > MIDI.").arg(cc).arg(midiCommandName(*command));
+    }
+    if (reason.isEmpty()) return false;
+    QMessageBox::warning(this, "MIDI Learn",
+        reason + "\nUse another control, or change the global mapping in Settings > MIDI.");
+    return true;
+}
+
+void MainWindow::startMidiLearn(const QString& what, std::function<void(const MidiMessage&)> onMessage) {
+    if (!m_midi) return;
+    if (m_midiLearnBubble) m_midiLearnBubble->deleteLater();
+
+    // Small non-modal hint at the top of the canvas; the router hands the next
+    // CC/PC to us instead of acting on it.
+    auto* bubble = new QFrame(centralWidget());
+    m_midiLearnBubble = bubble;
+    bubble->setObjectName("midiLearnBubble");
+    bubble->setStyleSheet(
+        "QFrame#midiLearnBubble { background-color: #2A1F33; border: 1px solid #CE93D8; border-radius: 8px; }"
+        "QLabel { color: #F3E5F5; font-size: 12px; background: transparent; border: none; }"
+        "QPushButton { background-color: #3A2A45; color: #E0E0E0; border: 1px solid #6A4A7A; border-radius: 4px; padding: 3px 10px; }"
+        "QPushButton:hover { background-color: #4A3558; }");
+    auto* layout = new QHBoxLayout(bubble);
+    layout->setContentsMargins(12, 8, 8, 8);
+    auto* label = new QLabel(QString("<b>MIDI Learn</b> &nbsp;%1: move a pedal or press a switch on your controller… (Esc to cancel)")
+                             .arg(what.toHtmlEscaped()), bubble);
+    layout->addWidget(label);
+    auto* cancel = new QPushButton("Cancel", bubble);
+    layout->addWidget(cancel);
+    bubble->adjustSize();
+    const QPoint anchor = m_canvas ? m_canvas->mapTo(centralWidget(), QPoint(m_canvas->width() / 2, 12)) : QPoint(width() / 2, 120);
+    bubble->move(anchor.x() - bubble->width() / 2, anchor.y());
+    bubble->show();
+    bubble->raise();
+
+    QPointer<QFrame> guard(bubble);
+    auto close = [this, guard]() {
+        if (guard) guard->deleteLater();
+        if (m_midiLearnBubble == guard) m_midiLearnBubble = nullptr;
+    };
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), bubble);
+    escape->setContext(Qt::WindowShortcut);
+    connect(escape, &QShortcut::activated, this, [this]() { m_midi->cancelLearn(); });
+    connect(cancel, &QPushButton::clicked, this, [this]() { m_midi->cancelLearn(); });
+    connect(m_midi, &MidiRouter::learnCancelled, bubble, [close]() { close(); });
+    // Give up after a while so a forgotten learn doesn't swallow a later message.
+    QTimer::singleShot(30000, bubble, [this]() { m_midi->cancelLearn(); });
+
+    m_midi->startLearn([close, onMessage](const MidiMessage& msg) {
+        close();
+        onMessage(msg);
+    });
+}
+
+void MainWindow::learnBlockMidi(const std::shared_ptr<AudioNode>& node) {
+    if (!node) return;
+    const std::string nodeId = node->uniqueId;
+    const QString name = QString::fromStdString(node->getName());
+    startMidiLearn(name + " on/off", [this, nodeId, name](const MidiMessage& msg) {
+        if (!msg.isCC()) {
+            QMessageBox::information(this, "MIDI Learn",
+                QString("Received %1. Blocks are switched with a CC (a footswitch in CC mode).").arg(msg.describe()));
+            return;
+        }
+        if (rejectGlobalMidiConflict(msg.data1)) return;
+        MidiAssignment assignment;
+        if (const auto* existing = m_presetMidi.find(nodeId, MidiAssignment::Target::Bypass)) assignment = *existing;
+        assignment.cc = msg.data1;
+        assignment.nodeId = nodeId;
+        assignment.target = MidiAssignment::Target::Bypass;
+        m_presetMidi.set(assignment);
+        setUnsavedChanges(true);
+        refreshSceneMarkers();
+        if (m_statusLabel) {
+            m_statusLabel->setText(QString("MIDI: CC %1 switches %2 (%3). Change the mode in Preset > MIDI Assignments.")
+                .arg(msg.data1).arg(name, assignment.mode == MidiAssignment::Mode::Toggle ? "toggle on press" : "follow value"));
+        }
+    });
+}
+
+void MainWindow::learnParamMidi(const std::shared_ptr<AudioNode>& node, uint32_t paramIndex) {
+    if (!node) return;
+    QString paramName = QString::number(paramIndex);
+    for (const auto& port : node->getControlPorts()) {
+        if (port.index == paramIndex) { paramName = QString::fromStdString(port.name); break; }
+    }
+    const std::string nodeId = node->uniqueId;
+    const QString what = QString::fromStdString(node->getName()) + " / " + paramName;
+    startMidiLearn(what, [this, node, nodeId, paramIndex, what](const MidiMessage& msg) {
+        if (!msg.isCC()) {
+            QMessageBox::information(this, "MIDI Learn",
+                QString("Received %1. Parameters follow a CC (expression pedal or knob).").arg(msg.describe()));
+            return;
+        }
+        if (rejectGlobalMidiConflict(msg.data1)) return;
+        MidiAssignment assignment;
+        if (const auto* existing = m_presetMidi.find(nodeId, MidiAssignment::Target::Param, paramIndex)) assignment = *existing;
+        assignment.cc = msg.data1;
+        assignment.nodeId = nodeId;
+        assignment.target = MidiAssignment::Target::Param;
+        assignment.paramIndex = paramIndex;
+        m_presetMidi.set(assignment);
+        setUnsavedChanges(true);
+        refreshSceneMarkers();
+        if (m_parameterControlNode == node) showPluginControls(node);
+        if (m_statusLabel) m_statusLabel->setText(QString("MIDI: CC %1 controls %2").arg(msg.data1).arg(what));
+    });
+}
+
+void MainWindow::showMidiAssignmentsDialog() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("MIDI Assignments");
+    dialog.setMinimumSize(720, 360);
+    dialog.setStyleSheet(styleSheet());
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* intro = new QLabel(
+        "Controls learned for this preset. Add more by right-clicking a block (on/off) or a knob in the Inspector "
+        "and choosing MIDI Learn. <b>Toggle on press</b> suits momentary footswitches; <b>Follow value</b> suits "
+        "switches that send 127 for on and 0 for off. Range limits how far a pedal moves a parameter.", &dialog);
+    intro->setWordWrap(true);
+    intro->setStyleSheet("color: #AAB3C0; font-size: 11px;");
+    layout->addWidget(intro);
+
+    PresetMidiMap edited = m_presetMidi;
+    auto* table = new QTableWidget(&dialog);
+    table->setColumnCount(5);
+    table->setHorizontalHeaderLabels({"CC", "Block", "Controls", "Behaviour", ""});
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    layout->addWidget(table, 1);
+
+    std::function<void()> rebuild;
+    rebuild = [this, table, &edited, &rebuild]() {
+        auto& list = edited.assignments();
+        table->setRowCount(static_cast<int>(list.size()));
+        for (int row = 0; row < static_cast<int>(list.size()); ++row) {
+            MidiAssignment& a = list[row];
+            auto node = findNodeById(a.nodeId);
+            auto* ccSpin = new QSpinBox(table);
+            ccSpin->setRange(0, 127);
+            ccSpin->setValue(a.cc);
+            ccSpin->setPrefix("CC ");
+            QObject::connect(ccSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.cc = v; });
+            table->setCellWidget(row, 0, ccSpin);
+            table->setItem(row, 1, new QTableWidgetItem(node ? QString::fromStdString(node->getName()) : QString("(missing block)")));
+
+            QString target = "On / Off";
+            if (a.target == MidiAssignment::Target::Param) {
+                target = QString("Parameter %1").arg(a.paramIndex);
+                if (node) {
+                    for (const auto& port : node->getControlPorts()) {
+                        if (port.index == a.paramIndex) { target = QString::fromStdString(port.name); break; }
+                    }
+                }
+            }
+            table->setItem(row, 2, new QTableWidgetItem(target));
+
+            auto* behaviour = new QWidget(table);
+            auto* bl = new QHBoxLayout(behaviour);
+            bl->setContentsMargins(4, 0, 4, 0);
+            if (a.target == MidiAssignment::Target::Bypass) {
+                auto* mode = new QComboBox(behaviour);
+                mode->addItems({"Toggle on press", "Follow value (127 on / 0 off)"});
+                mode->setCurrentIndex(a.mode == MidiAssignment::Mode::Toggle ? 0 : 1);
+                QObject::connect(mode, &QComboBox::currentIndexChanged, table, [&a](int i) {
+                    a.mode = i == 0 ? MidiAssignment::Mode::Toggle : MidiAssignment::Mode::Follow;
+                });
+                bl->addWidget(mode);
+            } else {
+                auto makePercent = [behaviour](float v) {
+                    auto* spin = new QSpinBox(behaviour);
+                    spin->setRange(0, 100);
+                    spin->setSuffix(" %");
+                    spin->setValue(qRound(v * 100.0f));
+                    return spin;
+                };
+                auto* minSpin = makePercent(a.min);
+                auto* maxSpin = makePercent(a.max);
+                auto* invert = new QCheckBox("Invert", behaviour);
+                invert->setChecked(a.invert);
+                QObject::connect(minSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.min = v / 100.0f; });
+                QObject::connect(maxSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.max = v / 100.0f; });
+                QObject::connect(invert, &QCheckBox::toggled, table, [&a](bool on) { a.invert = on; });
+                bl->addWidget(new QLabel("From", behaviour));
+                bl->addWidget(minSpin);
+                bl->addWidget(new QLabel("to", behaviour));
+                bl->addWidget(maxSpin);
+                bl->addWidget(invert);
+            }
+            table->setCellWidget(row, 3, behaviour);
+
+            auto* remove = new QPushButton("Remove", table);
+            QObject::connect(remove, &QPushButton::clicked, table, [row, &edited, &rebuild]() {
+                auto& items = edited.assignments();
+                if (row < static_cast<int>(items.size())) items.erase(items.begin() + row);
+                // Rebuild after this click handler; it deletes the button.
+                QTimer::singleShot(0, [&rebuild]() { rebuild(); });
+            });
+            table->setCellWidget(row, 4, remove);
+        }
+        table->resizeRowsToContents();
+    };
+    rebuild();
+
+    auto* empty = new QLabel("No MIDI assignments in this preset yet.", &dialog);
+    empty->setStyleSheet("color: #777777; font-style: italic;");
+    empty->setVisible(edited.assignments().empty());
+    layout->addWidget(empty);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) return;
+    for (const auto& a : edited.assignments()) {
+        if (m_midiConfig.commandForCC(a.cc)) {
+            rejectGlobalMidiConflict(a.cc);
+            return;
+        }
+    }
+    const QJsonObject before = m_presetMidi.toJson();
+    m_presetMidi = edited;
+    if (m_presetMidi.toJson() != before) setUnsavedChanges(true);
+    refreshSceneMarkers();
+    if (m_parameterControlNode) showPluginControls(m_parameterControlNode);
+}
+
+QWidget* MainWindow::buildMidiSettingsTab() {
+    auto* tab = new QWidget();
+    auto* tabLayout = new QVBoxLayout(tab);
+    tabLayout->setContentsMargins(10, 10, 10, 10);
+    const QString groupStyle =
+        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 12px; background: #1a1a1f; }"
+        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        "QGroupBox QLabel, QGroupBox QCheckBox { background: transparent; }";
+
+    // Device and channel
+    auto* deviceBox = new QGroupBox("MIDI Input", tab);
+    deviceBox->setStyleSheet(groupStyle);
+    auto* deviceForm = new QFormLayout(deviceBox);
+    auto* deviceRow = new QHBoxLayout();
+    auto* deviceCombo = new QComboBox(deviceBox);
+    deviceCombo->setMinimumWidth(220);
+    deviceCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* refreshBtn = new QPushButton("Refresh", deviceBox);
+    deviceRow->addWidget(deviceCombo, 1);
+    deviceRow->addWidget(refreshBtn);
+    auto populateDevices = [this, deviceCombo]() {
+        const QSignalBlocker blocker(deviceCombo);
+        deviceCombo->clear();
+        deviceCombo->addItem("None", QString());
+        const QString current = QString::fromStdString(m_midiConfig.inputPort);
+        bool found = current.isEmpty();
+        for (const auto& port : m_engine.getMidiSources()) {
+            const QString name = QString::fromStdString(port);
+            deviceCombo->addItem(name, name);
+            if (name == current) found = true;
+        }
+        if (!found) deviceCombo->addItem(current + "  (not connected)", current);
+        deviceCombo->setCurrentIndex(std::max(0, deviceCombo->findData(current)));
+    };
+    populateDevices();
+    connect(refreshBtn, &QPushButton::clicked, this, populateDevices);
+    connect(deviceCombo, &QComboBox::currentIndexChanged, this, [this, deviceCombo](int) {
+        setMidiInput(deviceCombo->currentData().toString());
+    });
+    deviceForm->addRow("Device:", deviceRow);
+
+    auto* channelCombo = new QComboBox(deviceBox);
+    channelCombo->addItem("Omni (all channels)", 0);
+    for (int ch = 1; ch <= 16; ++ch) channelCombo->addItem(QString("Channel %1").arg(ch), ch);
+    channelCombo->setCurrentIndex(std::max(0, channelCombo->findData(m_midiConfig.channel)));
+    connect(channelCombo, &QComboBox::currentIndexChanged, this, [this, channelCombo](int) {
+        m_midiConfig.channel = channelCombo->currentData().toInt();
+        saveConfigSettings();
+    });
+    deviceForm->addRow("Channel:", channelCombo);
+
+    auto* lastLabel = new QLabel("—", deviceBox);
+    lastLabel->setStyleSheet("color: #CE93D8; font-weight: bold;");
+    m_midiLastMessageSink = [lastLabel](const QString& text) { lastLabel->setText(text); };
+    deviceForm->addRow("Last message:", lastLabel);
+    tabLayout->addWidget(deviceBox);
+
+    // Program Change
+    auto* pcBox = new QGroupBox("Program Change", tab);
+    pcBox->setStyleSheet(groupStyle);
+    auto* pcLayout = new QVBoxLayout(pcBox);
+    auto* pcRow = new QHBoxLayout();
+    auto* pcLabel = new QLabel("Program Change selects:", pcBox);
+    auto* pcModeCombo = new QComboBox(pcBox);
+    pcModeCombo->addItem("Presets  (PC 0 = 01A, PC 1 = 01B, …; changing preset has a short gap)",
+                         static_cast<int>(GlobalMidiConfig::PcMode::Presets));
+    pcModeCombo->addItem("Scenes of the loaded preset  (PC 0 = scene 1 … PC 7 = scene 8; no gap)",
+                         static_cast<int>(GlobalMidiConfig::PcMode::Scenes));
+    pcModeCombo->addItem("Nothing  (ignore Program Change)", static_cast<int>(GlobalMidiConfig::PcMode::Off));
+    pcModeCombo->setCurrentIndex(std::max(0, pcModeCombo->findData(static_cast<int>(m_midiConfig.pcMode))));
+    pcModeCombo->setToolTip("Scenes mode is for footswitches that can only send Program Change: "
+                            "each switch then picks a scene without reloading the preset.");
+    pcRow->addWidget(pcLabel);
+    pcRow->addWidget(pcModeCombo, 1);
+    pcLayout->addLayout(pcRow);
+    auto* bankSelect = new QCheckBox("Bank Select (CC 0) reaches preset slots beyond 128", pcBox);
+    bankSelect->setChecked(m_midiConfig.bankSelect);
+    auto* pcOffset = new QCheckBox("My controller counts programs from 1 (its PC 1 = the first preset or scene)", pcBox);
+    pcOffset->setChecked(m_midiConfig.pcOffset == 1);
+    auto updatePcOptions = [bankSelect, pcModeCombo]() {
+        const auto mode = static_cast<GlobalMidiConfig::PcMode>(pcModeCombo->currentData().toInt());
+        bankSelect->setEnabled(mode == GlobalMidiConfig::PcMode::Presets);
+    };
+    updatePcOptions();
+    connect(pcModeCombo, &QComboBox::currentIndexChanged, this, [this, pcModeCombo, updatePcOptions](int) {
+        m_midiConfig.pcMode = static_cast<GlobalMidiConfig::PcMode>(pcModeCombo->currentData().toInt());
+        updatePcOptions();
+        saveConfigSettings();
+    });
+    connect(bankSelect, &QCheckBox::toggled, this, [this](bool on) { m_midiConfig.bankSelect = on; saveConfigSettings(); });
+    connect(pcOffset, &QCheckBox::toggled, this, [this](bool on) { m_midiConfig.pcOffset = on ? 1 : 0; saveConfigSettings(); });
+    pcLayout->addWidget(bankSelect);
+    pcLayout->addWidget(pcOffset);
+    tabLayout->addWidget(pcBox);
+
+    // Performance commands, in two columns: presets & banks | scenes.
+    auto* cmdBox = new QGroupBox("Performance Commands (CC)", tab);
+    cmdBox->setStyleSheet(groupStyle);
+    auto* cmdLayout = new QVBoxLayout(cmdBox);
+    auto* cmdHint = new QLabel(
+        "Global switches that work in every preset. Switches fire when pressed (value 64 or more); "
+        "set a command to Off to free its CC. Block on/off and pedal controls are learned per preset instead: "
+        "right-click a block or knob → MIDI Learn.", cmdBox);
+    cmdHint->setWordWrap(true);
+    cmdHint->setStyleSheet("color: #AAB3C0; font-size: 11px; font-weight: normal;");
+    cmdLayout->addWidget(cmdHint);
+
+    auto* columns = new QHBoxLayout();
+    columns->setSpacing(24);
+    auto makeColumn = [cmdBox](const QString& title) {
+        auto* grid = new QGridLayout();
+        grid->setHorizontalSpacing(8);
+        grid->setVerticalSpacing(4);
+        auto* caption = new QLabel(title, cmdBox);
+        caption->setStyleSheet("color: #7A7A86; font-weight: bold; font-size: 10px; letter-spacing: 1px;");
+        grid->addWidget(caption, 0, 0, 1, 3);
+        return grid;
+    };
+    QGridLayout* presetGrid = makeColumn("PRESETS & BANKS");
+    QGridLayout* sceneGrid = makeColumn("SCENES  (no audio gap)");
+    auto* presetGuide = new QLabel(
+        "Bank up/down only change the shown bank, like the ◀ ▶ buttons; Preset A-D then load from it.", cmdBox);
+    auto* sceneGuide = new QLabel(
+        "Use whichever your controller can send:<br>"
+        "• <b>Scene select</b>: one CC, value picks the scene (0 = scene 1, 1 = scene 2…)<br>"
+        "• <b>Scene 1-8</b>: one CC per switch, fires on press (Off until you set them)<br>"
+        "• <b>Program Change</b>: choose Scenes above<br>"
+        "• <b>Previous / Next</b>: step through scenes", cmdBox);
+    for (QLabel* guide : {presetGuide, sceneGuide}) {
+        guide->setWordWrap(true);
+        guide->setTextFormat(Qt::RichText);
+        guide->setStyleSheet("color: #8A93A0; font-size: 11px; font-weight: normal;");
+    }
+    presetGrid->addWidget(presetGuide, 1, 0, 1, 3);
+    sceneGrid->addWidget(sceneGuide, 1, 0, 1, 3);
+    columns->addLayout(presetGrid, 1);
+    columns->addLayout(sceneGrid, 1);
+    cmdLayout->addLayout(columns);
+
+    auto* cmdMessage = new QLabel(cmdBox);
+    cmdMessage->setStyleSheet("color: #FFB74D; font-size: 11px; font-weight: normal;");
+
+    auto spinsShared = std::make_shared<std::vector<QSpinBox*>>(kMidiCommandCount, nullptr);
+    int presetRow = 2;
+    int sceneRow = 2;
+    const MidiCommand order[] = {
+        MidiCommand::PresetPrev, MidiCommand::PresetNext, MidiCommand::BankDown, MidiCommand::BankUp,
+        MidiCommand::SelectA, MidiCommand::SelectB, MidiCommand::SelectC, MidiCommand::SelectD,
+        MidiCommand::SceneSelect,
+        MidiCommand::Scene1, MidiCommand::Scene2, MidiCommand::Scene3, MidiCommand::Scene4,
+        MidiCommand::Scene5, MidiCommand::Scene6, MidiCommand::Scene7, MidiCommand::Scene8,
+        MidiCommand::ScenePrev, MidiCommand::SceneNext,
+    };
+    for (MidiCommand command : order) {
+        const int i = static_cast<int>(command);
+        const bool isScene = command == MidiCommand::SceneSelect || command == MidiCommand::ScenePrev
+                             || command == MidiCommand::SceneNext
+                             || (command >= MidiCommand::Scene1 && command <= MidiCommand::Scene8);
+        QGridLayout* grid = isScene ? sceneGrid : presetGrid;
+        const int row = isScene ? sceneRow++ : presetRow++;
+
+        auto* name = new QLabel(midiCommandName(command), cmdBox);
+        name->setStyleSheet("color: #D0D0D8; font-weight: normal;");
+        auto* spin = new QSpinBox(cmdBox);
+        spin->setRange(-1, 127);
+        spin->setSpecialValueText("Off");
+        spin->setPrefix("CC ");
+        spin->setValue(m_midiConfig.commandCC[i]);
+        spin->setFixedWidth(92);
+        auto* learn = new QPushButton("Learn", cmdBox);
+        learn->setFixedWidth(76);
+        grid->addWidget(name, row, 0);
+        grid->addWidget(spin, row, 1);
+        grid->addWidget(learn, row, 2);
+        (*spinsShared)[i] = spin;
+
+        connect(spin, &QSpinBox::valueChanged, this, [this, i, spinsShared, cmdMessage](int value) {
+            // One CC drives one command: take it away from any other command.
+            if (value >= 0) {
+                for (int other = 0; other < kMidiCommandCount; ++other) {
+                    if (other == i || m_midiConfig.commandCC[other] != value) continue;
+                    m_midiConfig.commandCC[other] = -1;
+                    const QSignalBlocker blocker((*spinsShared)[other]);
+                    (*spinsShared)[other]->setValue(-1);
+                    cmdMessage->setText(QString("CC %1 moved from \"%2\".").arg(value)
+                        .arg(midiCommandName(static_cast<MidiCommand>(other))));
+                }
+            }
+            m_midiConfig.commandCC[i] = value;
+            saveConfigSettings();
+        });
+        connect(learn, &QPushButton::clicked, this, [this, spin, learn]() {
+            if (m_midi->isLearning()) {
+                m_midi->cancelLearn();
+                return;
+            }
+            learn->setText("Listening");
+            QPointer<QPushButton> guard(learn);
+            auto restore = [guard]() { if (guard) guard->setText("Learn"); };
+            connect(m_midi, &MidiRouter::learnCancelled, learn, restore, Qt::SingleShotConnection);
+            m_midi->startLearn([spin, restore](const MidiMessage& msg) {
+                restore();
+                if (msg.isCC()) spin->setValue(msg.data1);
+            });
+        });
+    }
+    sceneGrid->setRowStretch(sceneRow, 1);
+    presetGrid->setRowStretch(presetRow, 1);
+
+
+    auto* bottomRow = new QHBoxLayout();
+    bottomRow->addWidget(cmdMessage, 1);
+    auto* resetBtn = new QPushButton("Reset to Defaults", cmdBox);
+    connect(resetBtn, &QPushButton::clicked, this, [this, spinsShared, cmdMessage]() {
+        for (int i = 0; i < kMidiCommandCount; ++i) {
+            m_midiConfig.commandCC[i] = GlobalMidiConfig::defaultCC(static_cast<MidiCommand>(i));
+            const QSignalBlocker blocker((*spinsShared)[i]);
+            (*spinsShared)[i]->setValue(m_midiConfig.commandCC[i]);
+        }
+        cmdMessage->setText("Default CCs restored.");
+        saveConfigSettings();
+    });
+    bottomRow->addWidget(resetBtn);
+    cmdLayout->addLayout(bottomRow);
+    tabLayout->addWidget(cmdBox);
+    tabLayout->addStretch();
+
+    auto* scroll = new QScrollArea();
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(tab);
+    return scroll;
 }
 
 void MainWindow::triggerSaveFeedback() {
@@ -3661,6 +4273,7 @@ void MainWindow::saveConfigSettings() {
     configObj["customVST3Paths"] = vst3Arr;
     configObj["customCLAPPaths"] = clapArr;
 
+    configObj["midi"] = m_midiConfig.toJson();
     configObj["lastPreset"] = m_currentPresetName;
     configObj["lastSlot"] = m_currentSlot;
     
@@ -3861,10 +4474,16 @@ void MainWindow::savePresetToFile(const QString& path) {
     m_scenes.prune(live);
 
     QJsonObject presetObj;
-    presetObj["formatVersion"] = 7;
+    presetObj["formatVersion"] = 8;
     presetObj["outputLevelDb"] = m_engine.getPresetOutputLevelDB();
     // Top-level node state mirrors the active scene, so older builds open it as-is.
     presetObj["scenes"] = m_scenes.toJson();
+    {
+        std::set<std::string> liveIds;
+        for (const auto& [id, bypassed] : live.bypass) liveIds.insert(id);
+        m_presetMidi.prune(liveIds);
+        presetObj["midi"] = m_presetMidi.toJson();
+    }
     
     QJsonArray nodesArray;
     for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
@@ -4211,6 +4830,7 @@ void MainWindow::loadPresetFromFile(const QString& path) {
 
     // Presets before format 7 have no scenes; they load as a single scene.
     m_scenes.fromJson(presetObj["scenes"].toObject(), captureBoardState());
+    m_presetMidi = PresetMidiMap::fromJson(presetObj["midi"].toObject());
     m_engine.setSceneOutputLevel(m_scenes.active().levelDb);
     rebuildSceneBar();
     
@@ -5625,16 +6245,36 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             label->setStyleSheet("color: #FFD54F; font-size: 10px; border: none;");
             label->setToolTip(label->toolTip() + "\nControlled per scene");
         }
+        const MidiAssignment* paramMidi = m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
+        if (paramMidi) {
+            label->setText(QString("M ") + label->text());
+            label->setToolTip(label->toolTip() + QString("\nMIDI: CC %1").arg(paramMidi->cc));
+        }
         rowWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(rowWidget, &QWidget::customContextMenuRequested, this, [this, node, idx, perScene, rowWidget](const QPoint& pos) {
+        const int paramMidiCC = paramMidi ? paramMidi->cc : -1;
+        connect(rowWidget, &QWidget::customContextMenuRequested, this, [this, node, idx, perScene, rowWidget, paramMidiCC](const QPoint& pos) {
             QMenu menu(this);
             menu.setStyleSheet(
                 "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
                 "QMenu::item:selected { background-color: #007ACC; color: white; }");
             QAction* act = menu.addAction(perScene ? "Remove per-scene control" : "Control per scene");
-            if (menu.exec(rowWidget->mapToGlobal(pos)) == act) {
-                // Rebuilding the Inspector deletes rowWidget; defer past this handler.
+            menu.addSeparator();
+            QAction* learnAct = menu.addAction(paramMidiCC >= 0 ? QString("MIDI: CC %1 - Learn Again...").arg(paramMidiCC)
+                                                               : QString("MIDI Learn..."));
+            QAction* removeMidiAct = paramMidiCC >= 0 ? menu.addAction(QString("Remove MIDI (CC %1)").arg(paramMidiCC)) : nullptr;
+            QAction* chosen = menu.exec(rowWidget->mapToGlobal(pos));
+            // Rebuilding the Inspector deletes rowWidget; defer past this handler.
+            if (chosen == act) {
                 QTimer::singleShot(0, this, [this, node, idx]() { toggleParamSceneControl(node, idx); });
+            } else if (chosen == learnAct) {
+                QTimer::singleShot(0, this, [this, node, idx]() { learnParamMidi(node, idx); });
+            } else if (removeMidiAct && chosen == removeMidiAct) {
+                QTimer::singleShot(0, this, [this, node, idx]() {
+                    m_presetMidi.removeFor(node->uniqueId, MidiAssignment::Target::Param, idx);
+                    setUnsavedChanges(true);
+                    refreshSceneMarkers();
+                    showPluginControls(node);
+                });
             }
         });
         float min = param.minVal;

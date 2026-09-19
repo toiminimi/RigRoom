@@ -1,19 +1,19 @@
 #include "RigController.h"
 
-bool RigController::selectSlot(int slot) {
-    return m_backend.loadSlot && m_backend.loadSlot(slot);
+bool RigController::selectSlot(int slot, bool remote) {
+    return m_backend.loadSlot && m_backend.loadSlot(slot, remote);
 }
 
-bool RigController::selectBankSlot(int bank, int indexInBank) {
+bool RigController::selectBankSlot(int bank, int indexInBank, bool remote) {
     if (!m_backend.slotFor) return false;
-    return selectSlot(m_backend.slotFor(bank, indexInBank));
+    return selectSlot(m_backend.slotFor(bank, indexInBank), remote);
 }
 
-bool RigController::stepPreset(int dir) {
+bool RigController::stepPreset(int dir, bool remote) {
     if (!m_backend.nextOccupiedSlot || !m_backend.currentSlot) return false;
     const int current = m_backend.currentSlot();
     const int slot = m_backend.nextOccupiedSlot(current, dir);
-    return slot >= 0 && slot != current && selectSlot(slot);
+    return slot >= 0 && slot != current && selectSlot(slot, remote);
 }
 
 void RigController::stepBank(int dir) {
@@ -23,9 +23,9 @@ void RigController::stepBank(int dir) {
     m_backend.setViewBank(((m_backend.viewBank() + (dir < 0 ? -1 : 1)) % count + count) % count);
 }
 
-bool RigController::selectInBank(int indexInBank) {
+bool RigController::selectInBank(int indexInBank, bool remote) {
     if (!m_backend.viewBank) return false;
-    return selectBankSlot(m_backend.viewBank(), indexInBank);
+    return selectBankSlot(m_backend.viewBank(), indexInBank, remote);
 }
 
 void RigController::selectScene(int scene) {
@@ -41,6 +41,10 @@ void RigController::stepScene(int dir) {
 
 bool RigController::toggleBlock(const std::string& nodeId) {
     return m_backend.toggleBlock && m_backend.toggleBlock(nodeId);
+}
+
+bool RigController::setBlockEnabled(const std::string& nodeId, bool enabled) {
+    return m_backend.setBlockEnabled && m_backend.setBlockEnabled(nodeId, enabled);
 }
 
 bool RigController::setParam(const std::string& nodeId, uint32_t index, float normalized) {

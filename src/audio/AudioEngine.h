@@ -1,5 +1,6 @@
 #pragma once
 #include <jack/jack.h>
+#include <jack/ringbuffer.h>
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -102,6 +103,14 @@ public:
     std::vector<std::string> getPhysicalInputs() const;
     std::vector<std::string> getPhysicalOutputs() const;
 
+    // MIDI input. Channel-voice messages are copied from the JACK callback into
+    // a lock-free ring buffer; the GUI thread drains them with readMidi().
+    struct RawMidi { uint8_t status = 0, data1 = 0, data2 = 0; };
+    bool readMidi(RawMidi& out);
+    std::vector<std::string> getMidiSources() const;
+    void setMidiInputPort(const std::string& port);
+    const std::string& midiInputPort() const { return m_midiInputSource; }
+
 private:
     static int processCallback(jack_nframes_t nframes, void* arg);
     static void shutdownCallback(void* arg);
@@ -120,6 +129,11 @@ private:
     
     jack_port_t* m_jackInputPorts[2] = { nullptr, nullptr };
     jack_port_t* m_jackOutputPorts[2] = { nullptr, nullptr };
+    jack_port_t* m_jackMidiInPort = nullptr;
+    jack_ringbuffer_t* m_midiRing = nullptr;
+    std::string m_midiInputSource;
+    void readJackMidi(int numFrames);
+    void updateMidiConnection();
     
     std::string m_hwInputLeft;
     std::string m_hwInputRight;

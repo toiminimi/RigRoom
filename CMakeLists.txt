@@ -85,6 +85,10 @@ add_executable(RigRoom
     src/preset/SceneModel.h
     src/control/RigController.cpp
     src/control/RigController.h
+    src/control/MidiMap.cpp
+    src/control/MidiMap.h
+    src/control/MidiRouter.cpp
+    src/control/MidiRouter.h
     src/ui/resources.qrc
 )
 
@@ -146,6 +150,16 @@ if(BUILD_TESTING)
     target_compile_options(RigRoomPresetTests PRIVATE -UNDEBUG)
     target_link_libraries(RigRoomPresetTests PRIVATE Qt6::Core)
     add_test(NAME RigRoomPresetTests COMMAND RigRoomPresetTests)
+
+    add_executable(RigRoomMidiTests
+        tests/MidiTests.cpp
+        src/control/MidiMap.cpp
+        src/control/MidiMap.h
+    )
+    target_include_directories(RigRoomMidiTests PRIVATE src)
+    target_compile_options(RigRoomMidiTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomMidiTests PRIVATE Qt6::Core)
+    add_test(NAME RigRoomMidiTests COMMAND RigRoomMidiTests)
 endif()
 
 include(GNUInstallDirs)

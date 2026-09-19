@@ -40,7 +40,7 @@
 - **Pedalboard Presets**: Save, load, rename, duplicate, and delete board configurations, including each block's on/off state.
 - **Preset Panel**: Under the top bar, one panel reads left to right like a floor unit: **Bank → Presets (A–D) → Scenes**, with the preset actions at the right edge. Preset slots and scenes use the same footswitch-style tiles.
   - **Bank**: ◀ ▶ only change which bank is shown (like bank up/down on hardware); nothing loads until you click a preset tile. The bank label turns orange while you are looking at a bank other than the loaded preset's. Banks keep their number and can also have a name (`04 Floyd`): double-click the bank label (unnamed banks show ✎). "▦ All banks" (Ctrl+P) opens the grid.
-  - **Presets**: one tile per slot in the bank (`A`–`D` by default; set "Presets per Bank" and "Preset Banks" in Settings). Click to load, double-click to rename, right-click for load/save here/rename/duplicate/delete. Click an empty tile to save the current board there. The loaded preset is filled; orange with a dot means unsaved changes.
+  - **Presets**: every bank holds four presets, `A`–`D`, and a preset stays in its bank and letter until you move it. The number of banks is set in Settings (it can't go below the highest bank in use). Click to load, double-click to rename, right-click for load/save here/rename/duplicate/delete. Click an empty tile to save the current board there. The loaded preset is filled; orange with a dot means unsaved changes.
   - **Preset actions** (right edge): **Save** (Ctrl+S) and **⋯** (New, Save As, Rename, Duplicate, Delete, All banks).
   - **Canvas label**: the top-left corner of the canvas shows what is playing, e.g. `04A · 2 Lead` with the preset name large. Click it to jump back to the preset's bank, double-click to rename the preset.
   - **Grid of all banks**: drag to move or swap, right-click to rename/duplicate/delete, double-click a bank to name it, filter by preset, scene or bank name. Each preset lists its numbered scenes (`1 Clean · 2 Lead`).
@@ -51,6 +51,38 @@
 - **Parameter Synchronization**: Automatic parameter and preset state sync upon loading presets.
 
 ---
+
+### 🎹 MIDI Control
+RigRoom registers a JACK MIDI input (`RigRoom:midi_in`). Pick your controller in **Settings ▸ MIDI** (USB devices appear through PipeWire or a2jmidid); the **● MIDI** indicator in the status bar flashes on incoming messages.
+
+- **Global (Settings ▸ MIDI)**: device, channel (Omni or 1–16), and commands that work in every preset:
+  - **Program Change selects** *Presets* (PC 0 = 01A, PC 1 = 01B, …), *Scenes* of the loaded preset (PC 0 = scene 1 … PC 7 = scene 8, for footswitches that can only send PC) or *Nothing*. **Bank Select** (CC 0) reaches preset slots beyond 128; tick *counts programs from 1* if your controller's PC 1 should mean the first preset or scene.
+  - **Performance commands** (each has a Learn button and can be set to Off; switches fire when pressed, value ≥ 64):
+
+    | Command | Default CC |
+    | :--- | :--- |
+    | Previous / next preset | 102 / 103 |
+    | Bank down / up (changes the shown bank only) | 104 / 105 |
+    | Preset A–D in the shown bank | 106–109 |
+    | Scene select (value 0–7 = scene 1–8) | 69 |
+    | Scene 1 … Scene 8 (one CC per switch) | Off |
+    | Previous / next scene | 114 / 115 |
+
+    Defaults use CC 69 (as Helix snapshots) and the MIDI spec's undefined range, so mod wheel (1), volume (7), expression (11) and sustain (64) stay free.
+- **Switching scenes from a controller** (no audio gap: plugins are not reloaded, delay and reverb tails ring on). Use whichever your controller can send:
+
+  | Your controller sends… | Set up |
+  | :--- | :--- |
+  | One CC with a chosen value per switch (most programmable controllers) | **Scene select**: e.g. switch 1 = CC 69 value 0, switch 2 = CC 69 value 1 |
+  | A fixed CC per switch, 127 on press | **Scene 1–8**: give each scene its own CC (Learn: press the switch) |
+  | Only Program Change | **Program Change selects: Scenes** |
+  | Up / down only | **Previous / Next scene** |
+
+  Loading a different preset (PC in Presets mode, Preset A–D, previous/next) rebuilds the signal chain and has a short gap; use scenes for changes within a song.
+- **Per preset (MIDI Learn)**: right-click a block → *MIDI Learn On/Off…*, or right-click a knob in the Inspector → *MIDI Learn…*, then press a switch or move a pedal. Blocks with assignments get an **M** badge; assigned knobs are marked **M**. Edit or remove them in **⋯ ▸ MIDI Assignments…**:
+  - Block on/off: **Toggle on press** (momentary footswitches) or **Follow value** (switches that send 127 for on, 0 for off).
+  - Parameters: the range the pedal sweeps (from/to %) and invert. Pedal moves don't mark the preset as edited.
+- **Switching from MIDI** never stops at a "save changes?" prompt: unsaved edits are discarded and the status bar says so. Changing presets with the mouse still asks.
 
 ## 🛠️ System Requirements & Building
 

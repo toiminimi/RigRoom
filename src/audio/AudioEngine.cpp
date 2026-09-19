@@ -1,4 +1,5 @@
 #include "AudioEngine.h"
+#include <jack/midiport.h>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -42,6 +43,7 @@ AudioEngine::~AudioEngine() {
     if (m_jackClient) {
         jack_client_close(m_jackClient);
     }
+    if (m_midiRing) jack_ringbuffer_free(m_midiRing);
 }
 
 bool AudioEngine::init(const std::string& clientName) {
@@ -65,6 +67,11 @@ bool AudioEngine::init(const std::string& clientName) {
         m_jackOutputPorts[i] = jack_port_register(m_jackClient, outPortName.c_str(), JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
     }
     
+    m_jackMidiInPort = jack_port_register(m_jackClient, "midi_in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
+    // 3 bytes per message; room for ~5000 messages between GUI drains.
+    m_midiRing = jack_ringbuffer_create(16384);
+    if (m_midiRing) jack_ringbuffer_mlock(m_midiRing);
+
     jack_set_process_callback(m_jackClient, processCallback, this);
     jack_set_buffer_size_callback(m_jackClient, bufferSizeCallback, this);
     jack_set_xrun_callback(m_jackClient, xrunCallback, this);
@@ -91,6 +98,7 @@ bool AudioEngine::start() {
     
     // Hardware ports are intentionally opt-in to prevent accidental feedback.
     updateHardwareConnections();
+    updateMidiConnection();
     return true;
 }
 
@@ -463,7 +471,67 @@ void AudioEngine::shutdownCallback(void* arg) {
     std::cerr << "JACK server shut down!" << std::endl;
 }
 
+void AudioEngine::readJackMidi(int numFrames) {
+    if (!m_jackMidiInPort || !m_midiRing) return;
+    void* buffer = jack_port_get_buffer(m_jackMidiInPort, numFrames);
+    if (!buffer) return;
+    const jack_nframes_t count = jack_midi_get_event_count(buffer);
+    for (jack_nframes_t i = 0; i < count; ++i) {
+        jack_midi_event_t event;
+        if (jack_midi_event_get(&event, buffer, i) != 0 || event.size < 1) continue;
+        const uint8_t status = event.buffer[0];
+        // Channel voice messages only (note, CC, PC, pitch bend, ...).
+        if (status < 0x80 || status >= 0xF0) continue;
+        const uint8_t msg[3] = {status,
+                                event.size > 1 ? event.buffer[1] : uint8_t(0),
+                                event.size > 2 ? event.buffer[2] : uint8_t(0)};
+        if (jack_ringbuffer_write_space(m_midiRing) >= sizeof(msg)) {
+            jack_ringbuffer_write(m_midiRing, reinterpret_cast<const char*>(msg), sizeof(msg));
+        }
+    }
+}
+
+bool AudioEngine::readMidi(RawMidi& out) {
+    if (!m_midiRing || jack_ringbuffer_read_space(m_midiRing) < 3) return false;
+    uint8_t msg[3];
+    jack_ringbuffer_read(m_midiRing, reinterpret_cast<char*>(msg), sizeof(msg));
+    out = {msg[0], msg[1], msg[2]};
+    return true;
+}
+
+std::vector<std::string> AudioEngine::getMidiSources() const {
+    std::vector<std::string> list;
+    if (!m_jackClient) return list;
+    // Not only physical ports: a2j/virtual devices are not flagged physical.
+    const char** ports = jack_get_ports(m_jackClient, nullptr, JACK_DEFAULT_MIDI_TYPE, JackPortIsOutput);
+    if (ports) {
+        const std::string own = std::string(jack_get_client_name(m_jackClient)) + ":";
+        for (int i = 0; ports[i]; ++i) {
+            if (std::string(ports[i]).rfind(own, 0) == 0) continue;
+            list.push_back(ports[i]);
+        }
+        jack_free(ports);
+    }
+    return list;
+}
+
+void AudioEngine::setMidiInputPort(const std::string& port) {
+    m_midiInputSource = port;
+    updateMidiConnection();
+}
+
+void AudioEngine::updateMidiConnection() {
+    if (!m_jackClient || !m_jackMidiInPort) return;
+    jack_port_disconnect(m_jackClient, m_jackMidiInPort);
+    if (!m_midiInputSource.empty()) {
+        jack_connect(m_jackClient, m_midiInputSource.c_str(), jack_port_name(m_jackMidiInPort));
+    }
+}
+
 void AudioEngine::processAudio(int numFrames) {
+    // MIDI first, so events are not lost while the graph is suspended.
+    readJackMidi(numFrames);
+
     // Retrieve system JACK buffers and zero out output buffers first
     float* jackInBuffers[2] = { nullptr, nullptr };
     float* jackOutBuffers[2] = { nullptr, nullptr };
@@ -571,7 +639,7 @@ void AudioEngine::processAudio(int numFrames) {
 std::vector<std::string> AudioEngine::getPhysicalInputs() const {
     std::vector<std::string> list;
     if (!m_jackClient) return list;
-    const char** ports = jack_get_ports(m_jackClient, nullptr, nullptr, JackPortIsPhysical | JackPortIsOutput);
+    const char** ports = jack_get_ports(m_jackClient, nullptr, JACK_DEFAULT_AUDIO_TYPE, JackPortIsPhysical | JackPortIsOutput);
     if (ports) {
         for (int i = 0; ports[i]; ++i) {
             list.push_back(ports[i]);
@@ -584,7 +652,7 @@ std::vector<std::string> AudioEngine::getPhysicalInputs() const {
 std::vector<std::string> AudioEngine::getPhysicalOutputs() const {
     std::vector<std::string> list;
     if (!m_jackClient) return list;
-    const char** ports = jack_get_ports(m_jackClient, nullptr, nullptr, JackPortIsPhysical | JackPortIsInput);
+    const char** ports = jack_get_ports(m_jackClient, nullptr, JACK_DEFAULT_AUDIO_TYPE, JackPortIsPhysical | JackPortIsInput);
     if (ports) {
         for (int i = 0; ports[i]; ++i) {
             list.push_back(ports[i]);

@@ -54,6 +54,9 @@ public:
     // Blocks that scenes change (drawn with an "S" badge).
     void setSceneMarkedNodes(std::unordered_set<std::string> ids);
     bool isSceneMarked(const std::string& id) const { return m_sceneMarkedNodes.count(id) > 0; }
+    // Blocks with per-preset MIDI assignments (drawn with an "M" badge).
+    void setMidiMarkedNodes(std::unordered_set<std::string> ids);
+    bool isMidiMarked(const std::string& id) const { return m_midiMarkedNodes.count(id) > 0; }
     
     void onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol = false);
     
@@ -202,6 +205,7 @@ private:
     QTimer* m_animationTimer = nullptr;
     std::unordered_map<QGraphicsItem*, QPointF> m_targetPositions;
     std::unordered_set<std::string> m_sceneMarkedNodes;
+    std::unordered_set<std::string> m_midiMarkedNodes;
     int m_routingUpdateDepth = 0;
     bool m_routingUpdatePending = false;
     bool m_mainOutputEnabled = true;

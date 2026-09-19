@@ -13,7 +13,8 @@ class RigController : public QObject {
 public:
     // Implemented by the window that owns the board.
     struct Backend {
-        std::function<bool(int slot)> loadSlot;
+        // remote = triggered by MIDI: never block on an unsaved-changes prompt.
+        std::function<bool(int slot, bool remote)> loadSlot;
         std::function<int()> currentSlot;
         std::function<int(int from, int dir)> nextOccupiedSlot;
         std::function<int()> viewBank;
@@ -24,6 +25,7 @@ public:
         std::function<int()> activeScene;
         std::function<int()> sceneCount;
         std::function<bool(const std::string& nodeId)> toggleBlock;
+        std::function<bool(const std::string& nodeId, bool enabled)> setBlockEnabled;
         std::function<bool(const std::string& nodeId, uint32_t index, float normalized)> setParam;
     };
 
@@ -31,16 +33,18 @@ public:
     void setBackend(Backend backend) { m_backend = std::move(backend); }
 
 public slots:
-    bool selectSlot(int slot);
-    bool selectBankSlot(int bank, int indexInBank);
-    bool stepPreset(int dir);
+    // `remote` (MIDI) switches discard unsaved edits instead of asking.
+    bool selectSlot(int slot, bool remote = false);
+    bool selectBankSlot(int bank, int indexInBank, bool remote = false);
+    bool stepPreset(int dir, bool remote = false);
     // Like bank up/down on a floor unit: changes the shown bank, loads nothing.
     void stepBank(int dir);
     // Footswitch A, B, C... in the shown bank.
-    bool selectInBank(int indexInBank);
+    bool selectInBank(int indexInBank, bool remote = false);
     void selectScene(int scene);
     void stepScene(int dir);
     bool toggleBlock(const std::string& nodeId);
+    bool setBlockEnabled(const std::string& nodeId, bool enabled);
     // normalized is 0..1 across the parameter's range (what a MIDI CC maps to).
     bool setParam(const std::string& nodeId, uint32_t index, float normalized);
 

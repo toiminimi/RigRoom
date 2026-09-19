@@ -10,7 +10,9 @@
 // library only records which file lives in which slot.
 class PresetLibrary {
 public:
-    static constexpr int kDefaultSlotsPerBank = 4;
+    // Fixed, like a floor unit's A-D switches. Presets are pinned to their
+    // bank and letter; nothing ever renumbers them.
+    static constexpr int kSlotsPerBank = 4;
     static constexpr int kDefaultNumBanks = 32;
 
     explicit PresetLibrary(QString presetDir = {}, QString indexPath = {});
@@ -23,10 +25,13 @@ public:
     bool load();
     bool save() const;
 
-    int slotsPerBank() const { return m_slotsPerBank; }
+    int slotsPerBank() const { return kSlotsPerBank; }
     int numBanks() const { return m_numBanks; }
-    int slotCount() const { return m_slotsPerBank * m_numBanks; }
-    void setLayout(int slotsPerBank, int numBanks);
+    int slotCount() const { return kSlotsPerBank * m_numBanks; }
+    // Never moves a preset: clamps to at least minBanks().
+    void setNumBanks(int numBanks);
+    // Highest bank holding a preset + 1 (at least 1).
+    int minBanks() const;
 
     QString slotLabel(int slot) const;
 
@@ -39,9 +44,9 @@ public:
     // Scene names stored in the preset in `slot`. Empty for single-scene or
     // older presets. Cached by file modification time.
     QStringList sceneNamesAt(int slot) const;
-    int bankOf(int slot) const { return slot / m_slotsPerBank; }
-    int indexInBank(int slot) const { return slot % m_slotsPerBank; }
-    int slotFor(int bank, int indexInBank) const { return bank * m_slotsPerBank + indexInBank; }
+    int bankOf(int slot) const { return slot / kSlotsPerBank; }
+    int indexInBank(int slot) const { return slot % kSlotsPerBank; }
+    int slotFor(int bank, int indexInBank) const { return bank * kSlotsPerBank + indexInBank; }
 
     bool isValidSlot(int slot) const { return slot >= 0 && slot < slotCount(); }
     bool isOccupied(int slot) const { return m_slots.count(slot) > 0; }
@@ -77,7 +82,6 @@ private:
 
     QString m_presetDir;
     QString m_indexPath;
-    int m_slotsPerBank = kDefaultSlotsPerBank;
     int m_numBanks = kDefaultNumBanks;
     std::map<int, QString> m_slots;
     std::map<int, QString> m_bankNames;

@@ -20,6 +20,7 @@
 #include "../preset/PresetLibrary.h"
 #include "../preset/SceneModel.h"
 #include "../control/RigController.h"
+#include "../control/MidiMap.h"
 #include <lilv/lilv.h>
 
 class ExternalPluginUIWindow;
@@ -27,6 +28,7 @@ class QSplitter;
 class QScrollArea;
 class Tone3000ImageLoader;
 class FootswitchTile;
+class MidiRouter;
 class QMenu;
 
 class MainWindow : public QMainWindow {
@@ -81,8 +83,9 @@ private:
     void loadPresetFromFile(const QString& path);
     void refreshPresetList();
     QString presetsDirPath() const;
-    // Loads the preset in a library slot (asks about unsaved changes first).
-    bool loadSlot(int slot);
+    // Loads the preset in a library slot. Asks about unsaved changes first,
+    // unless `remote` (MIDI): then edits are discarded with a status message.
+    bool loadSlot(int slot, bool remote = false);
     // Asks for a name (and target slot when targetSlot < 0) and saves the board there.
     bool savePresetToSlot(int targetSlot, const QString& suggestedName = QString());
     int promptTargetSlot(int defaultSlot, const QString& presetName);
@@ -144,6 +147,27 @@ private:
     SceneModel m_scenes;
     RigController* m_rig = nullptr;
     void setupRigController();
+
+    // MIDI
+    GlobalMidiConfig m_midiConfig = GlobalMidiConfig::defaults();
+    PresetMidiMap m_presetMidi;
+    MidiRouter* m_midi = nullptr;
+    QToolButton* m_midiIndicator = nullptr;
+    QTimer* m_midiIndicatorTimer = nullptr;
+    std::function<void(const QString&)> m_midiLastMessageSink; // Settings readout
+    void setupMidi();
+    void applyMidiAction(const MidiAction& action);
+    void setMidiInput(const QString& port);
+    void startMidiLearn(const QString& what, std::function<void(const MidiMessage&)> onMessage);
+    void learnBlockMidi(const std::shared_ptr<AudioNode>& node);
+    void learnParamMidi(const std::shared_ptr<AudioNode>& node, uint32_t paramIndex);
+    void showMidiAssignmentsDialog();
+    bool rejectGlobalMidiConflict(int cc);
+    QWidget* buildMidiSettingsTab();
+    void openSettings(int tabIndex = -1);
+    class QTabWidget* m_settingsTabs = nullptr;
+    int m_midiTabIndex = -1;
+    QWidget* m_midiLearnBubble = nullptr;
     QWidget* m_sceneBar = nullptr;
     QHBoxLayout* m_sceneBarLayout = nullptr;
     QPushButton* m_savePresetButton = nullptr;

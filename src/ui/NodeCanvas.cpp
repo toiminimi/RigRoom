@@ -2290,3 +2290,9 @@ void NodeCanvas::setSceneMarkedNodes(std::unordered_set<std::string> ids) {
     m_sceneMarkedNodes = std::move(ids);
     viewport()->update();
 }
+
+void NodeCanvas::setMidiMarkedNodes(std::unordered_set<std::string> ids) {
+    if (ids == m_midiMarkedNodes) return;
+    m_midiMarkedNodes = std::move(ids);
+    viewport()->update();
+}

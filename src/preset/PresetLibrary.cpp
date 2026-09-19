@@ -25,7 +25,8 @@ bool PresetLibrary::load() {
     QFile file(m_indexPath);
     if (file.open(QFile::ReadOnly)) {
         const QJsonObject obj = QJsonDocument::fromJson(file.readAll()).object();
-        m_slotsPerBank = std::clamp(obj["slotsPerBank"].toInt(kDefaultSlotsPerBank), 1, 16);
+        // Older builds let "slotsPerBank" change; slot numbers were kept flat,
+        // so reading them with 4 per bank puts every preset back in place.
         m_numBanks = std::clamp(obj["numBanks"].toInt(kDefaultNumBanks), 1, 128);
         const QJsonObject slotsObj = obj["slots"].toObject();
         for (auto it = slotsObj.constBegin(); it != slotsObj.constEnd(); ++it) {
@@ -68,7 +69,7 @@ bool PresetLibrary::save() const {
     }
     QJsonObject obj;
     obj["version"] = 1;
-    obj["slotsPerBank"] = m_slotsPerBank;
+    obj["slotsPerBank"] = kSlotsPerBank;
     obj["numBanks"] = m_numBanks;
     obj["slots"] = slotsObj;
     QJsonObject namesObj;
@@ -81,29 +82,12 @@ bool PresetLibrary::save() const {
     return file.commit();
 }
 
-void PresetLibrary::setLayout(int slotsPerBank, int numBanks) {
-    slotsPerBank = std::clamp(slotsPerBank, 1, 16);
-    numBanks = std::clamp(numBanks, 1, 128);
-    if (slotsPerBank == m_slotsPerBank && numBanks == m_numBanks) return;
+void PresetLibrary::setNumBanks(int numBanks) {
+    m_numBanks = std::clamp(numBanks, minBanks(), 128);
+}
 
-    // Keep presets in the same order; flat slot numbers stay stable where possible.
-    std::map<int, QString> old;
-    old.swap(m_slots);
-    m_slotsPerBank = slotsPerBank;
-    m_numBanks = numBanks;
-    QStringList overflow;
-    for (const auto& [slot, fileName] : old) {
-        if (isValidSlot(slot)) m_slots[slot] = fileName;
-        else overflow << fileName;
-    }
-    for (const QString& fileName : overflow) {
-        const int free = firstFreeSlot();
-        if (free < 0) break; // no room; file stays on disk, unindexed
-        m_slots[free] = fileName;
-    }
-    for (auto it = m_bankNames.begin(); it != m_bankNames.end();) {
-        it = it->first < m_numBanks ? std::next(it) : m_bankNames.erase(it);
-    }
+int PresetLibrary::minBanks() const {
+    return m_slots.empty() ? 1 : bankOf(m_slots.rbegin()->first) + 1;
 }
 
 QString PresetLibrary::bankName(int bank) const {
