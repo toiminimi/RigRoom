@@ -75,6 +75,16 @@ add_executable(RigRoom
     src/ui/RoutingHandleItem.h
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
+    src/ui/PresetBrowser.cpp
+    src/ui/FootswitchTile.cpp
+    src/ui/FootswitchTile.h
+    src/ui/PresetBrowser.h
+    src/preset/PresetLibrary.cpp
+    src/preset/PresetLibrary.h
+    src/preset/SceneModel.cpp
+    src/preset/SceneModel.h
+    src/control/RigController.cpp
+    src/control/RigController.h
     src/ui/resources.qrc
 )
 
@@ -123,6 +133,19 @@ if(BUILD_TESTING)
     target_link_libraries(RigRoomRoutingTests PRIVATE Qt6::Widgets PkgConfig::JACK)
     add_test(NAME RigRoomRoutingTests COMMAND RigRoomRoutingTests)
     set_tests_properties(RigRoomRoutingTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(RigRoomPresetTests
+        tests/PresetTests.cpp
+        src/preset/PresetLibrary.cpp
+        src/preset/PresetLibrary.h
+        src/preset/SceneModel.cpp
+        src/preset/SceneModel.h
+        src/audio/AudioNode.h
+    )
+    target_include_directories(RigRoomPresetTests PRIVATE src)
+    target_compile_options(RigRoomPresetTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomPresetTests PRIVATE Qt6::Core)
+    add_test(NAME RigRoomPresetTests COMMAND RigRoomPresetTests)
 endif()
 
 include(GNUInstallDirs)

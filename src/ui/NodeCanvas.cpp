@@ -5,6 +5,9 @@
 #include "CanvasMetrics.h"
 #include <QPainter>
 #include <QTimer>
+#include <QSignalBlocker>
+#include <QVariantAnimation>
+#include <QEasingCurve>
 #include <QKeyEvent>
 #include <QGraphicsPathItem>
 #include <QGraphicsEllipseItem>
@@ -823,6 +826,7 @@ qreal NodeCanvas::getRowCenterY(int row) const {
 }
 
 void NodeCanvas::updateLayout() {
+    scheduleAutoFit();
     clearSceneItems();
 
     int highestUsedCol = getHighestOccupiedCol();
@@ -1334,10 +1338,20 @@ void NodeCanvas::clearSceneItems() {
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
+bool NodeCanvas::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_zoomOverlay && event->type() == QEvent::Resize) {
+        const int x = viewport()->width() - m_zoomOverlay->width() - 16;
+        const int y = viewport()->height() - m_zoomOverlay->height() - 16;
+        m_zoomOverlay->move(x, y);
+    }
+    return QGraphicsView::eventFilter(watched, event);
+}
+
 void NodeCanvas::resizeEvent(QResizeEvent* event) {
     QGraphicsView::resizeEvent(event);
     updateLayout();
     updateZoomOverlayPos();
+    scheduleAutoFit();
 }
 
 void NodeCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
@@ -1985,13 +1999,26 @@ void NodeCanvas::setNumCols(int cols) {
 }
 
 void NodeCanvas::setZoomLevel(double zoom) {
+    stopZoomAnimation();
+    applyZoom(zoom, true);
+}
+
+void NodeCanvas::stopZoomAnimation() {
+    if (m_zoomAnim && m_zoomAnim->state() == QAbstractAnimation::Running) {
+        m_zoomAnim->stop();
+        m_fitting = false;
+        updateLayout();
+    }
+}
+
+void NodeCanvas::applyZoom(double zoom, bool relayout) {
     double newZoom = std::clamp(zoom, 0.5, 2.0);
     if (qAbs(m_zoomLevel - newZoom) < 0.001) return;
 
     double scaleFactor = newZoom / m_zoomLevel;
     m_zoomLevel = newZoom;
     scale(scaleFactor, scaleFactor);
-    updateLayout();
+    if (relayout) updateLayout();
 
     if (m_zoomOverlayLabel) {
         m_zoomOverlayLabel->setText(QString("%1%").arg(qRound(m_zoomLevel * 100.0)));
@@ -2014,6 +2041,11 @@ void NodeCanvas::setupZoomOverlay() {
     );
 
     QHBoxLayout* layout = new QHBoxLayout(m_zoomOverlay);
+    m_zoomOverlayLayout = layout;
+    // Grow/shrink with its contents ("6" -> "11", "73%" -> "100%") and stay
+    // anchored to the corner (see eventFilter).
+    layout->setSizeConstraint(QLayout::SetFixedSize);
+    m_zoomOverlay->installEventFilter(this);
     layout->setContentsMargins(6, 4, 6, 4);
     layout->setSpacing(6);
 
@@ -2032,6 +2064,8 @@ void NodeCanvas::setupZoomOverlay() {
     layout->addWidget(m_zoomOverlayMinusBtn);
 
     m_zoomOverlayLabel = new QLabel("100%", m_zoomOverlay);
+    m_zoomOverlayLabel->setAlignment(Qt::AlignCenter);
+    m_zoomOverlayLabel->setMinimumWidth(m_zoomOverlayLabel->fontMetrics().horizontalAdvance("200%") + 10);
     m_zoomOverlayLabel->setStyleSheet("font-weight: bold; color: #00B0FF; font-size: 11px; padding: 0 4px;");
     layout->addWidget(m_zoomOverlayLabel);
 
@@ -2062,6 +2096,26 @@ void NodeCanvas::setupZoomOverlay() {
     connect(m_zoomOverlayFitBtn, &QToolButton::clicked, this, &NodeCanvas::fitToCanvas);
     layout->addWidget(m_zoomOverlayFitBtn);
 
+    m_zoomOverlayAutoBtn = new QToolButton(m_zoomOverlay);
+    m_zoomOverlayAutoBtn->setText("Auto");
+    m_zoomOverlayAutoBtn->setCheckable(true);
+    m_zoomOverlayAutoBtn->setFixedHeight(22);
+    m_zoomOverlayAutoBtn->setToolTip("Auto-fit: keep the whole signal path in view when the window is resized or the board changes.\nZooming by hand turns it off.");
+    m_zoomOverlayAutoBtn->setCursor(Qt::PointingHandCursor);
+    m_zoomOverlayAutoBtn->setStyleSheet(btnStyle +
+        "QToolButton:checked { background-color: #00598A; color: white; border-color: #00B0FF; }");
+    connect(m_zoomOverlayAutoBtn, &QToolButton::toggled, this, &NodeCanvas::setAutoFit);
+    layout->addWidget(m_zoomOverlayAutoBtn);
+
+    m_autoFitTimer = new QTimer(this);
+    m_autoFitTimer->setSingleShot(true);
+    // Wait for node move animations to settle before measuring the content.
+    m_autoFitTimer->setInterval(350);
+    connect(m_autoFitTimer, &QTimer::timeout, this, [this]() {
+        if (!m_autoFit || m_fitting) return;
+        fitToCanvas();
+    });
+
     m_zoomOverlay->adjustSize();
     updateZoomOverlayPos();
 }
@@ -2075,8 +2129,56 @@ void NodeCanvas::updateZoomOverlayPos() {
     m_zoomOverlay->raise();
 }
 
+void NodeCanvas::addZoomOverlayWidget(QWidget* widget) {
+    if (!m_zoomOverlayLayout || !widget) return;
+    auto* divider = new QFrame(m_zoomOverlay);
+    divider->setFrameShape(QFrame::VLine);
+    divider->setStyleSheet("color: rgba(255, 255, 255, 40);");
+    m_zoomOverlayLayout->addWidget(divider);
+    widget->setParent(m_zoomOverlay);
+    m_zoomOverlayLayout->addWidget(widget);
+    updateZoomOverlayPos();
+}
+
+QLabel* NodeCanvas::infoOverlay() {
+    if (!m_infoOverlay) {
+        m_infoOverlay = new QLabel(this);
+        m_infoOverlay->setObjectName("canvasInfo");
+        m_infoOverlay->setTextFormat(Qt::RichText);
+        m_infoOverlay->setStyleSheet(
+            "QLabel#canvasInfo { background-color: rgba(20, 22, 28, 170); border: 1px solid rgba(255, 255, 255, 18);"
+            " border-radius: 8px; padding: 6px 12px; }");
+        m_infoOverlay->move(16, 12);
+    }
+    return m_infoOverlay;
+}
+
+void NodeCanvas::setInfoOverlayText(const QString& html) {
+    QLabel* label = infoOverlay();
+    label->setText(html);
+    label->setVisible(!html.isEmpty());
+    label->adjustSize();
+    label->raise();
+}
+
 void NodeCanvas::resetZoom() {
+    setAutoFit(false);
     setZoomLevel(1.0);
+}
+
+void NodeCanvas::setAutoFit(bool enabled) {
+    if (m_autoFit == enabled) return;
+    m_autoFit = enabled;
+    if (m_zoomOverlayAutoBtn && m_zoomOverlayAutoBtn->isChecked() != enabled) {
+        const QSignalBlocker blocker(m_zoomOverlayAutoBtn);
+        m_zoomOverlayAutoBtn->setChecked(enabled);
+    }
+    if (enabled) scheduleAutoFit();
+    emit autoFitChanged(enabled);
+}
+
+void NodeCanvas::scheduleAutoFit() {
+    if (m_autoFit && !m_fitting && m_autoFitTimer) m_autoFitTimer->start();
 }
 
 void NodeCanvas::fitToCanvas() {
@@ -2089,15 +2191,49 @@ void NodeCanvas::fitToCanvas() {
     const qreal padding = 48.0;
     const qreal fit = std::min((viewport()->width() - padding) / content.width(),
                                (viewport()->height() - padding) / content.height());
-    setZoomLevel(std::clamp<double>(fit, 0.5, 1.5));
-    centerOn(content.center());
+    const double targetZoom = std::clamp<double>(fit, 0.5, 1.5);
+    const QPointF targetCenter = content.center();
+
+    // Glide to the new framing instead of jumping. The (costly) relayout only
+    // runs once at the end; intermediate frames just scale and scroll.
+    stopZoomAnimation();
+    const double startZoom = m_zoomLevel;
+    const QPointF startCenter = mapToScene(viewport()->rect().center());
+    if (qAbs(startZoom - targetZoom) < 0.002 && QLineF(startCenter, targetCenter).length() < 2.0) {
+        centerOn(targetCenter);
+        return;
+    }
+    if (!m_zoomAnim) {
+        m_zoomAnim = new QVariantAnimation(this);
+        m_zoomAnim->setDuration(260);
+        m_zoomAnim->setEasingCurve(QEasingCurve::OutCubic);
+        m_zoomAnim->setStartValue(0.0);
+        m_zoomAnim->setEndValue(1.0);
+    }
+    m_zoomAnim->disconnect(this);
+    connect(m_zoomAnim, &QVariantAnimation::valueChanged, this,
+            [this, startZoom, targetZoom, startCenter, targetCenter](const QVariant& value) {
+        const double t = value.toDouble();
+        applyZoom(startZoom + (targetZoom - startZoom) * t, false);
+        centerOn(startCenter + (targetCenter - startCenter) * t);
+    });
+    connect(m_zoomAnim, &QVariantAnimation::finished, this, [this, targetZoom, targetCenter]() {
+        applyZoom(targetZoom, false);
+        updateLayout();
+        centerOn(targetCenter);
+        m_fitting = false;
+    });
+    m_fitting = true; // the final relayout must not schedule another fit
+    m_zoomAnim->start();
 }
 
 void NodeCanvas::zoomIn() {
+    setAutoFit(false);
     setZoomLevel(m_zoomLevel + 0.10);
 }
 
 void NodeCanvas::zoomOut() {
+    setAutoFit(false);
     setZoomLevel(m_zoomLevel - 0.10);
 }
 
@@ -2147,4 +2283,10 @@ void NodeCanvas::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
     QGraphicsView::mouseReleaseEvent(event);
+}
+
+void NodeCanvas::setSceneMarkedNodes(std::unordered_set<std::string> ids) {
+    if (ids == m_sceneMarkedNodes) return;
+    m_sceneMarkedNodes = std::move(ids);
+    viewport()->update();
 }

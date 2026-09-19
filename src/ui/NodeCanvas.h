@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <QTimer>
 #include "GridRow.h"
 #include "../audio/AudioEngine.h"
@@ -14,6 +15,7 @@ class PlusButtonWidget;
 class QFrame;
 class QLabel;
 class QToolButton;
+class QHBoxLayout;
 
 class NodeCanvas : public QGraphicsView {
     Q_OBJECT
@@ -48,6 +50,10 @@ public:
     
     void nodeDoubleClicked(NodeWidget* node);
     void setSystemChannelModes(bool inputStereo, bool outputStereo);
+
+    // Blocks that scenes change (drawn with an "S" badge).
+    void setSceneMarkedNodes(std::unordered_set<std::string> ids);
+    bool isSceneMarked(const std::string& id) const { return m_sceneMarkedNodes.count(id) > 0; }
     
     void onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol = false);
     
@@ -115,19 +121,31 @@ public:
     double getZoomLevel() const { return m_zoomLevel; }
     void setZoomLevel(double zoom);
     void resetZoom();
+    // Appends a divider and `widget` to the zoom box in the lower-right corner.
+    void addZoomOverlayWidget(QWidget* widget);
+    // Read-only "what is loaded" label in the top-left corner (rich text).
+    QLabel* infoOverlay();
+    void setInfoOverlayText(const QString& html);
     void fitToCanvas();
+    // Keep the whole signal path in view: refit on resize and edits.
+    // Manual zooming turns it off.
+    void setAutoFit(bool enabled);
+    bool autoFit() const { return m_autoFit; }
     void zoomIn();
     void zoomOut();
 
 signals:
     void zoomChanged(double zoom);
+    void autoFitChanged(bool enabled);
     void nodeSelected(std::shared_ptr<AudioNode> node);
+    void nodeBypassToggled(std::shared_ptr<AudioNode> node);
     void editPluginUI(std::shared_ptr<AudioNode> node);
     void plusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol);
     void nodeContextMenuRequested(int row, int col, QPoint screenPos);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void drawBackground(QPainter* painter, const QRectF& rect) override;
     void keyPressEvent(QKeyEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
@@ -183,6 +201,7 @@ private:
 
     QTimer* m_animationTimer = nullptr;
     std::unordered_map<QGraphicsItem*, QPointF> m_targetPositions;
+    std::unordered_set<std::string> m_sceneMarkedNodes;
     int m_routingUpdateDepth = 0;
     bool m_routingUpdatePending = false;
     bool m_mainOutputEnabled = true;
@@ -192,11 +211,21 @@ private:
     QPoint m_panStartPos;
 
     QFrame* m_zoomOverlay = nullptr;
+    QHBoxLayout* m_zoomOverlayLayout = nullptr;
+    QLabel* m_infoOverlay = nullptr;
     QLabel* m_zoomOverlayLabel = nullptr;
     QToolButton* m_zoomOverlayMinusBtn = nullptr;
     QToolButton* m_zoomOverlayPlusBtn = nullptr;
     QToolButton* m_zoomOverlayResetBtn = nullptr;
     QToolButton* m_zoomOverlayFitBtn = nullptr;
+    QToolButton* m_zoomOverlayAutoBtn = nullptr;
+    QTimer* m_autoFitTimer = nullptr;
+    class QVariantAnimation* m_zoomAnim = nullptr;
+    void applyZoom(double zoom, bool relayout);
+    void stopZoomAnimation();
+    bool m_autoFit = false;
+    bool m_fitting = false;
+    void scheduleAutoFit();
     void setupZoomOverlay();
     void updateZoomOverlayPos();
 

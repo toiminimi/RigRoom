@@ -175,7 +175,7 @@ void AudioEngine::addNode(std::shared_ptr<AudioNode> node) {
         if (n->uniqueId == node->uniqueId) return;
     }
     
-    node->prepare(m_sampleRate, m_bufferSize);
+    node->prepareBlock(m_sampleRate, m_bufferSize);
     m_nodes.push_back(node);
 }
 
@@ -335,7 +335,7 @@ void AudioEngine::rebuildGraph() {
     // restart hosted plugins and is unnecessary while their buffers are stable.
     if (m_needsNodePrepare.exchange(false, std::memory_order_acq_rel)) {
         for (auto& n : m_nodes) {
-            n->prepare(m_sampleRate, m_bufferSize);
+            n->prepareBlock(m_sampleRate, m_bufferSize);
         }
     }
     
@@ -522,7 +522,7 @@ void AudioEngine::processAudio(int numFrames) {
     for (size_t nodeIndex = 0; nodeIndex < graph->executionOrder.size(); ++nodeIndex) {
         AudioNode* node = graph->executionOrder[nodeIndex];
         // Run DSP processing for the node
-        node->process(numFrames);
+        node->processBlock(numFrames);
         
         // Connections are compiled by source node when the graph is rebuilt.
         for (auto& conn : graph->outgoingConnections[nodeIndex]) {
@@ -605,8 +605,17 @@ void AudioEngine::setOutputGain(float db) {
 }
 
 void AudioEngine::setPresetOutputLevel(float db) {
-    const float clampedDb = std::clamp(db, -24.0f, 12.0f);
-    const float gain = std::pow(10.0f, clampedDb / 20.0f);
+    m_presetOutputLevelDb = std::clamp(db, -24.0f, 12.0f);
+    storeOutputLevel();
+}
+
+void AudioEngine::setSceneOutputLevel(float db) {
+    m_sceneOutputLevelDb = std::clamp(db, -24.0f, 12.0f);
+    storeOutputLevel();
+}
+
+void AudioEngine::storeOutputLevel() {
+    const float gain = std::pow(10.0f, (m_presetOutputLevelDb + m_sceneOutputLevelDb) / 20.0f);
     m_presetOutputLevel.store(gain, std::memory_order_relaxed);
 }
 
@@ -621,6 +630,5 @@ float AudioEngine::getOutputGainDB() const {
 }
 
 float AudioEngine::getPresetOutputLevelDB() const {
-    const float gain = m_presetOutputLevel.load(std::memory_order_relaxed);
-    return 20.0f * std::log10(std::max(0.0001f, gain));
+    return m_presetOutputLevelDb;
 }

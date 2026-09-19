@@ -20,8 +20,8 @@
 - **Plugin Browser & Custom Paths**: Search plugins by format or category, and configure custom search directories for VST3, CLAP, and LV2.
 
 ### 🔀 Parallel Signal Routing Canvas
-- **Multi-Lane Canvas**: Interactive node graph supporting up to 5 parallel audio lanes (`Main`, `Path B1`, `Path B2`, `Path C1`, `Path C2`) with configurable slot capacity (6 to 12 slots).
-- **Drag-and-Drop Workflow**: Drag `DRAG SPLIT` to create parallel branches, drag pedal blocks between slots and lanes, and drag split/merge handles to adjust routing positions.
+- **Multi-Lane Canvas**: Interactive node graph supporting up to 5 parallel audio lanes (`Main`, `Path B1`, `Path B2`, `Path C1`, `Path C2`) with a configurable number of columns (4 to 12).
+- **Drag-and-Drop Workflow**: Drag `DRAG SPLIT` to create parallel branches, drag pedal blocks between columns and lanes, and drag split/merge handles to adjust routing positions.
 - **Split Modes**: **Copy** (full duplicate of the source) or **A/B** (power split between Path A and the branch).
 - **Visual Signal Flow**: Animated glowing connection wires showing active signal paths, zoom controls (wheel zoom, 100% reset), and missing plugin alerts.
 
@@ -37,9 +37,17 @@
 - **Branch Gain Controls**: Individual row volume, main mix level, panning, and polarity invert per branch.
 
 ### 💾 Preset Management
-- **Pedalboard Presets**: Save, load, rename, and delete rigroom configurations.
-- **Preset Level**: Per-preset loudness (−24 to +12 dB), applied before the global Master Out. Click the System Output node to adjust it; the level is stored with the preset.
-- **Top Bar Quick Selector**: Active preset bar with prev/next navigation arrows.
+- **Pedalboard Presets**: Save, load, rename, duplicate, and delete board configurations, including each block's on/off state.
+- **Preset Panel**: Under the top bar, one panel reads left to right like a floor unit: **Bank → Presets (A–D) → Scenes**, with the preset actions at the right edge. Preset slots and scenes use the same footswitch-style tiles.
+  - **Bank**: ◀ ▶ only change which bank is shown (like bank up/down on hardware); nothing loads until you click a preset tile. The bank label turns orange while you are looking at a bank other than the loaded preset's. Banks keep their number and can also have a name (`04 Floyd`): double-click the bank label (unnamed banks show ✎). "▦ All banks" (Ctrl+P) opens the grid.
+  - **Presets**: one tile per slot in the bank (`A`–`D` by default; set "Presets per Bank" and "Preset Banks" in Settings). Click to load, double-click to rename, right-click for load/save here/rename/duplicate/delete. Click an empty tile to save the current board there. The loaded preset is filled; orange with a dot means unsaved changes.
+  - **Preset actions** (right edge): **Save** (Ctrl+S) and **⋯** (New, Save As, Rename, Duplicate, Delete, All banks).
+  - **Canvas label**: the top-left corner of the canvas shows what is playing, e.g. `04A · 2 Lead` with the preset name large. Click it to jump back to the preset's bank, double-click to rename the preset.
+  - **Grid of all banks**: drag to move or swap, right-click to rename/duplicate/delete, double-click a bank to name it, filter by preset, scene or bank name. Each preset lists its numbered scenes (`1 Clean · 2 Lead`).
+  - Slot order and bank names are stored in `~/.config/RigRoom/library.json`; existing presets are placed alphabetically on first run. Flat slot numbers (01A = 0, 01B = 1, …) are what MIDI Program Change will map to.
+- **Scenes**: Up to 8 scenes per preset, shown on the right of the performance bar. A scene stores every block's on/off state, a scene level trim, and any parameters you mark with right-click → *Control per scene* in the Inspector (marked ◆). Blocks that change between scenes carry an amber **S** badge. Switching scenes never reloads plugins, so there is no dropout and delay/reverb tails ring on. Edits made while a scene is active are remembered when you switch away and saved with the preset. Scene tiles show the scene number and name. Double-click a scene to rename it; right-click to pick a color (named swatches), duplicate, store the current board into it, or delete it.
+- **Preset Level**: Per-preset loudness (−24 to +12 dB), applied before the global Master Out. Click the System Output node to adjust it and the active scene's level trim; both are stored with the preset.
+- **Click-free Block Switching**: Turning a block on or off crossfades over about 5 ms instead of cutting.
 - **Parameter Synchronization**: Automatic parameter and preset state sync upon loading presets.
 
 ---
@@ -134,9 +142,15 @@ cmake --build build -j$(nproc)
 | **Ctrl + N** | Create new empty preset |
 | **Ctrl + S** | Save current preset |
 | **Ctrl + Shift + S** | Save preset as... |
-| **Ctrl + =** / **Ctrl + +** | Add slot column |
-| **Ctrl + -** | Remove trailing empty slot column |
+| **Ctrl + P** | Open the grid of all banks |
+| **Ctrl + PageUp** / **Ctrl + PageDown** | Load previous / next preset |
+| **Ctrl + Shift + PageUp** / **Ctrl + Shift + PageDown** | Show previous / next bank (does not load) |
+| **Alt + 1 … 8** | Select scene 1–8 |
+| **Alt + Left** / **Alt + Right** | Previous / next scene |
+| **Ctrl + =** / **Ctrl + +** | Add canvas column (also in the canvas zoom box) |
+| **Ctrl + -** | Remove trailing empty canvas column |
 | **Mouse Wheel** / **Pinch** | Zoom canvas in / out |
+| **Auto** (canvas zoom box) | Keep the whole signal path in view on resize and edits; zooming by hand turns it off |
 | **Drag `SPLIT` Tool** | Drop onto gap to create parallel branch |
 | **Drag Routing Handle** | Move split or merge position |
 

@@ -17,12 +17,17 @@
 #include <memory>
 #include "../audio/AudioEngine.h"
 #include "NodeCanvas.h"
+#include "../preset/PresetLibrary.h"
+#include "../preset/SceneModel.h"
+#include "../control/RigController.h"
 #include <lilv/lilv.h>
 
 class ExternalPluginUIWindow;
 class QSplitter;
 class QScrollArea;
 class Tone3000ImageLoader;
+class FootswitchTile;
+class QMenu;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -41,14 +46,16 @@ private slots:
     void onSavePresetAs();
     void onRenamePreset();
     void onDeletePreset();
-    void onPresetComboActivated(int index);
-    void onLoadPreset();
+    void onPresetButtonClicked();
     void onPrevPreset();
     void onNextPreset();
+    void onPrevBank();
+    void onNextBank();
     void onSlotMinusClicked();
     void onSlotPlusClicked();
     void onBufferSizeChanged(int index);
     void onNodeSelected(std::shared_ptr<AudioNode> node);
+    void onNodeBypassToggled(std::shared_ptr<AudioNode> node);
     void updateCPUStatus();
     void showPluginControls(std::shared_ptr<AudioNode> node);
     void onPluginDoubleClicked(std::shared_ptr<AudioNode> node);
@@ -73,6 +80,37 @@ private:
     void savePresetToFile(const QString& path);
     void loadPresetFromFile(const QString& path);
     void refreshPresetList();
+    QString presetsDirPath() const;
+    // Loads the preset in a library slot (asks about unsaved changes first).
+    bool loadSlot(int slot);
+    // Asks for a name (and target slot when targetSlot < 0) and saves the board there.
+    bool savePresetToSlot(int targetSlot, const QString& suggestedName = QString());
+    int promptTargetSlot(int defaultSlot, const QString& presetName);
+    // Prompts for a name when requestedName is null.
+    void renamePresetInSlot(int slot, const QString& requestedName = QString());
+    void startPresetRename();
+    void startSlotRename(int slot, QWidget* tile);
+    void showSlotTileMenu(int slot, QWidget* tile, const QPoint& globalPos);
+    void updateCanvasInfo();
+    void duplicatePresetInSlot(int slot);
+    void deletePresetInSlot(int slot);
+    // Performance bar: bank selector + A-D slot buttons.
+    void rebuildSlotButtons();
+    void setViewBank(int bank);
+    void renameViewBank();
+    void onSlotButtonClicked(int indexInBank);
+    void refreshSceneMarkers();
+    void startSceneRename(int index, QWidget* tile);
+
+    // Scenes
+    SceneModel::BoardState captureBoardState() const;
+    std::shared_ptr<AudioNode> findNodeById(const std::string& id) const;
+    void resetScenesFromBoard();
+    void selectScene(int index);
+    void applySceneChanges(const SceneModel::Changes& changes);
+    void rebuildSceneBar();
+    void showSceneMenu(int index, const QPoint& globalPos);
+    void toggleParamSceneControl(const std::shared_ptr<AudioNode>& node, uint32_t index);
     void saveConfigSettings();
     void populateInputPorts();
     void populateOutputPorts();
@@ -92,15 +130,27 @@ private:
     // UI Elements
     NodeCanvas* m_canvas = nullptr;
     QSplitter* m_workspaceSplitter = nullptr;
-    QComboBox* m_presetCombo = nullptr;
+    int m_viewBank = 0;
+    QLabel* m_bankLabel = nullptr;
+    QToolButton* m_bankPrevBtn = nullptr;
+    QToolButton* m_bankNextBtn = nullptr;
+    QToolButton* m_slotGridBtn = nullptr;
+    QHBoxLayout* m_slotBarLayout = nullptr;
+    std::vector<FootswitchTile*> m_slotButtons;
+    QLabel* m_presetNameLabel = nullptr; // canvas info label (click: show bank, double-click: rename)
+    QMenu* m_presetMenu = nullptr;
+    QWidget* m_columnsGroup = nullptr;
+    PresetLibrary m_presetLibrary;
+    SceneModel m_scenes;
+    RigController* m_rig = nullptr;
+    void setupRigController();
+    QWidget* m_sceneBar = nullptr;
+    QHBoxLayout* m_sceneBarLayout = nullptr;
     QPushButton* m_savePresetButton = nullptr;
-    QToolButton* m_prevPresetBtn = nullptr;
-    QToolButton* m_nextPresetBtn = nullptr;
     QToolButton* m_slotMinusBtn = nullptr;
     QToolButton* m_slotPlusBtn = nullptr;
     QLabel* m_slotCountLabel = nullptr;
     QTimer* m_saveFeedbackTimer = nullptr;
-    void updatePresetNavigationButtons();
     void updateSlotControls();
     void triggerSaveFeedback();
     int m_globalDefaultSlots = 6;
@@ -159,7 +209,8 @@ private:
 
     bool m_unsavedChanges = false;
     bool m_isLoadingPreset = false;
-    int m_currentPresetIndex = -1;
+    int m_currentSlot = -1;
+    QString m_currentPresetName; // empty = unsaved "Untitled" board
     void setUnsavedChanges(bool unsaved);
     bool promptUnsavedChanges();
 

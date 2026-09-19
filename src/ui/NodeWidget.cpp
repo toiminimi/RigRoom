@@ -331,6 +331,15 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     qreal badgeWidth = badgeMetrics.horizontalAdvance(channelLabel) + 8;
     QRectF badgeRect(m_width - badgeWidth - 6, m_height - 16, badgeWidth, 10);
 
+    // Scene-controlled blocks get a small "S" pill before the channel badge.
+    bool sceneMarked = false;
+    if (!isSystemNode && scene() && !scene()->views().isEmpty()) {
+        if (auto* canvas = dynamic_cast<NodeCanvas*>(scene()->views().first())) {
+            sceneMarked = canvas->isSceneMarked(m_audioNode->uniqueId);
+        }
+    }
+    const QRectF sceneBadgeRect(badgeRect.left() - 14, m_height - 16, 11, 10);
+
     const QColor categoryTextColor = bypass ? QColor(125, 128, 135) : headerColor.lighter(125);
     drawEffectIcon(painter, iconType, QPointF(13, m_height - 10), categoryTextColor);
     QFont categoryFont = painter->font();
@@ -339,12 +348,19 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     categoryFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.5);
     painter->setFont(categoryFont);
     painter->setPen(categoryTextColor);
-    QRectF categoryRect(23, m_height - 17, badgeRect.left() - 27, 12);
+    QRectF categoryRect(23, m_height - 17, (sceneMarked ? sceneBadgeRect.left() : badgeRect.left()) - 27, 12);
     painter->drawText(categoryRect, Qt::AlignVCenter | Qt::AlignLeft,
                       QFontMetrics(categoryFont).elidedText(categoryLabel(iconType), Qt::ElideRight,
                                                             qRound(categoryRect.width())));
 
     painter->setFont(badgeFont);
+    if (sceneMarked) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(255, 193, 7, bypass ? 120 : 220));
+        painter->drawRoundedRect(sceneBadgeRect, 3, 3);
+        painter->setPen(QColor(20, 20, 22));
+        painter->drawText(sceneBadgeRect, Qt::AlignCenter, "S");
+    }
     painter->setPen(Qt::NoPen);
     painter->setBrush(isMissing ? QColor(150, 62, 68) : QColor(57, 60, 68));
     painter->drawRoundedRect(badgeRect, 3, 3);
@@ -366,6 +382,11 @@ void NodeWidget::toggleBypass() {
     if (m_audioNode->getType() != NodeType::SystemInput && m_audioNode->getType() != NodeType::SystemOutput) {
         m_audioNode->setBypassed(!m_audioNode->isBypassed());
         update();
+        if (scene() && !scene()->views().isEmpty()) {
+            if (auto* canvas = dynamic_cast<NodeCanvas*>(scene()->views().first())) {
+                emit canvas->nodeBypassToggled(m_audioNode);
+            }
+        }
     }
 }
 

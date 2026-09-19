@@ -79,6 +79,9 @@ public:
     void setInputGain(float db);
     void setOutputGain(float db);
     void setPresetOutputLevel(float db);
+    // Scene trim (dB) applied on top of the preset level; clamped to -24..+12 dB.
+    void setSceneOutputLevel(float db);
+    float getSceneOutputLevelDB() const { return m_sceneOutputLevelDb; }
     float getInputGainDB() const;
     float getOutputGainDB() const;
     float getPresetOutputLevelDB() const;
@@ -127,7 +130,11 @@ private:
     
     std::atomic<float> m_inputGain{1.0f};
     std::atomic<float> m_outputGain{1.0f};
+    // Combined preset + scene gain read by the audio thread.
     std::atomic<float> m_presetOutputLevel{1.0f};
+    float m_presetOutputLevelDb = 0.0f; // GUI thread
+    float m_sceneOutputLevelDb = 0.0f;  // GUI thread
+    void storeOutputLevel();
     // Accessed only from the audio callback to ramp preset changes smoothly.
     float m_currentPresetOutputLevel = 1.0f;
     std::atomic<float> m_inputPeak{0.0f};

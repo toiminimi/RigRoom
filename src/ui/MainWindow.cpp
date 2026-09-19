@@ -13,6 +13,8 @@
 #include "ModelDetailsDialog.h"
 #include "InspectorComponents.h"
 #include "AboutDialog.h"
+#include "PresetBrowser.h"
+#include "FootswitchTile.h"
 #include <filesystem>
 #include <iostream>
 #include <unordered_set>
@@ -55,6 +57,7 @@
 #include <QStyle>
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QDialogButtonBox>
 #include <QRegularExpression>
 #include <QCloseEvent>
 #include <QCryptographicHash>
@@ -782,6 +785,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     m_networkManager = new QNetworkAccessManager(this);
     m_toneImageLoader = new Tone3000ImageLoader(this);
+    setupRigController();
     
     // Create configs dir and automatically migrate legacy PedalBoard settings & presets
     QString newConfigDir = QDir::homePath() + "/.config/RigRoom";
@@ -925,6 +929,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Connect canvas signals
     connect(m_canvas, &NodeCanvas::editPluginUI, this, &MainWindow::onPluginDoubleClicked);
     connect(m_canvas, &NodeCanvas::nodeSelected, this, &MainWindow::onNodeSelected);
+    connect(m_canvas, &NodeCanvas::nodeBypassToggled, this, &MainWindow::onNodeBypassToggled);
     connect(m_canvas, &NodeCanvas::plusButtonClicked, this, &MainWindow::onPlusButtonClicked);
     connect(m_canvas, &NodeCanvas::nodeContextMenuRequested, this, &MainWindow::onNodeContextMenuRequested);
     connect(m_canvas, &NodeCanvas::routingNodeSelected, this, &MainWindow::showRoutingNodeControls);
@@ -932,6 +937,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_canvas, &NodeCanvas::nodeAboutToBeRemoved, this, &MainWindow::closePluginUIForNode);
     connect(m_canvas, &NodeCanvas::routingChanged, this, [this]() {
         updateSlotControls();
+        refreshSceneMarkers();
         if (!m_isLoadingPreset) {
             setUnsavedChanges(true);
         }
@@ -951,6 +957,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // Autoload the last used preset if it was saved in config
     QString lastPresetName;
+    int lastSlot = -1;
     QFile configFileCheck(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFileCheck.open(QFile::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(configFileCheck.readAll());
@@ -962,25 +969,21 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             if (obj.contains("lastPreset")) {
                 lastPresetName = obj["lastPreset"].toString();
             }
+            lastSlot = obj["lastSlot"].toInt(-1);
         }
         configFileCheck.close();
     }
     
-    if (!lastPresetName.isEmpty()) {
-        int idx = m_presetCombo->findText(lastPresetName);
-        if (idx != -1) {
-            m_presetCombo->setCurrentIndex(idx);
-            m_currentPresetIndex = idx;
-            QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + lastPresetName + ".json";
-            if (QFile::exists(fullPath)) {
-                loadPresetFromFile(fullPath);
-                setUnsavedChanges(false);
-            }
-        }
+    // The name wins over the slot number, in case the library was rearranged.
+    int startupSlot = lastPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(lastPresetName);
+    if (startupSlot < 0 && !lastPresetName.isEmpty() && m_presetLibrary.isOccupied(lastSlot)) {
+        startupSlot = lastSlot;
+    }
+    if (startupSlot >= 0) {
+        loadSlot(startupSlot);
     } else {
-        m_presetCombo->setCurrentIndex(-1);
-        m_presetCombo->setPlaceholderText("Untitled");
-        m_currentPresetIndex = -1;
+        m_currentSlot = -1;
+        m_currentPresetName.clear();
         setUnsavedChanges(false);
     }
 }
@@ -1102,116 +1105,87 @@ void MainWindow::setupUI() {
     logo->setStyleSheet("font-size: 20px; font-weight: bold; color: #00B0FF; letter-spacing: 2px;");
     topBar->addWidget(logo);
     
-    topBar->addSpacing(30);
-    
-    // Preset actions bar
-    topBar->addWidget(new QLabel("Preset:", this));
-
-    m_prevPresetBtn = new QToolButton(this);
-    m_prevPresetBtn->setText("◀");
-    m_prevPresetBtn->setToolTip("Previous Pedalboard Preset (Ctrl+PageUp)");
-    m_prevPresetBtn->setFixedSize(26, 26);
-    m_prevPresetBtn->setCursor(Qt::PointingHandCursor);
-    m_prevPresetBtn->setStyleSheet(
-        "QToolButton { background-color: #242528; color: #00B0FF; font-size: 11px; border: 1px solid #333438; border-radius: 4px; }"
-        "QToolButton:hover { background-color: #303236; color: white; }"
-        "QToolButton:disabled { color: #555555; background-color: #1A1A1C; border-color: #252528; }"
-    );
-    connect(m_prevPresetBtn, &QToolButton::clicked, this, &MainWindow::onPrevPreset);
-    topBar->addWidget(m_prevPresetBtn);
-
-    m_presetCombo = new QComboBox(this);
-    m_presetCombo->setMinimumWidth(180);
-    m_presetCombo->setEditable(false);
-    m_presetCombo->setToolTip("Select pedalboard preset");
-    m_presetCombo->setStyleSheet(
-        "QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #00B0FF; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
-        "QComboBox::drop-down { border: none; width: 20px; }"
-        "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
-    );
-    connect(m_presetCombo, &QComboBox::activated, this, &MainWindow::onPresetComboActivated);
-    topBar->addWidget(m_presetCombo);
-
-    m_nextPresetBtn = new QToolButton(this);
-    m_nextPresetBtn->setText("▶");
-    m_nextPresetBtn->setToolTip("Next Pedalboard Preset (Ctrl+PageDown)");
-    m_nextPresetBtn->setFixedSize(26, 26);
-    m_nextPresetBtn->setCursor(Qt::PointingHandCursor);
-    m_nextPresetBtn->setStyleSheet(m_prevPresetBtn->styleSheet());
-    connect(m_nextPresetBtn, &QToolButton::clicked, this, &MainWindow::onNextPreset);
-    topBar->addWidget(m_nextPresetBtn);
-
+    // Preset actions live in the preset panel below; they are created here so
+    // setUnsavedChanges() can restyle the Save button from the start.
     m_savePresetButton = new QPushButton("Save", this);
-    m_savePresetButton->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
     m_savePresetButton->setToolTip("Save current preset (Ctrl+S)");
+    m_savePresetButton->setCursor(Qt::PointingHandCursor);
     m_savePresetButton->setStyleSheet(
         "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
         "QPushButton:hover { background-color: #009688; }"
     );
     connect(m_savePresetButton, &QPushButton::clicked, this, &MainWindow::onSavePreset);
-    topBar->addWidget(m_savePresetButton);
 
-    QPushButton* newBtn = new QPushButton("New", this);
-    newBtn->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
-    newBtn->setToolTip("Create new empty preset (Ctrl+N)");
-    newBtn->setStyleSheet(
-        "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
-        "QPushButton:hover { background-color: #44444A; }"
-    );
-    connect(newBtn, &QPushButton::clicked, this, &MainWindow::onNewPreset);
-    topBar->addWidget(newBtn);
-
-    QPushButton* presetOptionsBtn = new QPushButton("Options ▾", this);
-    presetOptionsBtn->setToolTip("Preset actions (Save As, Rename, Delete)");
-    presetOptionsBtn->setStyleSheet(
-        "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
-        "QPushButton:hover { background-color: #44444A; }"
-    );
-
-    QMenu* presetMenu = new QMenu(this);
-    QAction* saveAsAct = presetMenu->addAction("Save As...");
-    QAction* renameAct = presetMenu->addAction("Rename...");
-    QAction* deleteAct = presetMenu->addAction("Delete Preset");
-
+    m_presetMenu = new QMenu(this);
+    m_presetMenu->setStyleSheet(
+        "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
+        "QMenu::item:selected { background-color: #007ACC; color: white; }"
+        "QMenu::item:disabled { color: #555555; }");
+    QAction* newAct = m_presetMenu->addAction("New Preset");
+    newAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_N));
+    QAction* saveAsAct = m_presetMenu->addAction("Save As...");
+    saveAsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    m_presetMenu->addSeparator();
+    QAction* renameAct = m_presetMenu->addAction("Rename...");
+    QAction* duplicateAct = m_presetMenu->addAction("Duplicate to Next Free Slot");
+    QAction* deleteAct = m_presetMenu->addAction("Delete...");
+    m_presetMenu->addSeparator();
+    QAction* browseAct = m_presetMenu->addAction("All Banks...");
+    browseAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
+    // Shortcuts are handled by window-level QShortcuts; these only display them.
+    for (QAction* act : {newAct, saveAsAct, browseAct}) act->setShortcutContext(Qt::WidgetShortcut);
+    connect(newAct, &QAction::triggered, this, &MainWindow::onNewPreset);
     connect(saveAsAct, &QAction::triggered, this, &MainWindow::onSavePresetAs);
     connect(renameAct, &QAction::triggered, this, &MainWindow::onRenamePreset);
-    connect(deleteAct, &QAction::triggered, this, &MainWindow::onDeletePreset);
-
-    connect(presetOptionsBtn, &QPushButton::clicked, this, [this, presetOptionsBtn, presetMenu]() {
-        presetMenu->exec(presetOptionsBtn->mapToGlobal(QPoint(0, presetOptionsBtn->height())));
+    connect(duplicateAct, &QAction::triggered, this, [this]() {
+        if (m_currentSlot >= 0) { duplicatePresetInSlot(m_currentSlot); rebuildSlotButtons(); }
     });
-    topBar->addWidget(presetOptionsBtn);
+    connect(deleteAct, &QAction::triggered, this, &MainWindow::onDeletePreset);
+    connect(browseAct, &QAction::triggered, this, &MainWindow::onPresetButtonClicked);
+    connect(m_presetMenu, &QMenu::aboutToShow, this, [this, renameAct, duplicateAct, deleteAct]() {
+        const bool saved = m_currentSlot >= 0;
+        renameAct->setEnabled(saved);
+        duplicateAct->setEnabled(saved);
+        deleteAct->setEnabled(saved);
+    });
 
-    topBar->addSpacing(12);
-    QLabel* slotTitleLabel = new QLabel("Slots:", this);
-    slotTitleLabel->setStyleSheet("color: #AAAAAA; font-weight: bold; font-size: 11px;");
-    topBar->addWidget(slotTitleLabel);
+    // Canvas width belongs with the canvas: this group goes into its zoom box.
+    m_columnsGroup = new QWidget(this);
+    auto* columnsLayout = new QHBoxLayout(m_columnsGroup);
+    columnsLayout->setContentsMargins(0, 0, 0, 0);
+    columnsLayout->setSpacing(4);
+    QLabel* slotTitleLabel = new QLabel("Columns", m_columnsGroup);
+    slotTitleLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    slotTitleLabel->setStyleSheet("color: #AAAAAA; font-weight: bold; font-size: 10px;");
+    columnsLayout->addWidget(slotTitleLabel);
 
-    m_slotMinusBtn = new QToolButton(this);
+    m_slotMinusBtn = new QToolButton(m_columnsGroup);
     m_slotMinusBtn->setText("−");
-    m_slotMinusBtn->setToolTip("Remove empty tail slot (Ctrl+-)");
-    m_slotMinusBtn->setFixedSize(24, 24);
+    m_slotMinusBtn->setToolTip("Remove empty last column (Ctrl+-)");
+    m_slotMinusBtn->setFixedSize(22, 22);
     m_slotMinusBtn->setCursor(Qt::PointingHandCursor);
     m_slotMinusBtn->setStyleSheet(
-        "QToolButton { background-color: #242528; color: #E0E0E0; font-size: 10px; border: 1px solid #333438; border-radius: 4px; }"
-        "QToolButton:hover { background-color: #303236; color: white; }"
+        "QToolButton { background-color: #262830; color: #E0E0E0; font-size: 10px; border: 1px solid #363842; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #363844; color: white; border-color: #00B0FF; }"
         "QToolButton:disabled { color: #555555; background-color: #1A1A1C; border-color: #252528; }"
     );
     connect(m_slotMinusBtn, &QToolButton::clicked, this, &MainWindow::onSlotMinusClicked);
-    topBar->addWidget(m_slotMinusBtn);
+    columnsLayout->addWidget(m_slotMinusBtn);
 
-    m_slotCountLabel = new QLabel("6", this);
-    m_slotCountLabel->setStyleSheet("font-weight: bold; color: #00B0FF; padding: 0 4px; font-size: 12px;");
-    topBar->addWidget(m_slotCountLabel);
+    m_slotCountLabel = new QLabel("6", m_columnsGroup);
+    m_slotCountLabel->setAlignment(Qt::AlignCenter);
+    m_slotCountLabel->setMinimumWidth(m_slotCountLabel->fontMetrics().horizontalAdvance("12") + 8);
+    m_slotCountLabel->setStyleSheet("font-weight: bold; color: #00B0FF; padding: 0 2px; font-size: 11px;");
+    columnsLayout->addWidget(m_slotCountLabel);
 
-    m_slotPlusBtn = new QToolButton(this);
+    m_slotPlusBtn = new QToolButton(m_columnsGroup);
     m_slotPlusBtn->setText("+");
-    m_slotPlusBtn->setToolTip("Add extra track slot (Ctrl+=)");
-    m_slotPlusBtn->setFixedSize(24, 24);
+    m_slotPlusBtn->setToolTip("Add a column (Ctrl+=)");
+    m_slotPlusBtn->setFixedSize(22, 22);
     m_slotPlusBtn->setCursor(Qt::PointingHandCursor);
     m_slotPlusBtn->setStyleSheet(m_slotMinusBtn->styleSheet());
     connect(m_slotPlusBtn, &QToolButton::clicked, this, &MainWindow::onSlotPlusClicked);
-    topBar->addWidget(m_slotPlusBtn);
+    columnsLayout->addWidget(m_slotPlusBtn);
 
     // Global Keyboard Shortcuts
     auto* zoomResetSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_0), this);
@@ -1231,6 +1205,18 @@ void MainWindow::setupUI() {
 
     auto* nextSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_PageDown), this);
     connect(nextSc, &QShortcut::activated, this, &MainWindow::onNextPreset);
+
+    auto* prevBankSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_PageUp), this);
+    connect(prevBankSc, &QShortcut::activated, this, &MainWindow::onPrevBank);
+
+    auto* nextBankSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_PageDown), this);
+    connect(nextBankSc, &QShortcut::activated, this, &MainWindow::onNextBank);
+
+    auto* browseSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_P), this);
+    connect(browseSc, &QShortcut::activated, this, &MainWindow::onPresetButtonClicked);
+
+    auto* saveAsSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this);
+    connect(saveAsSc, &QShortcut::activated, this, &MainWindow::onSavePresetAs);
     
     topBar->addStretch();
     
@@ -1310,7 +1296,36 @@ void MainWindow::setupUI() {
     formLayout->addRow("Output Mode:", m_hwOutputModeCombo);
     formLayout->addRow("Output Device:", m_hwOutputCombo);
     formLayout->addRow("Buffer Size:", m_bufferSizeCombo);
-    formLayout->addRow("Default Track Slots:", defaultTrackSlotsCombo);
+    formLayout->addRow("Default Columns:", defaultTrackSlotsCombo);
+
+    // Preset library layout (bank x slot). Program Change numbers follow the flat slot order.
+    QComboBox* slotsPerBankCombo = new QComboBox(m_settingsDialog);
+    slotsPerBankCombo->addItems({"3", "4", "5", "6", "8", "10"});
+    slotsPerBankCombo->setToolTip("How many presets each bank holds (A, B, C, ...)");
+    QSpinBox* numBanksSpin = new QSpinBox(m_settingsDialog);
+    numBanksSpin->setRange(1, 128);
+    numBanksSpin->setToolTip("Number of preset banks");
+    numBanksSpin->setKeyboardTracking(false); // don't reflow the library while typing "32"
+    auto syncLibraryLayoutControls = [this, slotsPerBankCombo, numBanksSpin]() {
+        QSignalBlocker b1(slotsPerBankCombo);
+        QSignalBlocker b2(numBanksSpin);
+        const int idx = slotsPerBankCombo->findText(QString::number(m_presetLibrary.slotsPerBank()));
+        if (idx >= 0) slotsPerBankCombo->setCurrentIndex(idx);
+        numBanksSpin->setValue(m_presetLibrary.numBanks());
+    };
+    auto applyLibraryLayout = [this, slotsPerBankCombo, numBanksSpin]() {
+        m_presetLibrary.setLayout(slotsPerBankCombo->currentText().toInt(), numBanksSpin->value());
+        m_presetLibrary.save();
+        m_currentSlot = m_currentPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(m_currentPresetName);
+        setUnsavedChanges(m_unsavedChanges);
+        saveConfigSettings();
+    };
+    connect(slotsPerBankCombo, &QComboBox::currentTextChanged, this, applyLibraryLayout);
+    connect(numBanksSpin, &QSpinBox::valueChanged, this, applyLibraryLayout);
+    connect(m_settingsDialog, &QDialog::finished, this, syncLibraryLayoutControls);
+    QTimer::singleShot(0, this, syncLibraryLayoutControls);
+    formLayout->addRow("Presets per Bank:", slotsPerBankCombo);
+    formLayout->addRow("Preset Banks:", numBanksSpin);
     
     audioTabLayout->addWidget(ioBox);
     audioTabLayout->addStretch();
@@ -1666,6 +1681,150 @@ void MainWindow::setupUI() {
     topBar->addSpacing(15);
 
     mainLayout->addWidget(topBarWidget);
+
+    // --- PRESET PANEL: Bank | Presets (A-D) | Loaded preset | Scenes ---
+    // Laid out like a floor unit: bank up/down chooses which presets the A-D
+    // switches show, a switch loads one, and scenes vary the loaded preset.
+    auto* panel = new QFrame(central);
+    panel->setObjectName("presetPanel");
+    panel->setStyleSheet(
+        "QFrame#presetPanel { background-color: #17171A; border: 1px solid #2A2A30; border-radius: 8px; }"
+        "QFrame#presetPanel QLabel { background: transparent; border: none; }");
+    auto* panelLayout = new QHBoxLayout(panel);
+    panelLayout->setContentsMargins(10, 6, 10, 8);
+    panelLayout->setSpacing(12);
+
+    auto makeCaption = [panel](const QString& text) {
+        auto* caption = new QLabel(text, panel);
+        caption->setStyleSheet("color: #7A7A86; font-weight: bold; font-size: 9px; letter-spacing: 1px;");
+        return caption;
+    };
+    auto makeSection = [panel](QBoxLayout*& body, const QString& caption, auto makeCaptionFn) {
+        auto* section = new QWidget(panel);
+        auto* v = new QVBoxLayout(section);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(3);
+        v->addWidget(makeCaptionFn(caption));
+        body = new QHBoxLayout();
+        body->setSpacing(4);
+        v->addLayout(body);
+        return section;
+    };
+    auto makeDivider = [panel]() {
+        auto* divider = new QFrame(panel);
+        divider->setFrameShape(QFrame::VLine);
+        divider->setStyleSheet("QFrame { color: #2A2A30; }");
+        return divider;
+    };
+    const QString smallBtnStyle =
+        "QToolButton { background-color: #242528; color: #00B0FF; font-size: 11px; border: 1px solid #333438; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #303236; color: white; }";
+
+    // Bank
+    QBoxLayout* bankBody = nullptr;
+    QWidget* bankSection = makeSection(bankBody, "BANK", makeCaption);
+    m_bankPrevBtn = new QToolButton(bankSection);
+    m_bankPrevBtn->setText("◀");
+    m_bankPrevBtn->setToolTip("Show previous bank (Ctrl+Shift+PageUp). Nothing loads until you pick a preset.");
+    m_bankPrevBtn->setFixedSize(22, 44);
+    m_bankPrevBtn->setCursor(Qt::PointingHandCursor);
+    m_bankPrevBtn->setStyleSheet(smallBtnStyle);
+    connect(m_bankPrevBtn, &QToolButton::clicked, this, [this]() { m_rig->stepBank(-1); });
+    bankBody->addWidget(m_bankPrevBtn);
+
+    auto* bankMiddle = new QVBoxLayout();
+    bankMiddle->setSpacing(2);
+    m_bankLabel = new QLabel(bankSection);
+    m_bankLabel->setAlignment(Qt::AlignCenter);
+    m_bankLabel->setFixedWidth(118);
+    m_bankLabel->setFixedHeight(24);
+    m_bankLabel->installEventFilter(this);
+    bankMiddle->addWidget(m_bankLabel);
+    m_slotGridBtn = new QToolButton(bankSection);
+    m_slotGridBtn->setText("▦  All banks");
+    m_slotGridBtn->setToolTip("Grid of all banks (Ctrl+P): move, swap, rename and browse presets");
+    m_slotGridBtn->setFixedWidth(118);
+    m_slotGridBtn->setFixedHeight(18);
+    m_slotGridBtn->setCursor(Qt::PointingHandCursor);
+    m_slotGridBtn->setStyleSheet(
+        "QToolButton { background: transparent; color: #8A8A96; font-size: 10px; border: none; }"
+        "QToolButton:hover { color: #00B0FF; }");
+    connect(m_slotGridBtn, &QToolButton::clicked, this, &MainWindow::onPresetButtonClicked);
+    bankMiddle->addWidget(m_slotGridBtn);
+    bankBody->addLayout(bankMiddle);
+
+    m_bankNextBtn = new QToolButton(bankSection);
+    m_bankNextBtn->setText("▶");
+    m_bankNextBtn->setToolTip("Show next bank (Ctrl+Shift+PageDown). Nothing loads until you pick a preset.");
+    m_bankNextBtn->setFixedSize(22, 44);
+    m_bankNextBtn->setCursor(Qt::PointingHandCursor);
+    m_bankNextBtn->setStyleSheet(smallBtnStyle);
+    connect(m_bankNextBtn, &QToolButton::clicked, this, [this]() { m_rig->stepBank(1); });
+    bankBody->addWidget(m_bankNextBtn);
+    panelLayout->addWidget(bankSection);
+    panelLayout->addWidget(makeDivider());
+
+    // Presets in the shown bank
+    QBoxLayout* slotBody = nullptr;
+    QWidget* slotSection = makeSection(slotBody, "PRESETS", makeCaption);
+    m_slotBarLayout = static_cast<QHBoxLayout*>(slotBody);
+    panelLayout->addWidget(slotSection, 0);
+    panelLayout->addWidget(makeDivider());
+
+    // Scenes of the loaded preset
+    auto* sceneSection = new QWidget(panel);
+    auto* sceneSectionLayout = new QVBoxLayout(sceneSection);
+    sceneSectionLayout->setContentsMargins(0, 0, 0, 0);
+    sceneSectionLayout->setSpacing(3);
+    auto* sceneCaption = makeCaption("SCENES");
+    sceneCaption->setToolTip("Scenes switch blocks on/off, per-scene parameters and scene level without reloading plugins.\n"
+                             "Alt+1..8 selects a scene, Alt+Left/Right steps. Double-click to rename, right-click for more.");
+    sceneSectionLayout->addWidget(sceneCaption);
+    m_sceneBar = new QWidget(sceneSection);
+    m_sceneBarLayout = new QHBoxLayout(m_sceneBar);
+    m_sceneBarLayout->setContentsMargins(0, 0, 0, 0);
+    m_sceneBarLayout->setSpacing(4);
+    sceneSectionLayout->addWidget(m_sceneBar);
+    panelLayout->addWidget(sceneSection, 0);
+    panelLayout->addStretch(1);
+
+    // Preset actions: out of the way at the right edge, but always visible.
+    auto* actionsSection = new QWidget(panel);
+    auto* actionsLayout = new QVBoxLayout(actionsSection);
+    actionsLayout->setContentsMargins(0, 0, 0, 0);
+    actionsLayout->setSpacing(3);
+    actionsLayout->addWidget(makeCaption("PRESET"));
+    auto* actionButtons = new QHBoxLayout();
+    actionButtons->setSpacing(4);
+    m_savePresetButton->setParent(actionsSection);
+    m_savePresetButton->setFixedHeight(44);
+    actionButtons->addWidget(m_savePresetButton);
+    auto* moreBtn = new QToolButton(actionsSection);
+    moreBtn->setText("⋯");
+    moreBtn->setToolTip("New, Save As, Rename, Duplicate, Delete, All banks");
+    moreBtn->setFixedSize(32, 44);
+    moreBtn->setCursor(Qt::PointingHandCursor);
+    moreBtn->setStyleSheet(
+        "QToolButton { background-color: #2A2A30; color: #E0E0E0; font-weight: bold; font-size: 15px; border-radius: 5px; border: 1px solid #35363C; }"
+        "QToolButton:hover { background-color: #3A3A42; }");
+    connect(moreBtn, &QToolButton::clicked, this, [this, moreBtn]() {
+        m_presetMenu->exec(moreBtn->mapToGlobal(QPoint(0, moreBtn->height())));
+    });
+    actionButtons->addWidget(moreBtn);
+    actionsLayout->addLayout(actionButtons);
+    panelLayout->addWidget(actionsSection, 0);
+
+    mainLayout->addWidget(panel);
+
+    for (int i = 0; i < SceneModel::kMaxScenes; ++i) {
+        auto* sceneSc = new QShortcut(QKeySequence(Qt::ALT | (Qt::Key_1 + i)), this);
+        connect(sceneSc, &QShortcut::activated, this, [this, i]() { m_rig->selectScene(i); });
+    }
+    auto* prevSceneSc = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Left), this);
+    connect(prevSceneSc, &QShortcut::activated, this, [this]() { m_rig->stepScene(-1); });
+    auto* nextSceneSc = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Right), this);
+    connect(nextSceneSc, &QShortcut::activated, this, [this]() { m_rig->stepScene(1); });
+    rebuildSceneBar();
     
     // --- WORKSPACE SPLITTER ---
     QSplitter* midSplitter = m_workspaceSplitter = new QSplitter(Qt::Vertical, this);
@@ -1673,6 +1832,17 @@ void MainWindow::setupUI() {
     // Center: Node Graph Canvas
     m_canvas = new NodeCanvas(&m_engine, this);
     m_canvas->setMinimumHeight(260);
+    m_canvas->addZoomOverlayWidget(m_columnsGroup);
+    {
+        QSettings canvasSettings("RigRoom", "RigRoom");
+        m_canvas->setAutoFit(canvasSettings.value("canvas_auto_fit", false).toBool());
+        connect(m_canvas, &NodeCanvas::autoFitChanged, this, [](bool enabled) {
+            QSettings("RigRoom", "RigRoom").setValue("canvas_auto_fit", enabled);
+        });
+    }
+    m_presetNameLabel = m_canvas->infoOverlay();
+    m_presetNameLabel->setCursor(Qt::PointingHandCursor);
+    m_presetNameLabel->installEventFilter(this);
     midSplitter->addWidget(m_canvas);
     midSplitter->setStretchFactor(0, 1);
     
@@ -1983,15 +2153,19 @@ void MainWindow::scanPlugins() {
     }
 }
 
-void MainWindow::refreshPresetList() {
-    m_presetCombo->clear();
-    QDir presetsDir(QDir::homePath() + "/.config/RigRoom/presets");
-    QStringList files = presetsDir.entryList({"*.json"}, QDir::Files);
-    for (const auto& file : files) {
-        m_presetCombo->addItem(file.left(file.length() - 5));
-    }
-    updatePresetNavigationButtons();
+QString MainWindow::presetsDirPath() const {
+    return QDir::homePath() + "/.config/RigRoom/presets";
 }
+
+void MainWindow::refreshPresetList() {
+    QDir().mkpath(presetsDirPath());
+    m_presetLibrary.setPaths(presetsDirPath(), QDir::homePath() + "/.config/RigRoom/library.json");
+    m_presetLibrary.load();
+    m_currentSlot = m_currentPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(m_currentPresetName);
+    if (m_currentSlot >= 0) m_viewBank = m_presetLibrary.bankOf(m_currentSlot);
+    rebuildSlotButtons();
+}
+
 
 void MainWindow::loadFavoritePlugins() {
     QFile file(QDir::homePath() + "/.config/RigRoom/plugin-favorites.json");
@@ -2276,6 +2450,7 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
     if (selected == bypassAct) {
         node->setBypassed(!node->isBypassed());
         m_canvas->updateLayout();
+        emit m_canvas->nodeBypassToggled(node);
     } else if (selected == removeAct) {
         m_canvas->removePluginAt(row, col);
         showPluginControls(nullptr);
@@ -2331,18 +2506,13 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
 void MainWindow::setUnsavedChanges(bool unsaved) {
     m_unsavedChanges = unsaved;
     
-    QString currentPreset = m_presetCombo->currentText();
-    if (currentPreset.isEmpty()) currentPreset = "Untitled";
+    QString currentPreset = m_currentPresetName.isEmpty() ? QString("Untitled") : m_currentPresetName;
+    if (m_currentSlot >= 0) currentPreset = m_presetLibrary.slotLabel(m_currentSlot) + " " + currentPreset;
     
     QString title = "RigRoom - Guitar Multieffects host [" + currentPreset + (m_unsavedChanges ? " *" : "") + "]";
     setWindowTitle(title);
 
     if (m_unsavedChanges) {
-        m_presetCombo->setStyleSheet(
-            "QComboBox { background-color: #2D2214; color: #FFE0B2; border: 1px solid #FF9800; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
-            "QComboBox::drop-down { border: none; width: 20px; }"
-            "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
-        );
         if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
             m_savePresetButton->setText("Save *");
             m_savePresetButton->setStyleSheet(
@@ -2351,11 +2521,6 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
             );
         }
     } else {
-        m_presetCombo->setStyleSheet(
-            "QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #00B0FF; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
-            "QComboBox::drop-down { border: none; width: 20px; }"
-            "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
-        );
         if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
             m_savePresetButton->setText("Save");
             m_savePresetButton->setStyleSheet(
@@ -2364,7 +2529,7 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
             );
         }
     }
-    updatePresetNavigationButtons();
+    rebuildSlotButtons();
 }
 
 bool MainWindow::promptUnsavedChanges() {
@@ -2405,6 +2570,20 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        if (watched == m_bankLabel) {
+            renameViewBank();
+            return true;
+        }
+    }
+    if (event->type() == QEvent::MouseButtonDblClick && watched == m_presetNameLabel) {
+        startPresetRename();
+        return true;
+    }
+    if (event->type() == QEvent::MouseButtonRelease && watched == m_presetNameLabel) {
+        if (m_currentSlot >= 0) setViewBank(m_presetLibrary.bankOf(m_currentSlot));
+        return true;
+    }
     if (event->type() == QEvent::MouseButtonDblClick && watched->property("branchResetValue").isValid()) {
         if (auto* slider = qobject_cast<QSlider*>(watched)) {
             slider->setValue(watched->property("branchResetValue").toInt());
@@ -2449,14 +2628,17 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::onSavePreset() {
-    QString presetName = m_presetCombo->currentText();
+    const QString presetName = m_currentPresetName;
     if (presetName.isEmpty()) {
         onSavePresetAs();
         return;
     }
     
-    QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
+    QString fullPath = presetsDirPath() + "/" + presetName + ".json";
     savePresetToFile(fullPath);
+    if (m_presetLibrary.slotOfName(presetName) < 0) {
+        refreshPresetList();
+    }
     setUnsavedChanges(false);
     triggerSaveFeedback();
     saveConfigSettings();
@@ -2472,9 +2654,9 @@ void MainWindow::onNewPreset() {
     m_canvas->clearCanvas();
     m_canvas->setNumCols(m_globalDefaultSlots);
     updateSlotControls();
-    m_presetCombo->setCurrentIndex(-1);
-    m_presetCombo->setPlaceholderText("Untitled");
-    m_currentPresetIndex = -1;
+    m_currentSlot = -1;
+    m_currentPresetName.clear();
+    resetScenesFromBoard();
     m_isLoadingPreset = false;
     setUnsavedChanges(true);
     saveConfigSettings();
@@ -2512,152 +2694,775 @@ void MainWindow::updateSlotControls() {
     m_slotPlusBtn->setEnabled(curr < 12);
 }
 
-void MainWindow::onSavePresetAs() {
-    bool ok;
-    QString name = QInputDialog::getText(this, "Save Preset As",
-                                         "Enter preset name:", QLineEdit::Normal,
-                                         "", &ok);
-    if (ok && !name.trimmed().isEmpty()) {
-        QString presetName = name.trimmed();
-        presetName.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
-        if (presetName.isEmpty()) return;
-        
-        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-        
-        if (QFile::exists(fullPath)) {
-            QMessageBox::StandardButton reply = QMessageBox::question(this, "Overwrite Preset?",
-                                               "A preset named \"" + presetName + "\" already exists. Overwrite?",
-                                               QMessageBox::Yes|QMessageBox::No);
-            if (reply == QMessageBox::No) return;
-        }
-        
-        savePresetToFile(fullPath);
-        refreshPresetList();
-        m_presetCombo->setCurrentText(presetName);
-        m_currentPresetIndex = m_presetCombo->currentIndex();
-        setUnsavedChanges(false);
-        triggerSaveFeedback();
-        saveConfigSettings();
+namespace {
+QString sanitizePresetName(QString name) {
+    name = name.trimmed();
+    name.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
+    return name.trimmed();
+}
+}
+
+int MainWindow::promptTargetSlot(int defaultSlot, const QString& presetName) {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Choose Preset Slot");
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* label = new QLabel(QString("Slot for \"%1\":").arg(presetName), &dialog);
+    auto* combo = new QComboBox(&dialog);
+    for (int slot = 0; slot < m_presetLibrary.slotCount(); ++slot) {
+        const QString name = m_presetLibrary.nameAt(slot);
+        combo->addItem(m_presetLibrary.slotLabel(slot) + "   " + (name.isEmpty() ? QString::fromUtf8("— empty —") : name), slot);
     }
+    combo->setCurrentIndex(std::max(0, defaultSlot));
+    combo->setMaxVisibleItems(16);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(label);
+    layout->addWidget(combo);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) return -1;
+    return combo->currentData().toInt();
+}
+
+bool MainWindow::savePresetToSlot(int targetSlot, const QString& suggestedName) {
+    bool ok = false;
+    const QString presetName = sanitizePresetName(QInputDialog::getText(
+        this, "Save Preset As", "Enter preset name:", QLineEdit::Normal, suggestedName, &ok));
+    if (!ok || presetName.isEmpty()) return false;
+
+    const QString fileName = presetName + ".json";
+    const QString fullPath = presetsDirPath() + "/" + fileName;
+    const int existingSlot = m_presetLibrary.slotOf(fileName);
+
+    if (targetSlot < 0) {
+        const int defaultSlot = existingSlot >= 0 ? existingSlot : m_presetLibrary.firstFreeSlot();
+        targetSlot = promptTargetSlot(defaultSlot, presetName);
+        if (targetSlot < 0) return false;
+    }
+
+    if (QFile::exists(fullPath)) {
+        const auto reply = QMessageBox::question(this, "Overwrite Preset?",
+            "A preset named \"" + presetName + "\" already exists. Overwrite?",
+            QMessageBox::Yes | QMessageBox::No);
+        if (reply == QMessageBox::No) return false;
+    }
+
+    const QString displaced = m_presetLibrary.presetAt(targetSlot);
+    if (!displaced.isEmpty() && displaced != fileName) {
+        const auto reply = QMessageBox::question(this, "Slot In Use",
+            QString("Slot %1 holds \"%2\". Move it to the next free slot?")
+                .arg(m_presetLibrary.slotLabel(targetSlot), m_presetLibrary.nameAt(targetSlot)),
+            QMessageBox::Yes | QMessageBox::No);
+        if (reply == QMessageBox::No) return false;
+    }
+
+    savePresetToFile(fullPath);
+    m_presetLibrary.reconcileWithDisk();
+    if (!displaced.isEmpty() && displaced != fileName) {
+        // The displaced preset keeps its file; it simply moves to a free slot.
+        m_presetLibrary.clear(targetSlot);
+        m_presetLibrary.assign(targetSlot, fileName);
+        const int free = m_presetLibrary.firstFreeSlot(targetSlot);
+        if (free >= 0) m_presetLibrary.assign(free, displaced);
+    } else {
+        m_presetLibrary.assign(targetSlot, fileName);
+    }
+    m_presetLibrary.save();
+
+    m_currentPresetName = presetName;
+    m_currentSlot = m_presetLibrary.slotOf(fileName);
+    setUnsavedChanges(false);
+    triggerSaveFeedback();
+    saveConfigSettings();
+    return true;
+}
+
+void MainWindow::onSavePresetAs() {
+    savePresetToSlot(-1, m_currentPresetName);
+}
+
+void MainWindow::renamePresetInSlot(int slot, const QString& requestedName) {
+    const QString oldPresetName = m_presetLibrary.nameAt(slot);
+    if (oldPresetName.isEmpty()) return;
+
+    QString newPresetName;
+    if (requestedName.isNull()) {
+        bool ok = false;
+        newPresetName = sanitizePresetName(QInputDialog::getText(
+            this, "Rename Preset", "Enter new name for \"" + oldPresetName + "\":",
+            QLineEdit::Normal, oldPresetName, &ok));
+        if (!ok) return;
+    } else {
+        newPresetName = sanitizePresetName(requestedName);
+    }
+    if (newPresetName.isEmpty() || newPresetName == oldPresetName) return;
+
+    const QString oldPath = presetsDirPath() + "/" + oldPresetName + ".json";
+    const QString newPath = presetsDirPath() + "/" + newPresetName + ".json";
+    if (QFile::exists(newPath)) {
+        QMessageBox::critical(this, "Error", "A preset named \"" + newPresetName + "\" already exists.");
+        return;
+    }
+    if (!QFile::rename(oldPath, newPath)) {
+        QMessageBox::critical(this, "Error", "Failed to rename the preset file.");
+        return;
+    }
+    m_presetLibrary.renameFile(oldPresetName + ".json", newPresetName + ".json");
+    m_presetLibrary.save();
+    if (m_currentPresetName == oldPresetName) {
+        m_currentPresetName = newPresetName;
+    }
+    refreshPresetList();
+    setUnsavedChanges(m_unsavedChanges);
+    saveConfigSettings();
 }
 
 void MainWindow::onRenamePreset() {
-    QString oldPresetName = m_presetCombo->currentText();
-    if (oldPresetName.isEmpty()) return;
-    
-    bool ok;
-    QString name = QInputDialog::getText(this, "Rename Preset",
-                                         "Enter new name for \"" + oldPresetName + "\":",
-                                         QLineEdit::Normal, oldPresetName, &ok);
-    if (ok && !name.trimmed().isEmpty()) {
-        QString newPresetName = name.trimmed();
-        newPresetName.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
-        if (newPresetName.isEmpty() || newPresetName == oldPresetName) return;
-        
-        QString oldPath = QDir::homePath() + "/.config/RigRoom/presets/" + oldPresetName + ".json";
-        QString newPath = QDir::homePath() + "/.config/RigRoom/presets/" + newPresetName + ".json";
-        
-        if (QFile::exists(newPath)) {
-            QMessageBox::critical(this, "Error", "A preset named \"" + newPresetName + "\" already exists.");
-            return;
-        }
-        
-        if (QFile::rename(oldPath, newPath)) {
-            refreshPresetList();
-            m_presetCombo->setCurrentText(newPresetName);
-            m_currentPresetIndex = m_presetCombo->currentIndex();
-            setUnsavedChanges(m_unsavedChanges);
-            saveConfigSettings();
-        } else {
-            QMessageBox::critical(this, "Error", "Failed to rename the preset file.");
-        }
+    if (m_currentSlot >= 0) renamePresetInSlot(m_currentSlot);
+}
+
+void MainWindow::duplicatePresetInSlot(int slot) {
+    const QString name = m_presetLibrary.nameAt(slot);
+    if (name.isEmpty()) return;
+    QString copyName = name + " copy";
+    for (int n = 2; QFile::exists(presetsDirPath() + "/" + copyName + ".json"); ++n) {
+        copyName = QString("%1 copy %2").arg(name).arg(n);
+    }
+    const int target = m_presetLibrary.firstFreeSlot(slot);
+    if (target < 0) {
+        QMessageBox::warning(this, "No Free Slots", "All preset slots are in use.");
+        return;
+    }
+    if (!QFile::copy(m_presetLibrary.pathAt(slot), presetsDirPath() + "/" + copyName + ".json")) {
+        QMessageBox::critical(this, "Error", "Failed to copy the preset file.");
+        return;
+    }
+    m_presetLibrary.assign(target, copyName + ".json");
+    m_presetLibrary.save();
+    if (m_statusLabel) {
+        m_statusLabel->setText(QString("Duplicated '%1' to %2").arg(name, m_presetLibrary.slotLabel(target)));
+    }
+}
+
+void MainWindow::deletePresetInSlot(int slot) {
+    const QString presetName = m_presetLibrary.nameAt(slot);
+    if (presetName.isEmpty()) return;
+
+    const auto reply = QMessageBox::question(this, "Delete Preset",
+        "Are you sure you want to delete the preset \"" + presetName + "\"?\nThis cannot be undone.",
+        QMessageBox::Yes | QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+
+    if (!QFile::remove(m_presetLibrary.pathAt(slot))) {
+        QMessageBox::critical(this, "Error", "Failed to delete the preset file.");
+        return;
+    }
+    m_presetLibrary.clear(slot);
+    m_presetLibrary.save();
+
+    if (slot != m_currentSlot) {
+        rebuildSlotButtons();
+        return;
+    }
+
+    setUnsavedChanges(false);
+    m_currentSlot = -1;
+    m_currentPresetName.clear();
+    const int next = m_presetLibrary.nextOccupied(slot, 1);
+    if (next >= 0) {
+        loadSlot(next);
+    } else {
+        m_canvas->clearCanvas();
+        m_canvas->updateLayout();
+        setUnsavedChanges(false);
+        saveConfigSettings();
     }
 }
 
 void MainWindow::onDeletePreset() {
-    QString presetName = m_presetCombo->currentText();
-    if (presetName.isEmpty()) return;
-    
-    QMessageBox::StandardButton reply = QMessageBox::question(this, "Delete Preset",
-                                       "Are you sure you want to delete the preset \"" + presetName + "\"?\nThis cannot be undone.",
-                                       QMessageBox::Yes|QMessageBox::No);
-    if (reply == QMessageBox::Yes) {
-        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-        if (QFile::remove(fullPath)) {
-            setUnsavedChanges(false);
-            m_canvas->clearCanvas();
-            m_canvas->updateLayout();
-            refreshPresetList();
-            if (m_presetCombo->count() > 0) {
-                m_presetCombo->setCurrentIndex(0);
-                m_currentPresetIndex = 0;
-                onLoadPreset();
-            } else {
-                m_presetCombo->setCurrentText("");
-                m_currentPresetIndex = -1;
+    if (m_currentSlot >= 0) deletePresetInSlot(m_currentSlot);
+}
+
+bool MainWindow::loadSlot(int slot) {
+    if (!m_presetLibrary.isOccupied(slot)) return false;
+    // Selecting the preset that is already loaded is not a preset change, so
+    // it must not ask about unsaved edits (use Reload to discard them).
+    if (slot == m_currentSlot && m_presetLibrary.nameAt(slot) == m_currentPresetName) {
+        setViewBank(m_presetLibrary.bankOf(slot));
+        return true;
+    }
+    if (!promptUnsavedChanges()) return false;
+
+    const QString path = m_presetLibrary.pathAt(slot);
+    if (!QFile::exists(path)) {
+        refreshPresetList();
+        return false;
+    }
+    loadPresetFromFile(path);
+    m_currentSlot = slot;
+    m_currentPresetName = m_presetLibrary.nameAt(slot);
+    m_viewBank = m_presetLibrary.bankOf(slot);
+    setUnsavedChanges(false);
+    saveConfigSettings();
+    emit m_rig->slotChanged(slot);
+    return true;
+}
+
+void MainWindow::onPresetButtonClicked() {
+    if (m_presetLibrary.reconcileWithDisk()) m_presetLibrary.save();
+    PresetBrowser browser(m_presetLibrary, m_currentSlot, this);
+    connect(&browser, &PresetBrowser::slotActivated, this, [this](int slot) {
+        // Defer so the browser closes before a possible unsaved-changes prompt.
+        QTimer::singleShot(0, this, [this, slot]() { loadSlot(slot); });
+    });
+    connect(&browser, &PresetBrowser::slotsSwapped, this, [this](int from, int to) {
+        m_presetLibrary.swap(from, to);
+        m_presetLibrary.save();
+        if (!m_currentPresetName.isEmpty()) m_currentSlot = m_presetLibrary.slotOfName(m_currentPresetName);
+        setUnsavedChanges(m_unsavedChanges);
+        saveConfigSettings();
+    });
+    connect(&browser, &PresetBrowser::saveCurrentToSlotRequested, this, [this](int slot) {
+        QTimer::singleShot(0, this, [this, slot]() { savePresetToSlot(slot, m_currentPresetName); });
+    });
+    // Run dialog-based actions after the popup has closed, then reopen the grid.
+    auto thenReopen = [this](std::function<void()> action) {
+        QTimer::singleShot(0, this, [this, action]() {
+            action();
+            onPresetButtonClicked();
+        });
+    };
+    connect(&browser, &PresetBrowser::renameRequested, this, [this, thenReopen](int slot) {
+        thenReopen([this, slot]() { renamePresetInSlot(slot); });
+    });
+    connect(&browser, &PresetBrowser::duplicateRequested, this, [this, thenReopen](int slot) {
+        thenReopen([this, slot]() { duplicatePresetInSlot(slot); rebuildSlotButtons(); });
+    });
+    connect(&browser, &PresetBrowser::deleteRequested, this, [this, thenReopen](int slot) {
+        thenReopen([this, slot]() { deletePresetInSlot(slot); });
+    });
+    connect(&browser, &PresetBrowser::bankRenameRequested, this, [this, thenReopen](int bank) {
+        thenReopen([this, bank]() {
+            const int previous = m_viewBank;
+            m_viewBank = bank;
+            renameViewBank();
+            m_viewBank = previous;
+            rebuildSlotButtons();
+        });
+    });
+
+    QWidget* anchorWidget = m_bankLabel ? static_cast<QWidget*>(m_bankLabel) : this;
+    const QPoint anchor = anchorWidget->mapToGlobal(QPoint(0, anchorWidget->height() + 4));
+    browser.move(anchor);
+    browser.exec();
+    rebuildSlotButtons();
+}
+
+void MainWindow::setupRigController() {
+    m_rig = new RigController(this);
+    RigController::Backend backend;
+    backend.loadSlot = [this](int slot) { return loadSlot(slot); };
+    backend.currentSlot = [this]() { return m_currentSlot; };
+    backend.nextOccupiedSlot = [this](int from, int dir) { return m_presetLibrary.nextOccupied(from, dir); };
+    backend.viewBank = [this]() { return m_viewBank; };
+    backend.setViewBank = [this](int bank) { setViewBank(bank); };
+    backend.bankCount = [this]() { return m_presetLibrary.numBanks(); };
+    backend.slotFor = [this](int bank, int idx) {
+        return (idx >= 0 && idx < m_presetLibrary.slotsPerBank()) ? m_presetLibrary.slotFor(bank, idx) : -1;
+    };
+    backend.selectScene = [this](int scene) { selectScene(scene); };
+    backend.activeScene = [this]() { return m_scenes.activeIndex(); };
+    backend.sceneCount = [this]() { return m_scenes.count(); };
+    backend.toggleBlock = [this](const std::string& nodeId) {
+        auto node = findNodeById(nodeId);
+        if (!node) return false;
+        node->setBypassed(!node->isBypassed());
+        if (m_canvas) m_canvas->viewport()->update();
+        onNodeBypassToggled(node);
+        return true;
+    };
+    backend.setParam = [this](const std::string& nodeId, uint32_t index, float normalized) {
+        auto node = findNodeById(nodeId);
+        if (!node) return false;
+        for (const auto& port : node->getControlPorts()) {
+            if (port.index != index || port.isOutput) continue;
+            float value = port.minVal + std::clamp(normalized, 0.0f, 1.0f) * (port.maxVal - port.minVal);
+            if (port.isInteger || port.isToggle) value = std::round(value);
+            node->setParameter(index, value);
+            setUnsavedChanges(true);
+            return true;
+        }
+        return false;
+    };
+    m_rig->setBackend(std::move(backend));
+}
+
+void MainWindow::onPrevPreset() { m_rig->stepPreset(-1); }
+void MainWindow::onNextPreset() { m_rig->stepPreset(1); }
+void MainWindow::onPrevBank() { m_rig->stepBank(-1); }
+void MainWindow::onNextBank() { m_rig->stepBank(1); }
+
+
+SceneModel::BoardState MainWindow::captureBoardState() const {
+    SceneModel::BoardState state;
+    if (!m_canvas) return state;
+    for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
+        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+            auto node = m_canvas->getPluginAt(r, c);
+            if (!node || node->uniqueId.empty()) continue;
+            state.bypass[node->uniqueId] = node->isBypassed();
+            auto& params = state.params[node->uniqueId];
+            for (const auto& port : node->getControlPorts()) {
+                if (!port.isOutput) params[port.index] = port.value;
             }
-            saveConfigSettings();
-        } else {
-            QMessageBox::critical(this, "Error", "Failed to delete the preset file.");
         }
     }
+    return state;
 }
 
-void MainWindow::onPresetComboActivated(int index) {
-    if (index < 0 || index >= m_presetCombo->count()) return;
-    
-    if (m_currentPresetIndex == index) return; // No change
+std::shared_ptr<AudioNode> MainWindow::findNodeById(const std::string& id) const {
+    if (!m_canvas || id.empty()) return nullptr;
+    for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
+        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+            auto node = m_canvas->getPluginAt(r, c);
+            if (node && node->uniqueId == id) return node;
+        }
+    }
+    return nullptr;
+}
 
-    // Temporarily restore index in combobox so prompt can revert if user cancels
-    m_presetCombo->setCurrentIndex(m_currentPresetIndex != -1 ? m_currentPresetIndex : index);
+void MainWindow::resetScenesFromBoard() {
+    m_scenes.reset(captureBoardState());
+    m_engine.setSceneOutputLevel(0.0f);
+    rebuildSceneBar();
+}
 
-    if (promptUnsavedChanges()) {
-        m_presetCombo->setCurrentIndex(index);
-        QString presetName = m_presetCombo->itemText(index);
-        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-        loadPresetFromFile(fullPath);
-        m_currentPresetIndex = index;
-        setUnsavedChanges(false);
-        saveConfigSettings();
+void MainWindow::applySceneChanges(const SceneModel::Changes& changes) {
+    // Only atomics and control values change here; the graph is untouched, so
+    // there is no dropout and delay/reverb tails keep ringing.
+    for (const auto& [nodeId, bypassed] : changes.bypass) {
+        if (auto node = findNodeById(nodeId)) node->setBypassed(bypassed);
+    }
+    for (const auto& [nodeId, index, value] : changes.params) {
+        if (auto node = findNodeById(nodeId)) node->setParameter(index, value);
+    }
+    m_engine.setSceneOutputLevel(changes.levelDb);
+    if (m_canvas) m_canvas->viewport()->update();
+    syncParameterControls();
+}
+
+void MainWindow::selectScene(int index) {
+    if (index < 0 || index >= m_scenes.count()) return;
+    if (index == m_scenes.activeIndex()) return;
+    applySceneChanges(m_scenes.switchTo(index, captureBoardState()));
+    rebuildSceneBar();
+    emit m_rig->sceneChanged(index);
+    // Refresh the Inspector so the scene level knob follows the new scene.
+    if (m_parameterControlNode && m_parameterControlNode->getType() == NodeType::SystemOutput) {
+        showPluginControls(m_parameterControlNode);
+    }
+    setUnsavedChanges(m_unsavedChanges);
+    if (m_statusLabel) {
+        m_statusLabel->setText(QString("Scene %1: %2").arg(index + 1).arg(m_scenes.active().name));
     }
 }
 
-void MainWindow::onLoadPreset() {
-    QString presetName = m_presetCombo->currentText();
-    if (presetName.isEmpty()) return;
-    
-    QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-    loadPresetFromFile(fullPath);
-    m_currentPresetIndex = m_presetCombo->currentIndex();
-    setUnsavedChanges(false);
+void MainWindow::rebuildSceneBar() {
+    if (!m_sceneBarLayout) return;
+    while (QLayoutItem* item = m_sceneBarLayout->takeAt(0)) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+
+    for (int i = 0; i < m_scenes.count(); ++i) {
+        const auto& scene = m_scenes.scene(i);
+        auto* tile = new FootswitchTile(m_sceneBar);
+        tile->setKey(QString::number(i + 1));
+        tile->setName(scene.name);
+        tile->setAccent(QColor(scene.color.isEmpty() ? SceneModel::defaultColor(i) : scene.color));
+        tile->setState(i == m_scenes.activeIndex() ? FootswitchTile::State::Active : FootswitchTile::State::Normal);
+        tile->setFixedWidth(128);
+        tile->setToolTip(QString("Scene %1: %2 (Alt+%1)\nDouble-click to rename · right-click for more").arg(i + 1).arg(scene.name));
+        tile->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tile, &FootswitchTile::clicked, this, [this, i]() { m_rig->selectScene(i); });
+        connect(tile, &FootswitchTile::doubleClicked, this, [this, i, tile]() { startSceneRename(i, tile); });
+        connect(tile, &QWidget::customContextMenuRequested, this, [this, i, tile](const QPoint& pos) {
+            showSceneMenu(i, tile->mapToGlobal(pos));
+        });
+        m_sceneBarLayout->addWidget(tile);
+    }
+
+    if (m_scenes.count() < SceneModel::kMaxScenes) {
+        auto* addBtn = new QToolButton(m_sceneBar);
+        addBtn->setText("+");
+        addBtn->setToolTip("Add a scene (copies the current one)");
+        addBtn->setFixedSize(28, 44);
+        addBtn->setCursor(Qt::PointingHandCursor);
+        addBtn->setStyleSheet(
+            "QToolButton { background-color: #242528; color: #E0E0E0; font-size: 12px; border: 1px solid #333438; border-radius: 4px; }"
+            "QToolButton:hover { background-color: #303236; color: white; }");
+        connect(addBtn, &QToolButton::clicked, this, [this]() {
+            const int index = m_scenes.addScene(captureBoardState());
+            if (index < 0) return;
+            setUnsavedChanges(true);
+            selectScene(index);
+            rebuildSceneBar();
+        });
+        m_sceneBarLayout->addWidget(addBtn);
+    }
+    m_sceneBarLayout->addStretch();
+    refreshSceneMarkers();
+    updateCanvasInfo();
 }
 
-void MainWindow::onPrevPreset() {
-    if (!m_presetCombo || m_presetCombo->count() == 0) return;
-    int curr = m_presetCombo->currentIndex();
-    if (curr > 0) {
-        if (!promptUnsavedChanges()) return;
-        m_presetCombo->setCurrentIndex(curr - 1);
-        onPresetComboActivated(curr - 1);
+void MainWindow::showSceneMenu(int index, const QPoint& globalPos) {
+    if (index < 0 || index >= m_scenes.count()) return;
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
+        "QMenu::item:selected { background-color: #007ACC; color: white; }"
+        "QMenu::item:disabled { color: #555555; }");
+    QAction* renameAct = menu.addAction("Rename...");
+    // Colour submenu: named swatches from the curated palette, current one checked.
+    QMenu* colorMenu = menu.addMenu("Color");
+    const QString currentColor = m_scenes.scene(index).color.toUpper();
+    for (const auto& c : SceneModel::palette()) {
+        QPixmap swatch(14, 14);
+        swatch.fill(Qt::transparent);
+        {
+            QPainter painter(&swatch);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(QColor(255, 255, 255, 60));
+            painter.setBrush(QColor(c.hex));
+            painter.drawRoundedRect(QRectF(0.5, 0.5, 13, 13), 3, 3);
+        }
+        QAction* act = colorMenu->addAction(QIcon(swatch), c.name);
+        act->setCheckable(true);
+        act->setChecked(currentColor == QString(c.hex).toUpper());
+        act->setData(QString(c.hex));
+    }
+    menu.addSeparator();
+    QAction* dupAct = menu.addAction("Duplicate");
+    dupAct->setEnabled(m_scenes.count() < SceneModel::kMaxScenes);
+    QAction* overwriteAct = menu.addAction("Store current board here");
+    overwriteAct->setEnabled(index != m_scenes.activeIndex());
+    menu.addSeparator();
+    QAction* deleteAct = menu.addAction("Delete");
+    deleteAct->setEnabled(m_scenes.count() > 1);
+
+    QAction* chosen = menu.exec(globalPos);
+    if (!chosen) return;
+    if (chosen == renameAct) {
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, "Rename Scene", "Scene name:",
+            QLineEdit::Normal, m_scenes.scene(index).name, &ok);
+        if (!ok || name.trimmed().isEmpty()) return;
+        m_scenes.renameScene(index, name);
+    } else if (chosen->parent() == colorMenu) {
+        m_scenes.setSceneColor(index, chosen->data().toString());
+    } else if (chosen == dupAct) {
+        if (m_scenes.duplicateScene(index, captureBoardState()) < 0) return;
+    } else if (chosen == overwriteAct) {
+        m_scenes.overwriteScene(index, captureBoardState());
+    } else if (chosen == deleteAct) {
+        const int oldActive = m_scenes.activeIndex();
+        if (!m_scenes.removeScene(index)) return;
+        if (index == oldActive) {
+            // The board still shows the deleted scene; move it to the new active one.
+            applySceneChanges(m_scenes.changesTo(m_scenes.activeIndex(), captureBoardState()));
+        }
+    }
+    setUnsavedChanges(true);
+    rebuildSceneBar();
+}
+
+void MainWindow::toggleParamSceneControl(const std::shared_ptr<AudioNode>& node, uint32_t index) {
+    if (!node || node->uniqueId.empty()) return;
+    if (m_scenes.isAssigned(node->uniqueId, index)) {
+        m_scenes.unassignParam(node->uniqueId, index);
+    } else {
+        float value = 0.0f;
+        for (const auto& port : node->getControlPorts()) {
+            if (port.index == index) { value = port.value; break; }
+        }
+        m_scenes.assignParam(node->uniqueId, index, value);
+    }
+    setUnsavedChanges(true);
+    refreshSceneMarkers();
+    showPluginControls(node);
+}
+
+void MainWindow::setViewBank(int bank) {
+    const int count = std::max(1, m_presetLibrary.numBanks());
+    m_viewBank = ((bank % count) + count) % count;
+    rebuildSlotButtons();
+}
+
+void MainWindow::rebuildSlotButtons() {
+    if (!m_slotBarLayout || !m_bankLabel) return;
+    const int perBank = m_presetLibrary.slotsPerBank();
+    if (m_viewBank >= m_presetLibrary.numBanks()) m_viewBank = 0;
+
+    // Bank label: orange when showing a bank other than the loaded preset's.
+    const bool loadedHere = m_currentSlot >= 0 && m_presetLibrary.bankOf(m_currentSlot) == m_viewBank;
+    const bool showingOther = m_currentSlot >= 0 && !loadedHere;
+    const QString bankText = m_presetLibrary.bankName(m_viewBank).isEmpty()
+        ? m_presetLibrary.bankLabel(m_viewBank) + QString::fromUtf8("  ✎")
+        : m_presetLibrary.bankLabel(m_viewBank);
+    m_bankLabel->setText(QFontMetrics(m_bankLabel->font()).elidedText(bankText, Qt::ElideRight, 104));
+    m_bankLabel->setStyleSheet(QString(
+        "QLabel { background-color: #1C1C20; color: %1; font-weight: bold; font-size: 12px;"
+        " border: 1px solid %2; border-radius: 4px; padding: 3px 8px; }")
+        .arg(showingOther ? "#FFB74D" : "#E0E0E0", showingOther ? "#FF9800" : "#333438"));
+    QString bankTip = QString("Bank %1. Double-click to %2 it (e.g. a band, set or style); the number stays.")
+        .arg(m_viewBank + 1, 2, 10, QChar('0'))
+        .arg(m_presetLibrary.bankName(m_viewBank).isEmpty() ? "name" : "rename");
+    if (showingOther) {
+        bankTip.prepend(QString("Loaded: %1 %2\n")
+            .arg(m_presetLibrary.slotLabel(m_currentSlot), m_currentPresetName));
+    }
+    m_bankLabel->setToolTip(bankTip);
+
+    // Recreate the tiles only when the count changes; otherwise update them.
+    if (static_cast<int>(m_slotButtons.size()) != perBank) {
+        for (FootswitchTile* tile : m_slotButtons) tile->deleteLater();
+        m_slotButtons.clear();
+        QWidget* parent = m_bankLabel->parentWidget()->parentWidget();
+        for (int i = 0; i < perBank; ++i) {
+            auto* tile = new FootswitchTile(parent);
+            tile->setFixedWidth(140);
+            tile->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(tile, &FootswitchTile::clicked, this, [this, i]() { onSlotButtonClicked(i); });
+            connect(tile, &FootswitchTile::doubleClicked, this, [this, i, tile]() {
+                const int slot = m_presetLibrary.slotFor(m_viewBank, i);
+                if (m_presetLibrary.isOccupied(slot)) startSlotRename(slot, tile);
+            });
+            connect(tile, &QWidget::customContextMenuRequested, this, [this, i, tile](const QPoint& pos) {
+                showSlotTileMenu(m_presetLibrary.slotFor(m_viewBank, i), tile, tile->mapToGlobal(pos));
+            });
+            m_slotBarLayout->addWidget(tile);
+            m_slotButtons.push_back(tile);
+        }
+    }
+
+    for (int i = 0; i < perBank; ++i) {
+        FootswitchTile* tile = m_slotButtons[i];
+        const int slot = m_presetLibrary.slotFor(m_viewBank, i);
+        const QString name = m_presetLibrary.nameAt(slot);
+        const bool isCurrent = slot == m_currentSlot && !name.isEmpty();
+        tile->setKey(QString(QChar('A' + i)));
+        tile->setName(name.isEmpty() ? QString::fromUtf8("—") : name);
+        tile->setState(name.isEmpty() ? FootswitchTile::State::Empty
+                       : !isCurrent ? FootswitchTile::State::Normal
+                       : m_unsavedChanges ? FootswitchTile::State::Unsaved
+                       : FootswitchTile::State::Active);
+
+        QString tip = m_presetLibrary.slotLabel(slot) + "  " + (name.isEmpty() ? QString("(empty)") : name);
+        if (!name.isEmpty()) {
+            const QStringList scenes = m_presetLibrary.sceneNamesAt(slot);
+            if (!scenes.isEmpty()) {
+                QStringList numbered;
+                for (int k = 0; k < scenes.size(); ++k) numbered << QString("%1 %2").arg(k + 1).arg(scenes[k]);
+                tip += "\nScenes: " + numbered.join(QString::fromUtf8(" · "));
+            }
+            tip += isCurrent ? "\nLoaded" : "\nClick to load";
+        } else {
+            tip += "\nClick to save the current board here";
+        }
+        tile->setToolTip(tip);
+    }
+
+    updateCanvasInfo();
+}
+
+void MainWindow::onSlotButtonClicked(int indexInBank) {
+    const int slot = m_presetLibrary.slotFor(m_viewBank, indexInBank);
+    if (m_presetLibrary.isOccupied(slot)) {
+        m_rig->selectInBank(indexInBank);
+    } else {
+        savePresetToSlot(slot, m_currentPresetName);
     }
 }
 
-void MainWindow::onNextPreset() {
-    if (!m_presetCombo || m_presetCombo->count() == 0) return;
-    int curr = m_presetCombo->currentIndex();
-    if (curr < m_presetCombo->count() - 1) {
-        if (!promptUnsavedChanges()) return;
-        m_presetCombo->setCurrentIndex(curr + 1);
-        onPresetComboActivated(curr + 1);
+void MainWindow::renameViewBank() {
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Name Bank",
+        QString("Name for bank %1 (leave empty to clear):").arg(m_viewBank + 1, 2, 10, QChar('0')),
+        QLineEdit::Normal, m_presetLibrary.bankName(m_viewBank), &ok);
+    if (!ok) return;
+    m_presetLibrary.setBankName(m_viewBank, name);
+    m_presetLibrary.save();
+    rebuildSlotButtons();
+}
+
+void MainWindow::refreshSceneMarkers() {
+    if (!m_canvas) return;
+    const auto ids = m_scenes.sceneControlledBlocks(captureBoardState());
+    m_canvas->setSceneMarkedNodes(std::unordered_set<std::string>(ids.begin(), ids.end()));
+}
+
+void MainWindow::updateCanvasInfo() {
+    if (!m_canvas) return;
+    const QString name = m_currentPresetName.isEmpty() ? QString("Untitled") : m_currentPresetName;
+    const QString slot = m_currentSlot >= 0 ? m_presetLibrary.slotLabel(m_currentSlot) : QString("—");
+    const auto& scene = m_scenes.active();
+    const QString sceneColor = scene.color.isEmpty() ? SceneModel::defaultColor(m_scenes.activeIndex()) : scene.color;
+    const QString dot = m_unsavedChanges ? QString::fromUtf8("&nbsp;<span style='color:#FF9800;'>●</span>") : QString();
+    m_canvas->setInfoOverlayText(QString(
+        "<div style='font-size:11px; font-weight:bold; letter-spacing:1px;'>"
+        "<span style='color:#00B0FF;'>%1</span>"
+        "<span style='color:#55555D;'>&nbsp;&nbsp;·&nbsp;&nbsp;</span>"
+        "<span style='color:%2;'>%3&nbsp;&nbsp;%4</span></div>"
+        "<div style='font-size:20px; font-weight:bold; color:#F2F2F5;'>%5%6</div>")
+        .arg(slot, sceneColor)
+        .arg(m_scenes.activeIndex() + 1)
+        .arg(scene.name.toHtmlEscaped(), name.toHtmlEscaped(), dot));
+    m_presetNameLabel->setToolTip(name + (m_unsavedChanges ? "\nUnsaved changes" : "")
+        + "\nClick to show its bank · double-click to rename");
+}
+
+void MainWindow::showSlotTileMenu(int slot, QWidget* tile, const QPoint& globalPos) {
+    if (!m_presetLibrary.isValidSlot(slot)) return;
+    QMenu menu(this);
+    menu.setStyleSheet(m_presetMenu->styleSheet());
+    const QString label = m_presetLibrary.slotLabel(slot);
+    if (m_presetLibrary.isOccupied(slot)) {
+        const bool loaded = slot == m_currentSlot;
+        QAction* loadAct = menu.addAction(loaded ? QString("Reload %1").arg(label) : QString("Load %1").arg(label));
+        QAction* storeAct = menu.addAction(QString("Save Current Board to %1").arg(label));
+        storeAct->setEnabled(!loaded || m_unsavedChanges);
+        menu.addSeparator();
+        QAction* renameAct = menu.addAction("Rename...");
+        QAction* dupAct = menu.addAction("Duplicate to Next Free Slot");
+        QAction* deleteAct = menu.addAction("Delete...");
+        menu.addSeparator();
+        QAction* gridAct = menu.addAction("All Banks...");
+        QAction* chosen = menu.exec(globalPos);
+        if (!chosen) return;
+        if (chosen == loadAct) {
+            if (loaded && m_unsavedChanges) {
+                if (QMessageBox::question(this, "Reload Preset", "Discard unsaved changes and reload?") != QMessageBox::Yes) return;
+                m_unsavedChanges = false;
+                m_currentSlot = -1; // force reload
+            }
+            loadSlot(slot);
+        } else if (chosen == storeAct) {
+            if (loaded) {
+                onSavePreset();
+            } else if (QMessageBox::question(this, "Replace Preset",
+                           QString("Replace \"%1\" in %2 with the current board?").arg(m_presetLibrary.nameAt(slot), label))
+                       == QMessageBox::Yes) {
+                const QString name = m_presetLibrary.nameAt(slot);
+                savePresetToFile(m_presetLibrary.pathAt(slot));
+                m_currentSlot = slot;
+                m_currentPresetName = name;
+                setUnsavedChanges(false);
+                triggerSaveFeedback();
+                saveConfigSettings();
+            }
+        } else if (chosen == renameAct) {
+            startSlotRename(slot, tile);
+        } else if (chosen == dupAct) {
+            duplicatePresetInSlot(slot);
+            rebuildSlotButtons();
+        } else if (chosen == deleteAct) {
+            deletePresetInSlot(slot);
+        } else if (chosen == gridAct) {
+            onPresetButtonClicked();
+        }
+    } else {
+        QAction* saveAct = menu.addAction(QString("Save Current Board to %1...").arg(label));
+        if (menu.exec(globalPos) == saveAct) savePresetToSlot(slot, m_currentPresetName);
     }
 }
 
-void MainWindow::updatePresetNavigationButtons() {
-    if (!m_presetCombo || !m_prevPresetBtn || !m_nextPresetBtn) return;
-    int curr = m_presetCombo->currentIndex();
-    int count = m_presetCombo->count();
-    m_prevPresetBtn->setEnabled(curr > 0);
-    m_nextPresetBtn->setEnabled(curr >= 0 && curr < count - 1);
+void MainWindow::startSlotRename(int slot, QWidget* tile) {
+    if (!tile || !m_presetLibrary.isOccupied(slot)) return;
+    auto* editor = new QLineEdit(tile); // child of the tile: always drawn on top of it
+    editor->setText(m_presetLibrary.nameAt(slot));
+    editor->setGeometry(tile->rect().adjusted(4, tile->height() / 2 - 2, -4, -3));
+    editor->setStyleSheet("QLineEdit { background-color: #1E1E22; color: white; border: 1px solid #00B0FF; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; }");
+    editor->selectAll();
+    editor->show();
+    editor->setFocus();
+    auto done = std::make_shared<bool>(false);
+    auto finish = [this, editor, slot, done](bool accept) {
+        if (*done) return;
+        *done = true;
+        const QString name = editor->text();
+        editor->deleteLater();
+        if (accept) QTimer::singleShot(0, this, [this, slot, name]() { renamePresetInSlot(slot, name); });
+    };
+    connect(editor, &QLineEdit::editingFinished, this, [finish]() { finish(true); });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), editor, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, this, [finish]() { finish(false); });
+}
+
+void MainWindow::startPresetRename() {
+    if (!m_presetNameLabel) return;
+    if (m_currentSlot < 0) {
+        // Nothing to rename yet: naming an unsaved board means saving it.
+        onSavePresetAs();
+        return;
+    }
+    const int slot = m_currentSlot;
+    // The editor is a child of the label so nothing (e.g. the label being
+    // raised on a refresh) can cover it while typing.
+    QLabel* label = m_presetNameLabel;
+    label->setMinimumWidth(std::max(label->width(), 280));
+    label->adjustSize();
+    auto* editor = new QLineEdit(label);
+    editor->setText(m_currentPresetName);
+    editor->setGeometry(6, label->height() - 36, label->width() - 12, 30);
+    editor->setStyleSheet("QLineEdit { background-color: #1E1E22; color: white; border: 1px solid #00B0FF; border-radius: 4px; padding: 1px 6px; font-size: 16px; font-weight: bold; }");
+    editor->selectAll();
+    editor->show();
+    editor->setFocus();
+    auto done = std::make_shared<bool>(false);
+    auto finish = [this, editor, slot, done](bool accept) {
+        if (*done) return;
+        *done = true;
+        const QString name = editor->text();
+        editor->deleteLater();
+        if (m_presetNameLabel) m_presetNameLabel->setMinimumWidth(0);
+        // Defer: renaming refreshes the panel, and a failure opens a dialog.
+        QTimer::singleShot(0, this, [this, slot, name, accept]() {
+            if (accept) renamePresetInSlot(slot, name);
+            updateCanvasInfo();
+        });
+    };
+    connect(editor, &QLineEdit::editingFinished, this, [finish]() { finish(true); });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), editor, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, this, [finish]() { finish(false); });
+}
+
+void MainWindow::startSceneRename(int index, QWidget* tile) {
+    if (!tile || index < 0 || index >= m_scenes.count()) return;
+    auto* editor = new QLineEdit(tile); // child of the tile: always drawn on top of it
+    editor->setText(m_scenes.scene(index).name);
+    // Cover the name line of the tile; the number stays visible above it.
+    editor->setGeometry(tile->rect().adjusted(4, tile->height() / 2 - 2, -4, -3));
+    editor->setStyleSheet("QLineEdit { background-color: #1E1E22; color: white; border: 1px solid #00B0FF; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; }");
+    editor->selectAll();
+    editor->show();
+    editor->setFocus();
+    auto committed = std::make_shared<bool>(false);
+    auto finish = [this, editor, index, committed](bool accept) {
+        if (*committed) return;
+        *committed = true;
+        const QString name = editor->text().trimmed();
+        editor->deleteLater();
+        if (accept && !name.isEmpty() && index < m_scenes.count() && name != m_scenes.scene(index).name) {
+            m_scenes.renameScene(index, name);
+            setUnsavedChanges(true);
+        }
+        // Rebuild after this event finishes; the editor's button is recreated.
+        QTimer::singleShot(0, this, [this]() { rebuildSceneBar(); });
+    };
+    connect(editor, &QLineEdit::returnPressed, this, [finish]() { finish(true); });
+    connect(editor, &QLineEdit::editingFinished, this, [finish]() { finish(true); });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), editor, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, this, [finish]() { finish(false); });
 }
 
 void MainWindow::triggerSaveFeedback() {
@@ -2679,8 +3484,8 @@ void MainWindow::triggerSaveFeedback() {
     m_saveFeedbackTimer->start(1500);
 
     if (m_statusLabel) {
-        QString currentPreset = m_presetCombo->currentText();
-        m_statusLabel->setText(QString("Preset '%1' saved successfully!").arg(currentPreset));
+        m_statusLabel->setText(QString("Preset '%1' saved to %2")
+            .arg(m_currentPresetName, m_presetLibrary.slotLabel(m_currentSlot)));
     }
 }
 
@@ -2856,11 +3661,8 @@ void MainWindow::saveConfigSettings() {
     configObj["customVST3Paths"] = vst3Arr;
     configObj["customCLAPPaths"] = clapArr;
 
-    if (m_currentPresetIndex >= 0 && m_presetCombo && m_presetCombo->currentIndex() >= 0) {
-        configObj["lastPreset"] = m_presetCombo->currentText();
-    } else {
-        configObj["lastPreset"] = "";
-    }
+    configObj["lastPreset"] = m_currentPresetName;
+    configObj["lastSlot"] = m_currentSlot;
     
     QFile configFileWrite(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFileWrite.open(QFile::WriteOnly)) {
@@ -3053,9 +3855,16 @@ void MainWindow::onOutputGainChanged(int value) {
 }
 
 void MainWindow::savePresetToFile(const QString& path) {
+    // Remember any edits made in the active scene before writing.
+    const SceneModel::BoardState live = captureBoardState();
+    m_scenes.captureActive(live);
+    m_scenes.prune(live);
+
     QJsonObject presetObj;
-    presetObj["formatVersion"] = 6;
+    presetObj["formatVersion"] = 7;
     presetObj["outputLevelDb"] = m_engine.getPresetOutputLevelDB();
+    // Top-level node state mirrors the active scene, so older builds open it as-is.
+    presetObj["scenes"] = m_scenes.toJson();
     
     QJsonArray nodesArray;
     for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
@@ -3166,6 +3975,7 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     QJsonObject presetObj = doc.object();
     // Older presets did not have a final output stage, so their neutral value is 0 dB.
     m_engine.setPresetOutputLevel(static_cast<float>(presetObj["outputLevelDb"].toDouble(0.0)));
+    m_engine.setSceneOutputLevel(0.0f);
     
     m_canvas->beginRoutingUpdate();
     m_canvas->clearCanvas();
@@ -3191,7 +4001,10 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         
         std::shared_ptr<AudioNode> node;
         
-        if (typeStr == "LV2Plugin") {
+        if (uri == "builtin:bypass") {
+            // BypassNode reports itself as LV2Plugin, so it is saved with that type.
+            node = std::make_shared<BypassNode>();
+        } else if (typeStr == "LV2Plugin") {
             if (m_lilvWorld) {
                 const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
                 if (plugins) {
@@ -3395,14 +4208,27 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         m_canvas->setSplitSectionPresent(3, m_canvas->isBranchEnabled(3));
     }
     m_canvas->endRoutingUpdate();
+
+    // Presets before format 7 have no scenes; they load as a single scene.
+    m_scenes.fromJson(presetObj["scenes"].toObject(), captureBoardState());
+    m_engine.setSceneOutputLevel(m_scenes.active().levelDb);
+    rebuildSceneBar();
     
     // Layout and selection notifications posted while nodes are restored can arrive
     // after this function returns. Keep them from being treated as user edits.
     QTimer::singleShot(0, this, [this]() {
         m_isLoadingPreset = false;
         setUnsavedChanges(false);
-        m_canvas->fitToCanvas();
+        // Only reframe on load when the user asked for automatic fitting.
+        if (m_canvas->autoFit()) m_canvas->fitToCanvas();
     });
+}
+
+void MainWindow::onNodeBypassToggled(std::shared_ptr<AudioNode> node) {
+    if (!node || m_isLoadingPreset) return;
+    setUnsavedChanges(true);
+    refreshSceneMarkers();
+    emit m_rig->blockToggled(QString::fromStdString(node->uniqueId), node->isBypassed());
 }
 
 void MainWindow::onNodeSelected(std::shared_ptr<AudioNode> node) {
@@ -4368,41 +5194,60 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         description->setStyleSheet("color:#AAB3C0; font-size:11px; border:none;");
         outputLayout->addWidget(description);
 
-        auto* cell = new QWidget(outputCard);
-        cell->setStyleSheet("background:transparent; border:none;");
-        auto* cellLayout = new QVBoxLayout(cell);
-        cellLayout->setContentsMargins(4, 3, 4, 3);
-        cellLayout->setSpacing(3);
-        auto* title = new QLabel("Preset Level", cell);
-        title->setAlignment(Qt::AlignCenter);
-        title->setStyleSheet("color:#C9D0DA; font-size:10px; border:none;");
-        auto* knob = new InspectorKnob(cell);
-        knob->setRange(-240, 120);
-        knob->setDefaultValue(0);
-        knob->setValue(qRound(m_engine.getPresetOutputLevelDB() * 10.0f));
-        knob->setAccessibleName("Preset Level");
-        knob->setToolTip("Drag to adjust. Double-click to reset.");
-        auto* valueLabel = new InspectorValueLabel(cell);
-        valueLabel->setAlignment(Qt::AlignCenter);
-        valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold; border:none;");
-        auto updateValue = [knob, valueLabel](int value) {
-            const QString text = QString::number(value / 10.0, 'f', 1) + " dB";
-            valueLabel->setText(text);
-            knob->setAccessibleValueText(text);
+        auto makeLevelCell = [this, outputCard](const QString& name, float db, const QString& tooltip,
+                                                 std::function<void(float)> apply) {
+            auto* cell = new QWidget(outputCard);
+            cell->setStyleSheet("background:transparent; border:none;");
+            auto* cellLayout = new QVBoxLayout(cell);
+            cellLayout->setContentsMargins(4, 3, 4, 3);
+            cellLayout->setSpacing(3);
+            auto* title = new QLabel(name, cell);
+            title->setAlignment(Qt::AlignCenter);
+            title->setStyleSheet("color:#C9D0DA; font-size:10px; border:none;");
+            title->setToolTip(tooltip);
+            auto* knob = new InspectorKnob(cell);
+            knob->setRange(-240, 120);
+            knob->setDefaultValue(0);
+            knob->setValue(qRound(db * 10.0f));
+            knob->setAccessibleName(name);
+            knob->setToolTip(tooltip + "\nDrag to adjust. Double-click to reset.");
+            auto* valueLabel = new InspectorValueLabel(cell);
+            valueLabel->setAlignment(Qt::AlignCenter);
+            valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold; border:none;");
+            auto updateValue = [knob, valueLabel](int value) {
+                const QString text = QString::number(value / 10.0, 'f', 1) + " dB";
+                valueLabel->setText(text);
+                knob->setAccessibleValueText(text);
+            };
+            updateValue(knob->value());
+            valueLabel->setEditor("Set " + name, -24.0, 12.0, 1,
+                [knob] { return knob->value() / 10.0; },
+                [knob](double value) { knob->setValue(qRound(value * 10.0)); });
+            cellLayout->addWidget(title);
+            cellLayout->addWidget(knob, 0, Qt::AlignHCenter);
+            cellLayout->addWidget(valueLabel);
+            connect(knob, &QDial::valueChanged, this, [this, updateValue, apply](int value) {
+                apply(value / 10.0f);
+                updateValue(value);
+                setUnsavedChanges(true);
+            });
+            return cell;
         };
-        updateValue(knob->value());
-        valueLabel->setEditor("Set Preset Level", -24.0, 12.0, 1,
-            [knob] { return knob->value() / 10.0; },
-            [knob](double value) { knob->setValue(qRound(value * 10.0)); });
-        cellLayout->addWidget(title);
-        cellLayout->addWidget(knob, 0, Qt::AlignHCenter);
-        cellLayout->addWidget(valueLabel);
-        outputLayout->addWidget(cell, 0, Qt::AlignHCenter);
-        connect(knob, &QDial::valueChanged, this, [this, updateValue](int value) {
-            m_engine.setPresetOutputLevel(value / 10.0f);
-            updateValue(value);
-            setUnsavedChanges(true);
-        });
+
+        auto* levelRow = new QHBoxLayout();
+        levelRow->setSpacing(18);
+        levelRow->addStretch();
+        levelRow->addWidget(makeLevelCell("Preset Level", m_engine.getPresetOutputLevelDB(),
+            "Level of the whole preset", [this](float db) { m_engine.setPresetOutputLevel(db); }));
+        const auto& scene = m_scenes.active();
+        levelRow->addWidget(makeLevelCell(QString("Scene Level (%1)").arg(scene.name), scene.levelDb,
+            "Trim for the active scene, added to the preset level",
+            [this](float db) {
+                m_scenes.setActiveLevel(db);
+                m_engine.setSceneOutputLevel(db);
+            }));
+        levelRow->addStretch();
+        outputLayout->addLayout(levelRow);
         m_paramLayout->addWidget(outputCard);
         return;
     }
@@ -4772,6 +5617,26 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         rowLayout->addWidget(label);
         
         uint32_t idx = param.index;
+
+        // Right-click a parameter to make it vary per scene.
+        const bool perScene = m_scenes.isAssigned(node->uniqueId, idx);
+        if (perScene) {
+            label->setText(QString::fromUtf8("◆ ") + label->text());
+            label->setStyleSheet("color: #FFD54F; font-size: 10px; border: none;");
+            label->setToolTip(label->toolTip() + "\nControlled per scene");
+        }
+        rowWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(rowWidget, &QWidget::customContextMenuRequested, this, [this, node, idx, perScene, rowWidget](const QPoint& pos) {
+            QMenu menu(this);
+            menu.setStyleSheet(
+                "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
+                "QMenu::item:selected { background-color: #007ACC; color: white; }");
+            QAction* act = menu.addAction(perScene ? "Remove per-scene control" : "Control per scene");
+            if (menu.exec(rowWidget->mapToGlobal(pos)) == act) {
+                // Rebuilding the Inspector deletes rowWidget; defer past this handler.
+                QTimer::singleShot(0, this, [this, node, idx]() { toggleParamSceneControl(node, idx); });
+            }
+        });
         float min = param.minVal;
         float max = param.maxVal;
         auto makeResettable = [this, idx, defaultValue = param.defaultVal](QWidget* control) {

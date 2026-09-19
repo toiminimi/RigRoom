@@ -441,18 +441,6 @@ void CLAPPluginNode::process(int numFrames) {
     int numInputs = getAudioInputCount();
     int numOutputs = getAudioOutputCount();
 
-    if (isBypassed()) {
-        int minChannels = std::min(numInputs, numOutputs);
-        for (int c = 0; c < minChannels; ++c) {
-            float* src = m_ports[c].buffer;
-            float* dst = m_ports[numInputs + c].buffer;
-            if (src && dst) {
-                std::copy(src, src + numFrames, dst);
-            }
-        }
-        return;
-    }
-
     if (!m_plugin || !m_active || !m_processing) {
         for (int c = 0; c < numOutputs; ++c) {
             float* dst = m_ports[numInputs + c].buffer;
