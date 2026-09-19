@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(RigRoom VERSION 0.10.0 LANGUAGES CXX)
+project(RigRoom VERSION 0.11.0 LANGUAGES CXX)
 
 option(RIGROOM_DEV_BUILD "Append a development suffix to the application version" ON)
 option(RIGROOM_ENABLE_RT_METRICS "Collect realtime callback timing diagnostics" OFF)
