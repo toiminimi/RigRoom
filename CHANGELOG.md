@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1 - 2026-09-20
+
+- Fixed: RigRoom crashed on startup if any installed LV2 bundle was missing its name; such a plugin is now listed by its URI instead. Plugins and ports with incomplete metadata no longer bring the whole application down.
+- Crash reports record the version and build ID of the binary that produced them.
+
 ## 0.11.0 - 2026-09-20
 
 - Secure Secret Service storage for user-provided TONE3000 API keys.
