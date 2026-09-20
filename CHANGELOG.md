@@ -1,14 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 - 2026-09-20
 
-- Added secure Secret Service storage for user-provided TONE3000 API keys.
-- Restored reproducible VST3 submodule checkout.
-- Fixed plugin rescan registration and LV2 world lifetime safety.
-- Added Ubuntu 22.04 AppImage build baseline support.
-
-## 0.11.0
-
+- Secure Secret Service storage for user-provided TONE3000 API keys.
+- Reproducible VST3 submodule checkout, safer plugin rescan and LV2 world lifetime.
+- Ubuntu 22.04 AppImage build baseline.
 - Preset library in numbered banks of four (01A–32D) with named banks, a grid of all banks (drag to move or swap), and a preset panel: bank selector, A–D footswitch tiles, scenes and Save.
 - Scenes: up to 8 per preset switching block on/off, all parameter values (right-click a knob to keep it the same in all scenes) and a scene level without reloading plugins (no audio gap). Blocks changed by scenes get an "S" badge.
 - MIDI-controlled parameters no longer fight with scenes: learning a CC keeps that parameter the same in all scenes, and each assignment chooses whether the controller waits until it reaches the stored value (default) or takes over at once, as a pedal should. Knob labels show "=" and "CC n" marks.
