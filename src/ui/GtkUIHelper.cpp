@@ -7,6 +7,7 @@
 #include <QDataStream>
 #include <QFile>
 #include <lilv/lilv.h>
+#include "../audio/LilvUtil.h"
 #include <suil/suil.h>
 #include <lv2/ui/ui.h>
 #include <lv2/urid/urid.h>
@@ -164,36 +165,36 @@ struct Helper {
 
         const LilvUI* selectedUi = nullptr;
         const LilvUIs* uis = lilv_plugin_get_uis(plugin);
-        LILV_FOREACH(uis, i, uis) {
-            const LilvUI* candidate = lilv_uis_get(uis, i);
-            if (uiUri == QString::fromUtf8(lilv_node_as_uri(lilv_ui_get_uri(candidate)))) {
-                selectedUi = candidate;
-                break;
+        if (uis) {
+            LILV_FOREACH(uis, i, uis) {
+                const LilvUI* candidate = lilv_uis_get(uis, i);
+                if (uiUri == QString::fromUtf8(lilvUriText(lilv_ui_get_uri(candidate)))) {
+                    selectedUi = candidate;
+                    break;
+                }
             }
         }
         if (!selectedUi) return false;
 
         host = suil_host_new(portWrite, nullptr, nullptr, nullptr);
-        char* bundle = lilv_file_uri_parse(lilv_node_as_uri(lilv_ui_get_bundle_uri(selectedUi)), nullptr);
-        const LilvNode* binaryNode = lilv_ui_get_binary_uri(selectedUi);
-        char* binary = binaryNode ? lilv_file_uri_parse(lilv_node_as_uri(binaryNode), nullptr) : nullptr;
+        const std::string bundle = lilvFilePath(lilv_ui_get_bundle_uri(selectedUi));
+        std::string binary = lilvFilePath(lilv_ui_get_binary_uri(selectedUi));
         QByteArray binaryOverride;
-        if ((!binary || !QFile::exists(QString::fromLocal8Bit(binary))) &&
+        if ((binary.empty() || !QFile::exists(QString::fromLocal8Bit(binary.c_str()))) &&
             pluginUri.startsWith("http://calf.sourceforge.net/plugins/")) {
             const QString fedoraCalfUi = "/usr/lib64/calf/libcalflv2gui.so";
             if (QFile::exists(fedoraCalfUi)) {
                 binaryOverride = QFile::encodeName(fedoraCalfUi);
-                if (binary) lilv_free(binary);
-                binary = nullptr;
+                binary.clear();
             }
         }
         const QByteArray pluginBytes = pluginUri.toUtf8();
         const QByteArray uiBytes = uiUri.toUtf8();
         instance = suil_instance_new(host, this, containerType, pluginBytes.constData(),
-                                     uiBytes.constData(), uiType, bundle,
-                                     binaryOverride.isEmpty() ? binary : binaryOverride.constData(), features);
-        lilv_free(bundle);
-        if (binary) lilv_free(binary);
+                                     uiBytes.constData(), uiType, bundle.c_str(),
+                                     binaryOverride.isEmpty()
+                                         ? (binary.empty() ? nullptr : binary.c_str())
+                                         : binaryOverride.constData(), features);
         if (!instance) return false;
 
         void* pluginWidget = suil_instance_get_widget(instance);
@@ -373,25 +374,25 @@ struct X11Helper {
 
         const LilvUI* selectedUi = nullptr;
         const LilvUIs* uis = lilv_plugin_get_uis(plugin);
-        LILV_FOREACH(uis, i, uis) {
-            const LilvUI* candidate = lilv_uis_get(uis, i);
-            if (uiUri == QString::fromUtf8(lilv_node_as_uri(lilv_ui_get_uri(candidate)))) {
-                selectedUi = candidate;
-                break;
+        if (uis) {
+            LILV_FOREACH(uis, i, uis) {
+                const LilvUI* candidate = lilv_uis_get(uis, i);
+                if (uiUri == QString::fromUtf8(lilvUriText(lilv_ui_get_uri(candidate)))) {
+                    selectedUi = candidate;
+                    break;
+                }
             }
         }
         if (!selectedUi) return false;
 
         host = suil_host_new(portWrite, nullptr, nullptr, nullptr);
-        char* bundle = lilv_file_uri_parse(lilv_node_as_uri(lilv_ui_get_bundle_uri(selectedUi)), nullptr);
-        const LilvNode* binaryNode = lilv_ui_get_binary_uri(selectedUi);
-        char* binary = binaryNode ? lilv_file_uri_parse(lilv_node_as_uri(binaryNode), nullptr) : nullptr;
+        const std::string bundle = lilvFilePath(lilv_ui_get_bundle_uri(selectedUi));
+        const std::string binary = lilvFilePath(lilv_ui_get_binary_uri(selectedUi));
         const QByteArray pluginBytes = pluginUri.toUtf8();
         const QByteArray uiBytes = uiUri.toUtf8();
         instance = suil_instance_new(host, this, LV2_UI__X11UI, pluginBytes.constData(),
-                                     uiBytes.constData(), LV2_UI__X11UI, bundle, binary, features);
-        lilv_free(bundle);
-        if (binary) lilv_free(binary);
+                                     uiBytes.constData(), LV2_UI__X11UI, bundle.c_str(),
+                                     binary.empty() ? nullptr : binary.c_str(), features);
         if (!instance) return false;
 
         child = reinterpret_cast<uintptr_t>(suil_instance_get_widget(instance));

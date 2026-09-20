@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(RigRoom VERSION 0.11.0 LANGUAGES CXX)
+project(RigRoom VERSION 0.11.1 LANGUAGES CXX)
 
 option(RIGROOM_DEV_BUILD "Append a development suffix to the application version" ON)
 option(RIGROOM_ENABLE_RT_METRICS "Collect realtime callback timing diagnostics" OFF)
@@ -43,6 +43,7 @@ add_executable(RigRoom
     src/audio/AudioNode.h
     src/audio/LV2Host.cpp
     src/audio/LV2Host.h
+    src/audio/LilvUtil.h
     src/audio/VST3Host.cpp
     src/audio/VST3Host.h
     src/audio/CLAPHost.cpp
@@ -173,6 +174,15 @@ if(BUILD_TESTING)
     target_compile_options(RigRoomMidiTests PRIVATE -UNDEBUG)
     target_link_libraries(RigRoomMidiTests PRIVATE Qt6::Core)
     add_test(NAME RigRoomMidiTests COMMAND RigRoomMidiTests)
+
+    add_executable(RigRoomLilvUtilTests
+        tests/LilvUtilTests.cpp
+        src/audio/LilvUtil.h
+    )
+    target_include_directories(RigRoomLilvUtilTests PRIVATE src)
+    target_compile_options(RigRoomLilvUtilTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomLilvUtilTests PRIVATE PkgConfig::LILV)
+    add_test(NAME RigRoomLilvUtilTests COMMAND RigRoomLilvUtilTests)
 
     add_executable(RigRoomPluginSearchTests
         tests/PluginSearchTests.cpp

@@ -1,4 +1,5 @@
 #include "LV2Host.h"
+#include "LilvUtil.h"
 #include <algorithm>
 #include <iostream>
 #include <unordered_map>
@@ -102,12 +103,10 @@ LV2PluginNode::WorkerState::WorkerState() {
 
 LV2PluginNode::LV2PluginNode(LilvWorld* world, const LilvPlugin* plugin)
     : m_world(world), m_plugin(plugin) {
-    LilvNode* nameNode = lilv_plugin_get_name(plugin);
-    m_name = lilv_node_as_string(nameNode);
-    lilv_node_free(nameNode);
-    
-    const LilvNode* uriNode = lilv_plugin_get_uri(plugin);
-    m_uri = lilv_node_as_string(uriNode);
+    m_name = lilvTakeString(lilv_plugin_get_name(plugin));
+    m_uri = lilvString(lilv_plugin_get_uri(plugin));
+    // A bundle may omit its mandatory doap:name; keep the block labelled anyway.
+    if (m_name.empty()) m_name = lilvNameFromUri(m_uri);
     
     // Initialize persistent features
     m_uridMap.handle = nullptr;
@@ -201,12 +200,9 @@ void LV2PluginNode::scanPorts() {
         bool isInput = lilv_port_is_a(m_plugin, port, inputPortClass);
         bool isOutput = lilv_port_is_a(m_plugin, port, outputPortClass);
         
-        const LilvNode* symbolNode = lilv_port_get_symbol(m_plugin, port);
-        std::string symbol = lilv_node_as_string(symbolNode);
-        
-        LilvNode* nameNode = lilv_port_get_name(m_plugin, port);
-        std::string name = lilv_node_as_string(nameNode);
-        lilv_node_free(nameNode);
+        std::string symbol = lilvString(lilv_port_get_symbol(m_plugin, port));
+        std::string name = lilvTakeString(lilv_port_get_name(m_plugin, port));
+        if (name.empty()) name = symbol;
         
         if (isAudio) {
             PortMapping mapping;
@@ -261,7 +257,7 @@ void LV2PluginNode::scanPorts() {
                     if (value && label) {
                         ctrl.scalePoints.push_back({
                             lilv_node_as_float(value),
-                            lilv_node_as_string(label)
+                            lilvString(label)
                         });
                     }
                 }
@@ -808,7 +804,7 @@ void LV2PluginNode::scanFileProperties() {
             lilv_node_free(pathNode);
 
             if (isPath) {
-                discoveredUris.push_back(lilv_node_as_string(prop));
+                discoveredUris.push_back(lilvString(prop));
             }
         }
         lilv_nodes_free(writables);
@@ -855,7 +851,7 @@ void LV2PluginNode::scanFileProperties() {
         if (labels) {
             const LilvNode* firstLabel = lilv_nodes_get_first(labels);
             if (firstLabel) {
-                label = lilv_node_as_string(firstLabel);
+                label = lilvString(firstLabel);
             }
             lilv_nodes_free(labels);
         }

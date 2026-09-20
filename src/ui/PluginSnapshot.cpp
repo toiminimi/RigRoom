@@ -14,6 +14,7 @@
 #include <QImage>
 #include <QTimer>
 #include <lilv/lilv.h>
+#include "../audio/LilvUtil.h"
 #include <suil/suil.h>
 #include <lv2/ui/ui.h>
 #include <lv2/urid/urid.h>
@@ -146,7 +147,7 @@ struct Snapshotter {
                 const LilvUI* candidate = lilv_uis_get(uis, i);
                 const LilvNodes* classes = lilv_ui_get_classes(candidate);
                 LILV_FOREACH(nodes, c, classes) {
-                    const char* classUri = lilv_node_as_uri(lilv_nodes_get(classes, c));
+                    const char* classUri = lilvUriText(lilv_nodes_get(classes, c));
                     const unsigned quality = suil_ui_supported(container.type, classUri);
                     if (quality == 0) continue;
                     if (choice.ui && quality >= bestQuality) continue;
@@ -296,23 +297,21 @@ struct Snapshotter {
 
         const UIChoice choice = chooseUI();
         if (!choice.ui) { fprintf(stderr, "snapshot: plugin has no embeddable GUI\n"); return false; }
-        const char* uiUri = lilv_node_as_uri(lilv_ui_get_uri(choice.ui));
+        const char* uiUri = lilvUriText(lilv_ui_get_uri(choice.ui));
 
         host = suil_host_new(portWrite, nullptr, nullptr, nullptr);
-        char* bundle = lilv_file_uri_parse(lilv_node_as_uri(lilv_ui_get_bundle_uri(choice.ui)), nullptr);
-        const LilvNode* binaryNode = lilv_ui_get_binary_uri(choice.ui);
-        char* binary = binaryNode ? lilv_file_uri_parse(lilv_node_as_uri(binaryNode), nullptr) : nullptr;
+        const std::string bundle = lilvFilePath(lilv_ui_get_bundle_uri(choice.ui));
+        std::string binary = lilvFilePath(lilv_ui_get_binary_uri(choice.ui));
         // Calf points at a GUI binary that distributions put elsewhere.
         QByteArray binaryOverride;
-        if ((!binary || !QFile::exists(QString::fromLocal8Bit(binary)))
+        if ((binary.empty() || !QFile::exists(QString::fromLocal8Bit(binary.c_str())))
             && pluginUri.startsWith("http://calf.sourceforge.net/plugins/")) {
             for (const char* candidate : {"/usr/lib64/calf/libcalflv2gui.so", "/usr/lib/calf/libcalflv2gui.so",
                                           "/usr/lib/x86_64-linux-gnu/calf/libcalflv2gui.so"}) {
                 if (QFile::exists(QString::fromLatin1(candidate))) { binaryOverride = candidate; break; }
             }
             if (!binaryOverride.isEmpty()) {
-                if (binary) lilv_free(binary);
-                binary = nullptr;
+                binary.clear();
             }
         }
         // A Gtk UI is handed a Gtk window instead of our X11 one, so the parent
@@ -320,10 +319,10 @@ struct Snapshotter {
         const bool gtkPath = choice.gtkLibrary != nullptr;
         if (gtkPath && !startGtk(choice)) return false;
         instance = suil_instance_new(host, this, choice.container.c_str(), pluginUri.toUtf8().constData(),
-                                     uiUri, choice.uiType.c_str(), bundle,
-                                     binaryOverride.isEmpty() ? binary : binaryOverride.constData(), features);
-        lilv_free(bundle);
-        if (binary) lilv_free(binary);
+                                     uiUri, choice.uiType.c_str(), bundle.c_str(),
+                                     binaryOverride.isEmpty()
+                                         ? (binary.empty() ? nullptr : binary.c_str())
+                                         : binaryOverride.constData(), features);
         if (!instance) { fprintf(stderr, "snapshot: the GUI would not load\n"); return false; }
 
         if (gtkPath) return showInGtkWindow();

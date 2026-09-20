@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "CredentialStore.h"
 #include "../audio/LV2Host.h"
+#include "../audio/LilvUtil.h"
 #include "../audio/VST3Host.h"
 #include "../audio/CLAPHost.h"
 #include "../audio/MissingPluginNode.h"
@@ -1617,7 +1618,7 @@ void MainWindow::scanPlugins() {
     auto firstValue = [](const LilvPlugin* plugin, LilvNode* property) -> std::string {
         std::string value;
         if (LilvNodes* nodes = lilv_plugin_get_value(plugin, property)) {
-            if (const LilvNode* node = lilv_nodes_get_first(nodes)) value = lilv_node_as_string(node);
+            value = lilvString(lilv_nodes_get_first(nodes));
             lilv_nodes_free(nodes);
         }
         return value;
@@ -1628,33 +1629,30 @@ void MainWindow::scanPlugins() {
         
         PluginInfo info;
         
-        LilvNode* nameNode = lilv_plugin_get_name(p);
-        info.name = lilv_node_as_string(nameNode);
-        lilv_node_free(nameNode);
-        
+        info.name = lilvTakeString(lilv_plugin_get_name(p));
+
         const LilvNode* uriNode = lilv_plugin_get_uri(p);
-        info.uri = lilv_node_as_string(uriNode);
+        info.uri = lilvString(uriNode);
+        if (info.name.empty()) {
+            // A bundle missing its mandatory doap:name still works; name it after
+            // the URI so it stays usable instead of vanishing from the browser.
+            std::cerr << "LV2 plugin <" << info.uri << "> has no name; showing it by URI." << std::endl;
+            info.name = lilvNameFromUri(info.uri);
+        }
         if (LilvNodes* brands = lilv_plugin_get_value(p, brandProperty)) {
-            if (const LilvNode* brand = lilv_nodes_get_first(brands)) {
-                info.brand = lilv_node_as_string(brand);
-            }
+            info.brand = lilvString(lilv_nodes_get_first(brands));
             lilv_nodes_free(brands);
         }
         if (LilvNodes* thumbnails = lilv_plugin_get_value(p, thumbnailProperty)) {
             if (const LilvNode* thumbnail = lilv_nodes_get_first(thumbnails)) {
-                if (char* path = lilv_file_uri_parse(lilv_node_as_uri(thumbnail), nullptr)) {
-                    info.thumbnailPath = QString::fromLocal8Bit(path);
-                    lilv_free(path);
-                }
+                const std::string path = lilvFilePath(thumbnail);
+                if (!path.empty()) info.thumbnailPath = QString::fromLocal8Bit(path.c_str());
             }
             lilv_nodes_free(thumbnails);
         }
-        
+
         info.isLV2 = true;
-        if (LilvNode* author = lilv_plugin_get_author_name(p)) {
-            info.author = lilv_node_as_string(author);
-            lilv_node_free(author);
-        }
+        info.author = lilvTakeString(lilv_plugin_get_author_name(p));
         info.description = firstValue(p, commentProperty);
         {
             // doap:license is usually a URI; show its last path segment ("GPL-3.0").
@@ -1689,13 +1687,7 @@ void MainWindow::scanPlugins() {
             }
         }
 
-        const LilvNode* bundleUri = lilv_plugin_get_bundle_uri(p);
-        if (bundleUri) {
-            if (char* bundlePath = lilv_file_uri_parse(lilv_node_as_uri(bundleUri), nullptr)) {
-                info.path = bundlePath;
-                lilv_free(bundlePath);
-            }
-        }
+        info.path = lilvFilePath(lilv_plugin_get_bundle_uri(p));
 
         // Fallback: resolve modgui thumbnail from bundle directory if not set by Lilv property
         if (info.thumbnailPath.isEmpty() && !info.path.empty()) {
@@ -1724,8 +1716,7 @@ void MainWindow::scanPlugins() {
         
         // Extract category
         const LilvPluginClass* pclass = lilv_plugin_get_class(p);
-        const LilvNode* classNode = lilv_plugin_class_get_uri(pclass);
-        std::string classURI = lilv_node_as_string(classNode);
+        std::string classURI = pclass ? lilvString(lilv_plugin_class_get_uri(pclass)) : std::string();
         
         if (classURI.find("Amplifier") != std::string::npos) info.category = "Amplifiers";
         else if (classURI.find("Delay") != std::string::npos) info.category = "Delays";
@@ -2138,7 +2129,7 @@ std::shared_ptr<AudioNode> MainWindow::createPluginNode(const std::string& uri) 
             const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
             LILV_FOREACH(plugins, i, plugins) {
                 const LilvPlugin* p = lilv_plugins_get(plugins, i);
-                if (uri == lilv_node_as_string(lilv_plugin_get_uri(p))) {
+                if (uri == lilvText(lilv_plugin_get_uri(p))) {
                     return std::make_shared<LV2PluginNode>(m_lilvWorld, p);
                 }
             }
@@ -4596,8 +4587,7 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                 if (plugins) {
                     LILV_FOREACH(plugins, j, plugins) {
                         const LilvPlugin* p = lilv_plugins_get(plugins, j);
-                        const LilvNode* uriNode = lilv_plugin_get_uri(p);
-                        std::string puri = lilv_node_as_string(uriNode);
+                        std::string puri = lilvString(lilv_plugin_get_uri(p));
                         if (puri == uri) {
                             node = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
                             break;
@@ -4898,7 +4888,7 @@ public:
         m_process->start(
             QCoreApplication::applicationFilePath(),
             {x11Ui ? "--x11-ui-helper" : "--gtk-ui-helper", m_serverName, QString::fromStdString(node->getPluginURI()),
-             QString::fromUtf8(lilv_node_as_uri(lilv_ui_get_uri(ui))), QString::number(m_parentWindow)});
+             QString::fromUtf8(lilvUriText(lilv_ui_get_uri(ui))), QString::number(m_parentWindow)});
         m_valid = m_process->waitForStarted(3000);
         if (MainWindow* mw = qobject_cast<MainWindow*>(parent)) {
             mw->registerExternalUI(this);
@@ -5382,7 +5372,7 @@ public:
         m_suilHost = suil_host_new(suil_port_write, nullptr, nullptr, nullptr);
         
         const char* containerType = "http://lv2plug.in/ns/extensions/ui#Qt6UI";
-        const char* uiUri = lilv_node_as_uri(lilv_ui_get_uri(ui));
+        const char* uiUri = lilvUriText(lilv_ui_get_uri(ui));
         
         const LilvNodes* classes = lilv_ui_get_classes(ui);
         std::string uiType;
@@ -5390,7 +5380,7 @@ public:
         unsigned bestSupport = UINT_MAX;
         LILV_FOREACH(nodes, i, classes) {
             const LilvNode* c = lilv_nodes_get(classes, i);
-            std::string classUri = lilv_node_as_uri(c);
+            std::string classUri = lilvUriText(c);
             if (fallbackType.empty()) fallbackType = classUri;
             unsigned support = suil_ui_supported(containerType, classUri.c_str());
             if (support > 0 && support < bestSupport) {
@@ -5417,8 +5407,8 @@ public:
         lilv_node_free(extensionData);
         lilv_node_free(resizeFeature);
         
-        char* bundlePath = lilv_file_uri_parse(lilv_node_as_uri(bundleNode), nullptr);
-        char* binaryPath = binaryNode ? lilv_file_uri_parse(lilv_node_as_uri(binaryNode), nullptr) : nullptr;
+        const std::string bundlePath = lilvFilePath(bundleNode);
+        const std::string binaryPath = lilvFilePath(binaryNode);
         
         // UI instances may retain feature pointers, so these must outlive construction.
         m_uridMap = { nullptr, ui_map_uri };
@@ -5502,13 +5492,10 @@ public:
             pluginUri.c_str(),
             uiUri,
             uiType.c_str(),
-            bundlePath,
-            binaryPath,
+            bundlePath.c_str(),
+            binaryPath.empty() ? nullptr : binaryPath.c_str(),
             m_features
         );
-        
-        lilv_free(bundlePath);
-        if (binaryPath) lilv_free(binaryPath);
         
         if (m_suilInstance) {
             QWidget* widget = (QWidget*)suil_instance_get_widget(m_suilInstance);
@@ -5985,10 +5972,10 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         if (uis) {
             LILV_FOREACH(uis, i, uis) {
                 const LilvUI* candidate = lilv_uis_get(uis, i);
-                const QString candidateUri = QString::fromUtf8(lilv_node_as_uri(lilv_ui_get_uri(candidate)));
+                const QString candidateUri = QString::fromUtf8(lilvUriText(lilv_ui_get_uri(candidate)));
                 const bool candidateNeedsInstance = candidateUri.endsWith("-req");
                 const bool selectedNeedsInstance = uiToOpen &&
-                    QString::fromUtf8(lilv_node_as_uri(lilv_ui_get_uri(uiToOpen))).endsWith("-req");
+                    QString::fromUtf8(lilvUriText(lilv_ui_get_uri(uiToOpen))).endsWith("-req");
                 if (!uiToOpen || (bestSupport == UINT_MAX && selectedNeedsInstance && !candidateNeedsInstance)) {
                     uiToOpen = candidate;
                 }
@@ -5997,7 +5984,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                     const LilvNode* type = lilv_nodes_get(classes, j);
                     unsigned support = suil_ui_supported(
                         "http://lv2plug.in/ns/extensions/ui#Qt6UI",
-                        lilv_node_as_uri(type));
+                        lilvUriText(type));
                     if (support > 0 && support < bestSupport) {
                         uiToOpen = candidate;
                         bestSupport = support;
@@ -6012,7 +5999,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             const LilvNodes* selectedClasses = lilv_ui_get_classes(uiToOpen);
             LILV_FOREACH(nodes, i, selectedClasses) {
                 const LilvNode* type = lilv_nodes_get(selectedClasses, i);
-                const QString typeUri = QString::fromUtf8(lilv_node_as_uri(type));
+                const QString typeUri = QString::fromUtf8(lilvUriText(type));
                 if (typeUri == LV2_UI__GtkUI) {
                     isGtkUi = true;
                 } else if (typeUri == LV2_UI__X11UI) {
@@ -6843,7 +6830,7 @@ void MainWindow::onPluginDoubleClicked(std::shared_ptr<AudioNode> node) {
                     const LilvNodes* selectedClasses = lilv_ui_get_classes(uiToOpen);
                     LILV_FOREACH(nodes, i, selectedClasses) {
                         const LilvNode* type = lilv_nodes_get(selectedClasses, i);
-                        const QString typeUri = QString::fromUtf8(lilv_node_as_uri(type));
+                        const QString typeUri = QString::fromUtf8(lilvUriText(type));
                         if (typeUri == LV2_UI__GtkUI) isGtkUi = true;
                         else if (typeUri == LV2_UI__X11UI) isX11Ui = true;
                     }
