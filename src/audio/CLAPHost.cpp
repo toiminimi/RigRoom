@@ -441,18 +441,6 @@ void CLAPPluginNode::process(int numFrames) {
     int numInputs = getAudioInputCount();
     int numOutputs = getAudioOutputCount();
 
-    if (isBypassed()) {
-        int minChannels = std::min(numInputs, numOutputs);
-        for (int c = 0; c < minChannels; ++c) {
-            float* src = m_ports[c].buffer;
-            float* dst = m_ports[numInputs + c].buffer;
-            if (src && dst) {
-                std::copy(src, src + numFrames, dst);
-            }
-        }
-        return;
-    }
-
     if (!m_plugin || !m_active || !m_processing) {
         for (int c = 0; c < numOutputs; ++c) {
             float* dst = m_ports[numInputs + c].buffer;
@@ -617,8 +605,8 @@ std::vector<CLAPPluginDescriptor> CLAPPluginNode::scanLibrary(const std::string&
     return result;
 }
 
-std::vector<CLAPPluginDescriptor> CLAPPluginNode::scanStandardPaths(const std::vector<std::string>& customPaths) {
-    std::vector<CLAPPluginDescriptor> allPlugins;
+std::vector<std::string> CLAPPluginNode::listLibraries(const std::vector<std::string>& customPaths) {
+    std::vector<std::string> files;
     std::vector<std::string> dirs = {
         "/usr/lib/clap",
         "/usr/lib64/clap",
@@ -627,30 +615,31 @@ std::vector<CLAPPluginDescriptor> CLAPPluginNode::scanStandardPaths(const std::v
         (QDir::homePath() + "/.clap").toStdString()
     };
     for (const auto& cPath : customPaths) {
-        if (!cPath.empty()) {
-            dirs.push_back(cPath);
-        }
+        if (!cPath.empty()) dirs.push_back(cPath);
     }
-
-    QSet<QString> scannedFiles;
+    QSet<QString> seen;
     for (const auto& dirPath : dirs) {
         if (!std::filesystem::exists(dirPath)) continue;
         try {
             for (const auto& entry : std::filesystem::directory_iterator(dirPath)) {
-                std::string ext = entry.path().extension().string();
-                if (ext == ".clap") {
-                    QString fullPath = QString::fromStdString(entry.path().string());
-                    if (scannedFiles.contains(fullPath)) continue;
-                    scannedFiles.insert(fullPath);
-
-                    auto descs = scanLibrary(entry.path().string());
-                    allPlugins.insert(allPlugins.end(), descs.begin(), descs.end());
-                }
+                if (entry.path().extension().string() != ".clap") continue;
+                const QString fullPath = QString::fromStdString(entry.path().string());
+                if (seen.contains(fullPath)) continue;
+                seen.insert(fullPath);
+                files.push_back(entry.path().string());
             }
         } catch (const std::exception& e) {
             std::cerr << "CLAPHost: Exception scanning " << dirPath << ": " << e.what() << std::endl;
         }
     }
+    return files;
+}
 
+std::vector<CLAPPluginDescriptor> CLAPPluginNode::scanStandardPaths(const std::vector<std::string>& customPaths) {
+    std::vector<CLAPPluginDescriptor> allPlugins;
+    for (const auto& path : listLibraries(customPaths)) {
+        auto descs = scanLibrary(path);
+        allPlugins.insert(allPlugins.end(), descs.begin(), descs.end());
+    }
     return allPlugins;
 }

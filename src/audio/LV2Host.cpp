@@ -434,25 +434,6 @@ void LV2PluginNode::prepare(double sampleRate, int maxBlockSize) {
 void LV2PluginNode::process(int numFrames) {
     if (!m_instance) return;
     
-    if (isBypassed()) {
-        const size_t commonCount = std::min(m_audioInputPortIndices.size(), m_audioOutputPortIndices.size());
-        for (size_t i = 0; i < commonCount; ++i) {
-            float* input = m_ports[m_audioInputPortIndices[i]].buffer;
-            float* output = m_ports[m_audioOutputPortIndices[i]].buffer;
-            if (input && output) {
-                std::copy(input, input + numFrames, output);
-            }
-        }
-        // Zero out any remaining outputs
-        for (size_t i = commonCount; i < m_audioOutputPortIndices.size(); ++i) {
-            float* output = m_ports[m_audioOutputPortIndices[i]].buffer;
-            if (output) {
-                std::fill(output, output + numFrames, 0.0f);
-            }
-        }
-        return;
-    }
-    
     // Reset both input and output atom ports to empty sequences before processing
     for (auto& atomPort : m_atomPorts) {
         LV2_Atom_Sequence* seq = reinterpret_cast<LV2_Atom_Sequence*>(atomPort.buffer.data());

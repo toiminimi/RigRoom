@@ -1,5 +1,6 @@
 #pragma once
 #include <jack/jack.h>
+#include <jack/ringbuffer.h>
 #include <vector>
 #include <memory>
 #include <atomic>
@@ -79,6 +80,9 @@ public:
     void setInputGain(float db);
     void setOutputGain(float db);
     void setPresetOutputLevel(float db);
+    // Scene trim (dB) applied on top of the preset level; clamped to -24..+12 dB.
+    void setSceneOutputLevel(float db);
+    float getSceneOutputLevelDB() const { return m_sceneOutputLevelDb; }
     float getInputGainDB() const;
     float getOutputGainDB() const;
     float getPresetOutputLevelDB() const;
@@ -99,6 +103,14 @@ public:
     std::vector<std::string> getPhysicalInputs() const;
     std::vector<std::string> getPhysicalOutputs() const;
 
+    // MIDI input. Channel-voice messages are copied from the JACK callback into
+    // a lock-free ring buffer; the GUI thread drains them with readMidi().
+    struct RawMidi { uint8_t status = 0, data1 = 0, data2 = 0; };
+    bool readMidi(RawMidi& out);
+    std::vector<std::string> getMidiSources() const;
+    void setMidiInputPort(const std::string& port);
+    const std::string& midiInputPort() const { return m_midiInputSource; }
+
 private:
     static int processCallback(jack_nframes_t nframes, void* arg);
     static void shutdownCallback(void* arg);
@@ -117,6 +129,11 @@ private:
     
     jack_port_t* m_jackInputPorts[2] = { nullptr, nullptr };
     jack_port_t* m_jackOutputPorts[2] = { nullptr, nullptr };
+    jack_port_t* m_jackMidiInPort = nullptr;
+    jack_ringbuffer_t* m_midiRing = nullptr;
+    std::string m_midiInputSource;
+    void readJackMidi(int numFrames);
+    void updateMidiConnection();
     
     std::string m_hwInputLeft;
     std::string m_hwInputRight;
@@ -127,7 +144,11 @@ private:
     
     std::atomic<float> m_inputGain{1.0f};
     std::atomic<float> m_outputGain{1.0f};
+    // Combined preset + scene gain read by the audio thread.
     std::atomic<float> m_presetOutputLevel{1.0f};
+    float m_presetOutputLevelDb = 0.0f; // GUI thread
+    float m_sceneOutputLevelDb = 0.0f;  // GUI thread
+    void storeOutputLevel();
     // Accessed only from the audio callback to ramp preset changes smoothly.
     float m_currentPresetOutputLevel = 1.0f;
     std::atomic<float> m_inputPeak{0.0f};

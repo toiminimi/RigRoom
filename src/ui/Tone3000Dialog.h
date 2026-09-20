@@ -32,7 +32,11 @@ class Tone3000ImageLoader;
 class Tone3000Dialog : public QDialog {
     Q_OBJECT
 public:
-    explicit Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* parent = nullptr);
+    // Nam: captures for a Neural Amp Modeler block. Ir: impulse responses for
+    // the file slot `irPropertyUri` of an IR/cab loader block.
+    enum class Mode { Nam, Ir };
+    explicit Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* parent = nullptr,
+                            Mode mode = Mode::Nam, const std::string& irPropertyUri = {});
     ~Tone3000Dialog() override = default;
 
     std::string getDownloadedModelPath() const { return m_downloadedModelPath; }
@@ -42,6 +46,8 @@ public:
     std::vector<AudioNode::ModelVariant> getDownloadedVariants() const { return m_downloadedVariants; }
     void setInitialSearchQuery(const QString& query);
     void setInitialTone(const QString& sourceUrl, const QString& captureName);
+    // Opens straight into one creator's tones.
+    void showCreator(const QString& username);
     void reject() override;
 
 private slots:
@@ -64,7 +70,43 @@ private:
     void fetchModelsForTone(int toneId);
     void onModelsFinished(QNetworkReply* reply, int toneId);
     void populateModels(const QJsonArray& models);
-    void downloadModelFile(const QString& url, const QString& filename, bool isPreview, bool isRedirect = false);
+    void downloadModelFile(const QString& url, const QString& targetPath, bool isPreview, bool isRedirect = false);
+    // Creators
+    void clearCreator();
+    void fetchCreatorInfo(const QString& username);
+    void updateCreatorHeader();
+    void setBrowseCreators(bool creators);
+    void requestCreators(int page, bool append);
+    void onCreatorsFinished(QNetworkReply* reply, bool append);
+    void appendCreatorCard(const QJsonObject& creator);
+    void onCreatorLink(const QString& link);
+    void goBack();
+    // What was on screen before opening a creator, restored by Back.
+    struct SavedView {
+        QString text;
+        bool favorites = false;
+        bool browseCreators = false;
+        QString creatorFilter;
+        QJsonObject creatorInfo;
+        QJsonArray tones;
+        QJsonArray creators;
+        int page = 1;
+        int totalPages = 0;
+        int totalResults = 0;
+        bool hasNextPage = false;
+        int scroll = 0;
+        int selectedIndex = -1;
+        int selectedToneId = -1;
+        QString status;
+        QString pageText;
+    };
+    std::vector<SavedView> m_backStack;
+    QPushButton* m_creatorBackBtn = nullptr;
+    // Files
+    void applyFileToNode(const std::string& path);
+    QString fileNameFor(const QJsonObject& model, bool preview) const;
+    QString toneFolderFor(const QJsonObject& tone) const;
+    QString modeCacheDir() const;
     void rebuildCards();
     void appendToneCard(const QJsonObject& tone, int index);
     void selectTone(int index);
@@ -78,7 +120,11 @@ private:
     // Audio node and engine for preview
     AudioNode* m_node;
     AudioEngine* m_engine;
+    Mode m_mode = Mode::Nam;
+    std::string m_irPropertyUri;
     std::string m_originalModelPath;
+    std::string m_previewPath;        // preview downloads never overwrite a loaded file
+    QString m_activeDownloadPath;     // target of the download in flight (kept across redirects)
     bool m_isPreviewing = false;
     bool m_previewDownload = false;
 
@@ -160,4 +206,19 @@ private:
     std::vector<AudioNode::ModelVariant> m_downloadedVariants;
 
     QWidget* m_apiKeyBanner = nullptr;
+
+    // Creators
+    QString m_creatorFilter;          // username; empty = everyone
+    QJsonObject m_creatorInfo;
+    bool m_browseCreators = false;    // search box finds creators instead of tones
+    QPushButton* m_tonesModeBtn = nullptr;
+    QPushButton* m_creatorsModeBtn = nullptr;
+    QWidget* m_creatorHeader = nullptr;
+    QLabel* m_creatorAvatar = nullptr;
+    QLabel* m_creatorNameLabel = nullptr;
+    QLabel* m_creatorStatsLabel = nullptr;
+    QPointer<QNetworkReply> m_creatorInfoReply;
+    QJsonArray m_currentCreators;
+    QList<QWidget*> m_namOnlyWidgets; // hidden in IR mode
+    QLabel* m_captureLabel = nullptr;
 };

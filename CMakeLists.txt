@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(RigRoom VERSION 0.10.0 LANGUAGES CXX)
+project(RigRoom VERSION 0.11.0 LANGUAGES CXX)
 
 option(RIGROOM_DEV_BUILD "Append a development suffix to the application version" ON)
 option(RIGROOM_ENABLE_RT_METRICS "Collect realtime callback timing diagnostics" OFF)
@@ -23,7 +23,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # Find Qt6
-find_package(Qt6 COMPONENTS Widgets Core Gui Network REQUIRED)
+find_package(Qt6 COMPONENTS Widgets Core Gui Network Concurrent REQUIRED)
 
 # Find PkgConfig packages
 find_package(PkgConfig REQUIRED)
@@ -70,11 +70,35 @@ add_executable(RigRoom
     src/ui/ModelDetailsDialog.cpp
     src/ui/ModelDetailsDialog.h
     src/ui/GtkUIHelper.cpp
+    src/ui/PluginSnapshot.cpp
+    src/ui/PluginSnapshot.h
+    src/ui/PluginPreviewService.cpp
+    src/ui/SettingsUi.cpp
+    src/ui/SettingsUi.h
+    src/ui/PluginPreviewService.h
     src/ui/GtkUIHelper.h
     src/ui/RoutingHandleItem.cpp
     src/ui/RoutingHandleItem.h
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
+    src/ui/PresetBrowser.cpp
+    src/ui/FootswitchTile.cpp
+    src/ui/FootswitchTile.h
+    src/ui/PluginBrowser.cpp
+    src/ui/PluginBrowser.h
+    src/ui/PluginSearch.cpp
+    src/ui/PluginSearch.h
+    src/ui/PresetBrowser.h
+    src/preset/PresetLibrary.cpp
+    src/preset/PresetLibrary.h
+    src/preset/SceneModel.cpp
+    src/preset/SceneModel.h
+    src/control/RigController.cpp
+    src/control/RigController.h
+    src/control/MidiMap.cpp
+    src/control/MidiMap.h
+    src/control/MidiRouter.cpp
+    src/control/MidiRouter.h
     src/ui/resources.qrc
 )
 
@@ -87,6 +111,7 @@ target_link_options(RigRoom PRIVATE -rdynamic)
 target_link_libraries(RigRoom PRIVATE
     Qt6::Widgets
     Qt6::Network
+    Qt6::Concurrent
     PkgConfig::JACK
     PkgConfig::LILV
     PkgConfig::SUIL
@@ -123,6 +148,41 @@ if(BUILD_TESTING)
     target_link_libraries(RigRoomRoutingTests PRIVATE Qt6::Widgets PkgConfig::JACK)
     add_test(NAME RigRoomRoutingTests COMMAND RigRoomRoutingTests)
     set_tests_properties(RigRoomRoutingTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(RigRoomPresetTests
+        tests/PresetTests.cpp
+        src/preset/PresetLibrary.cpp
+        src/preset/PresetLibrary.h
+        src/preset/SceneModel.cpp
+        src/preset/SceneModel.h
+        src/audio/AudioNode.h
+    )
+    target_include_directories(RigRoomPresetTests PRIVATE src)
+    target_compile_options(RigRoomPresetTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomPresetTests PRIVATE Qt6::Core)
+    add_test(NAME RigRoomPresetTests COMMAND RigRoomPresetTests)
+
+    add_executable(RigRoomMidiTests
+        tests/MidiTests.cpp
+        src/control/MidiMap.cpp
+        src/control/MidiMap.h
+        src/control/RigController.cpp
+        src/control/RigController.h
+    )
+    target_include_directories(RigRoomMidiTests PRIVATE src)
+    target_compile_options(RigRoomMidiTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomMidiTests PRIVATE Qt6::Core)
+    add_test(NAME RigRoomMidiTests COMMAND RigRoomMidiTests)
+
+    add_executable(RigRoomPluginSearchTests
+        tests/PluginSearchTests.cpp
+        src/ui/PluginSearch.cpp
+        src/ui/PluginSearch.h
+    )
+    target_include_directories(RigRoomPluginSearchTests PRIVATE src)
+    target_compile_options(RigRoomPluginSearchTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomPluginSearchTests PRIVATE Qt6::Core)
+    add_test(NAME RigRoomPluginSearchTests COMMAND RigRoomPluginSearchTests)
 endif()
 
 include(GNUInstallDirs)

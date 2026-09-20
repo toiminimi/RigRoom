@@ -331,6 +331,20 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     qreal badgeWidth = badgeMetrics.horizontalAdvance(channelLabel) + 8;
     QRectF badgeRect(m_width - badgeWidth - 6, m_height - 16, badgeWidth, 10);
 
+    // Scene-controlled blocks get a small "S" pill before the channel badge.
+    bool sceneMarked = false;
+    bool midiMarked = false;
+    if (!isSystemNode && scene() && !scene()->views().isEmpty()) {
+        if (auto* canvas = dynamic_cast<NodeCanvas*>(scene()->views().first())) {
+            sceneMarked = canvas->isSceneMarked(m_audioNode->uniqueId);
+            midiMarked = canvas->isMidiMarked(m_audioNode->uniqueId);
+        }
+    }
+    const QRectF sceneBadgeRect(badgeRect.left() - 14, m_height - 16, 11, 10);
+    // "M" (MIDI assignment) sits left of "S", or in its place when there is no "S".
+    const QRectF midiBadgeRect((sceneMarked ? sceneBadgeRect.left() : badgeRect.left()) - 14, m_height - 16, 11, 10);
+    const qreal badgesLeft = midiMarked ? midiBadgeRect.left() : (sceneMarked ? sceneBadgeRect.left() : badgeRect.left());
+
     const QColor categoryTextColor = bypass ? QColor(125, 128, 135) : headerColor.lighter(125);
     drawEffectIcon(painter, iconType, QPointF(13, m_height - 10), categoryTextColor);
     QFont categoryFont = painter->font();
@@ -339,12 +353,26 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     categoryFont.setLetterSpacing(QFont::AbsoluteSpacing, 0.5);
     painter->setFont(categoryFont);
     painter->setPen(categoryTextColor);
-    QRectF categoryRect(23, m_height - 17, badgeRect.left() - 27, 12);
+    QRectF categoryRect(23, m_height - 17, badgesLeft - 27, 12);
     painter->drawText(categoryRect, Qt::AlignVCenter | Qt::AlignLeft,
                       QFontMetrics(categoryFont).elidedText(categoryLabel(iconType), Qt::ElideRight,
                                                             qRound(categoryRect.width())));
 
     painter->setFont(badgeFont);
+    if (sceneMarked) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(255, 193, 7, bypass ? 120 : 220));
+        painter->drawRoundedRect(sceneBadgeRect, 3, 3);
+        painter->setPen(QColor(20, 20, 22));
+        painter->drawText(sceneBadgeRect, Qt::AlignCenter, "S");
+    }
+    if (midiMarked) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(206, 147, 216, bypass ? 120 : 220));
+        painter->drawRoundedRect(midiBadgeRect, 3, 3);
+        painter->setPen(QColor(20, 20, 22));
+        painter->drawText(midiBadgeRect, Qt::AlignCenter, "M");
+    }
     painter->setPen(Qt::NoPen);
     painter->setBrush(isMissing ? QColor(150, 62, 68) : QColor(57, 60, 68));
     painter->drawRoundedRect(badgeRect, 3, 3);
@@ -366,6 +394,11 @@ void NodeWidget::toggleBypass() {
     if (m_audioNode->getType() != NodeType::SystemInput && m_audioNode->getType() != NodeType::SystemOutput) {
         m_audioNode->setBypassed(!m_audioNode->isBypassed());
         update();
+        if (scene() && !scene()->views().isEmpty()) {
+            if (auto* canvas = dynamic_cast<NodeCanvas*>(scene()->views().first())) {
+                emit canvas->nodeBypassToggled(m_audioNode);
+            }
+        }
     }
 }
 
@@ -439,7 +472,7 @@ void NodeWidget::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
 
             for (auto* item : scene()->items()) {
                 if (auto* pb = dynamic_cast<PlusButtonWidget*>(item)) {
-                    QPointF pbPos = pb->scenePos();
+                    QPointF pbPos = pb->homePos();
                     qreal dx = mousePos.x() - pbPos.x();
                     qreal dy = mousePos.y() - pbPos.y();
                     qreal d = std::sqrt(dx * dx + dy * dy);
@@ -452,7 +485,7 @@ void NodeWidget::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
             }
 
             if (closestPb) {
-                canvas->setDragGap(closestPb->getRow(), closestPb->getCol(), closestPb->isSecondOfCol());
+                canvas->setDragGap(closestPb->getRow(), closestPb->getCol(), closestPb->insertMode());
             } else {
                 canvas->clearDragGap();
             }
@@ -478,17 +511,17 @@ void NodeWidget::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         if (canvas) {
             int toRow = canvas->getDragGapRow();
             int toCol = canvas->getDragGapCol();
-            bool isSecondOfCol = canvas->getDragGapIsSecondOfCol();
+            int insert = canvas->getDragGapIsInsert();
             
             // Clear gap visualization first
             canvas->clearDragGap();
             
             if (toRow != -1 && toCol != -1) {
                 const auto audioNode = m_audioNode;
-                QTimer::singleShot(0, canvas, [canvas, audioNode, toRow, toCol, isSecondOfCol]() {
+                QTimer::singleShot(0, canvas, [canvas, audioNode, toRow, toCol, insert]() {
                     auto [fromRow, fromCol] = canvas->findNode(audioNode);
                     if (fromRow != -1 && fromCol != -1) {
-                        canvas->movePluginToGap(fromRow, fromCol, toRow, toCol, isSecondOfCol);
+                        canvas->movePluginToGap(fromRow, fromCol, toRow, toCol, insert);
                     } else {
                         canvas->updateLayout();
                     }

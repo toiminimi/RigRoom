@@ -1,4 +1,4 @@
-# 🎛️ RigRoom
+# RigRoom
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Build System](https://img.shields.io/badge/Build-CMake_3.20%2B-brightgreen.svg)](CMakeLists.txt)
@@ -6,153 +6,149 @@
 [![Audio Engine](https://img.shields.io/badge/Audio-JACK_%7C_PipeWire-orange.svg)](https://jackaudio.org)
 [![Plugin Formats](https://img.shields.io/badge/Formats-LV2_%7C_VST3_%7C_CLAP_%7C_NAM-purple.svg)](#features)
 
-**RigRoom** is an open-source guitar and bass multieffects host and real-time audio plugin router for Linux.
+An open-source guitar and bass multieffects host for Linux: build a rig out of
+LV2, VST3 and CLAP plugins, lay it out as a signal path with parallel branches,
+and play it from a MIDI footswitch.
+
+![The RigRoom signal path](Screenshots/Rigroom_UI.png)
 
 ---
 
-## ✨ Features
+## Features
 
-### 🔌 Plugin Hosting & External UIs
-- **Plugin Standards**: Native support for **LV2**, **VST3**, and **CLAP** audio plugin formats.
-- **Neural Amp Modeler (NAM) Integration**: Load `.nam` neural amp and pedal captures into hosted NAM plugins.
-- **External Plugin UIs**: Native window embedding for plugin interfaces (GTK/X11 via Suil, VST3 IPlugView, CLAP extensions).
-- **Parameter Inspector**: Parameter control panel with knobs, sliders, and plugin preset dropdowns.
-- **Plugin Browser & Custom Paths**: Search plugins by format or category, and configure custom search directories for VST3, CLAP, and LV2.
+### Signal path
 
-### 🔀 Parallel Signal Routing Canvas
-- **Multi-Lane Canvas**: Interactive node graph supporting up to 5 parallel audio lanes (`Main`, `Path B1`, `Path B2`, `Path C1`, `Path C2`) with configurable slot capacity (6 to 12 slots).
-- **Drag-and-Drop Workflow**: Drag `DRAG SPLIT` to create parallel branches, drag pedal blocks between slots and lanes, and drag split/merge handles to adjust routing positions.
-- **Split Modes**: **Copy** (full duplicate of the source) or **A/B** (power split between Path A and the branch).
-- **Visual Signal Flow**: Animated glowing connection wires showing active signal paths, zoom controls (wheel zoom, 100% reset), and missing plugin alerts.
+- **A board you lay out yourself.** Blocks sit on a grid, and the wire between
+  them is the signal. Drag to move, drop between two blocks to insert.
+- **Parallel paths.** Drop the `SPLIT` tool into a gap to branch the signal, and
+  drag the split or merge handle to change where it separates and rejoins.
+  Branches can nest, up to five lanes.
+- **Insert anywhere without rewiring.** Markers appear between blocks, at the
+  ends of a path, and on both sides of every split and merge, so a block can go
+  before or after a junction. Room is made by sliding blocks within the lane, or
+  the whole board, never by changing what connects to what.
+- **Per-branch mix, pan and level**, with the wire's colour and thickness showing
+  the gain it carries.
 
-### ☁️ TONE3000 Neural Model Integration
-- **In-App Search**: Search and filter thousands of open-source neural amp and pedal captures on TONE3000.
-- **One-Click Loading**: View model details, tags, sample rates, and profile images, and download models directly into NAM plugin nodes.
-- **Requirements**: A **Neural Amp Modeler LV2 plugin** must be installed on the system. Users must provide their own **TONE3000 secret key** (available at tone3000.com/settings) in the application settings. Secure key storage requires a running Secret Service provider — **gnome-keyring** on GNOME or **KDE Wallet** (with the Secrets DBus interface enabled) on KDE Plasma.
+### Plugin hosting
 
-### 🎚️ Audio Engine & Display Compatibility
-- **Real-Time Audio Engine**: Low-latency JACK Audio Connection Kit and PipeWire-JACK backend.
-- **Display Server Support**: Runs on X11 and Wayland sessions with XWayland. Native plugin UIs currently require X11/XWayland.
-- **Live Monitoring**: Real-time master input/output peak meters with clipping warnings, DSP load indicator, and XRun dropout counter.
-- **Branch Gain Controls**: Individual row volume, main mix level, panning, and polarity invert per branch.
+- **LV2, VST3 and CLAP**, scanned from the standard folders plus any you add.
+- **The plugins' own windows**, embedded through Suil (LV2), IPlugView (VST3) and
+  the CLAP GUI extension, including Gtk and X11 interfaces in their own process.
+- **Neural Amp Modeler** captures and impulse responses load straight into a
+  block's file slots.
+- **Inspector** with knobs, switches and the plugin's own presets for anything
+  without a window of its own.
 
-### 💾 Preset Management
-- **Pedalboard Presets**: Save, load, rename, and delete rigroom configurations.
-- **Preset Level**: Per-preset loudness (−24 to +12 dB), applied before the global Master Out. Click the System Output node to adjust it; the level is stored with the preset.
-- **Top Bar Quick Selector**: Active preset bar with prev/next navigation arrows.
-- **Parameter Synchronization**: Automatic parameter and preset state sync upon loading presets.
+### Plugin browser
+
+![The plugin browser](Screenshots/Plugin%20browser.png)
+
+- **Search that keeps up with typing** across name, maker, category, format and
+  tags, ranked so the obvious match comes first.
+- **Favorites, recently used and categories** in the sidebar; drag a plugin from
+  the browser onto the board, or keep the window open beside it.
+- **An info panel** with maker, version, licence, description, port counts and
+  tags — and a picture of the plugin's own GUI.
+- **Plugin pictures** (experimental): RigRoom can open each plugin's window on a
+  hidden display, photograph it and keep the picture. Needs Xvfb or a compositor
+  that can open a virtual session; nothing appears on screen.
+
+### Presets and scenes
+
+- **Banks of four presets** (01A–32D) with named banks and a grid of all of them.
+- **Scenes**: up to 8 per preset, storing every block's on/off state and every
+  parameter, switched without reloading a thing — no gap, and delay and reverb
+  tails ring on. A knob can be pinned to stay the same in all scenes.
+- **A performance bar** that reads like a floor unit: bank, presets A–D, scenes.
+
+### MIDI control
+
+- **Program Change** selects presets or scenes, with Bank Select for libraries
+  past 128 slots.
+- **Global CC commands** for previous/next preset, bank up/down, presets A–D and
+  scenes, each with Learn.
+- **Per-preset Learn** for block on/off and for any parameter, so an expression
+  pedal drives what you point it at.
+- **Controller takeover**: a parameter can wait until the controller reaches its
+  stored value, or follow the moment it moves, as a wah pedal should.
+
+### TONE3000
+
+![Browsing TONE3000 captures](Screenshots/Tone3000_browser.png)
+
+- **Search captures and impulse responses** from inside RigRoom and load them
+  into a block.
+- **Browse by creator**, open a profile, and go back to the search you came from.
+
+### Audio engine
+
+- Runs on **PipeWire-JACK or JACK**, with the block size, ports and gains chosen
+  in Settings.
+- **Bypass that does not click**, latency and xrun reporting, and a preset level
+  ahead of the master output.
 
 ---
 
-## 🛠️ System Requirements & Building
+## Requirements
 
-### 🔊 Audio Engine Requirements
+RigRoom needs **PipeWire** (with its JACK compatibility layer) or **JACK**.
 
-RigRoom uses **PipeWire** or **JACK** for real-time guitar audio processing.
-
-- **Ubuntu 22.04 / 24.04 & Debian 12 (PipeWire)**:
-  Modern Ubuntu distros run PipeWire by default. Install PipeWire's JACK compatibility library:
-  ```bash
-  sudo apt install -y pipewire-jack
-  ```
-- **Fedora / Arch Linux / Manjaro**:
-  PipeWire-JACK is included out-of-the-box. Ensure the service is active (`systemctl --user status pipewire`).
-
----
-
-### Prerequisites for Building from Source
-
-#### **Ubuntu 22.04 / 24.04 & Debian 12**
 ```bash
-sudo apt update
-sudo apt install -y build-essential cmake pkg-config \
-    qt6-base-dev qt6-base-private-dev \
-    libjack-jackd2-dev liblilv-dev libsuil-dev libsecret-1-dev libx11-dev
+# Debian / Ubuntu
+sudo apt install -y pipewire-jack
 ```
 
-#### **Arch Linux / Manjaro / EndeavourOS**
-```bash
-sudo pacman -S --needed base-devel cmake pkgconf \
-    qt6-base lilv suil jack2 libx11 libsecret
-```
+Fedora, Arch and Manjaro ship PipeWire-JACK already; check with
+`systemctl --user status pipewire`.
 
-#### **Fedora 43+**
-```bash
-sudo dnf install -y gcc-c++ cmake pkgconfig \
-    qt6-qtbase-devel lilv-devel suil-devel jack-audio-connection-kit-devel libX11-devel libsecret-devel
-```
-
-#### **openSUSE Tumbleweed / Leap**
-```bash
-sudo zypper install -y gcc-c++ cmake pkg-config \
-    libqt6-qtbase-devel lilv-devel suil-devel libjack-devel libX11-devel libsecret-devel
-```
+## Install
 
 ### AppImage
 
 Release AppImages are built against an Ubuntu 22.04 glibc baseline and use the
-host PipeWire-JACK or JACK service for real-time audio. They do not bundle
-glibc or an audio server. To build one locally, run:
-
-```bash
-./packaging/build-appimage.sh
-```
-
-Docker or Podman is used automatically when available. The output is written
-to the repository root. Install PipeWire-JACK or JACK on the target system
-before using audio processing.
-
-Release downloads include a `.sha256` file. Verify it with:
+host's audio server. Verify the download with the `.sha256` file beside it:
 
 ```bash
 sha256sum --check RigRoom-<version>-x86_64.AppImage.sha256
 ```
 
-### Compiling RigRoom
+To build one yourself (Docker or Podman is used when available):
 
 ```bash
-# 1. Clone repository
+./packaging/build-appimage.sh
+```
+
+### From source
+
+```bash
 git clone --recurse-submodules https://github.com/toiminimi/RigRoom.git
 cd RigRoom
-
-# 2. Configure build with CMake
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-# 3. Build executable
 cmake --build build -j$(nproc)
-
-# 4. Run RigRoom
 ./build/RigRoom
 ```
 
----
+Build dependencies:
 
-## ⌨️ Keyboard Shortcuts & Canvas Controls
-
-| Shortcut | Action |
+| Distribution | Packages |
 | :--- | :--- |
-| **Ctrl + N** | Create new empty preset |
-| **Ctrl + S** | Save current preset |
-| **Ctrl + Shift + S** | Save preset as... |
-| **Ctrl + =** / **Ctrl + +** | Add slot column |
-| **Ctrl + -** | Remove trailing empty slot column |
-| **Mouse Wheel** / **Pinch** | Zoom canvas in / out |
-| **Drag `SPLIT` Tool** | Drop onto gap to create parallel branch |
-| **Drag Routing Handle** | Move split or merge position |
+| Ubuntu / Debian | `build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev libjack-jackd2-dev liblilv-dev libsuil-dev libsecret-1-dev libx11-dev` |
+| Arch / Manjaro | `base-devel cmake pkgconf qt6-base lilv suil jack2 libx11 libsecret` |
+| Fedora | `gcc-c++ cmake pkgconfig qt6-qtbase-devel lilv-devel suil-devel jack-audio-connection-kit-devel libX11-devel libsecret-devel` |
+| openSUSE | `gcc-c++ cmake pkg-config libqt6-qtbase-devel lilv-devel suil-devel libjack-devel libX11-devel libsecret-devel` |
 
 ---
 
-## ⚖️ License & Open Source Credits
+## License and credits
 
-RigRoom is open-source software released under the **GNU General Public License v3.0 (GPLv3)**. See [LICENSE](LICENSE) for details.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+Released under the **GNU General Public License v3.0**. See [LICENSE](LICENSE),
+and [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and
 [PRIVACY.md](PRIVACY.md) for project policies.
 
-### Third-Party Acknowledgments
-- **Qt 6 Framework** ([LGPLv3](https://www.qt.io/)) — GUI & event loop
-- **JACK Audio Connection Kit** ([LGPL](https://jackaudio.org/)) — Real-time audio engine
-- **Lilv & Suil Libraries** ([ISC](https://drobilla.net/software/lilv)) — LV2 hosting & UI embedding
+- **Qt 6** ([LGPLv3](https://www.qt.io/)) — GUI and event loop
+- **JACK Audio Connection Kit** ([LGPL](https://jackaudio.org/)) — real-time audio
+- **Lilv and Suil** ([ISC](https://drobilla.net/software/lilv)) — LV2 hosting and UI embedding
 - **CLAP C API** ([MIT](https://clap.technology/)) — CLever Audio Plugin specification
 - **Steinberg VST3 SDK** ([MIT](https://www.steinberg.net/)) — VST3 interface headers
 

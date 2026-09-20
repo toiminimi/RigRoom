@@ -1120,20 +1120,6 @@ void VST3PluginNode::prepare(double sampleRate, int maxBlockSize) {
 }
 
 void VST3PluginNode::process(int numFrames) {
-    if (isBypassed()) {
-        int numInputs = getAudioInputCount();
-        int numOutputs = getAudioOutputCount();
-        int minChannels = std::min(numInputs, numOutputs);
-        for (int c = 0; c < minChannels; ++c) {
-            float* src = m_ports[c].buffer;
-            float* dst = m_ports[numInputs + c].buffer;
-            if (src && dst) {
-                std::copy(src, src + numFrames, dst);
-            }
-        }
-        return;
-    }
-
     if (!m_processor) return;
 
     Steinberg::Vst::IAudioProcessor* processor = (Steinberg::Vst::IAudioProcessor*)m_processor;

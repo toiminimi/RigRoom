@@ -13,6 +13,10 @@
 #include "ModelDetailsDialog.h"
 #include "InspectorComponents.h"
 #include "AboutDialog.h"
+#include "PresetBrowser.h"
+#include "FootswitchTile.h"
+#include "PluginBrowser.h"
+#include "../control/MidiRouter.h"
 #include <filesystem>
 #include <iostream>
 #include <unordered_set>
@@ -43,6 +47,8 @@
 #include <QSlider>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QRadioButton>
+#include "SettingsUi.h"
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QSignalBlocker>
@@ -55,6 +61,9 @@
 #include <QStyle>
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QDialogButtonBox>
+#include <QTableWidget>
+#include <QTabWidget>
 #include <QRegularExpression>
 #include <QCloseEvent>
 #include <QCryptographicHash>
@@ -274,507 +283,10 @@ private:
 };
 
 namespace {
-struct PickerPluginInfo {
-    QString name;
-    QString uri;
-    QString category;
-    QString brand;
-    QString thumbnailPath;
-    QString format;
-    QString searchable;
-    int audioInputs = 2;
-    int audioOutputs = 2;
-    int controlPorts = 0;
-    QString version;
-    QString description;
-    QStringList features;
-    QString path;
-    bool hasNativeGUI = false;
-};
-
-static QString pluginCategoryGlyph(const QString& category) {
-    if (category == "Amplifiers") return "AMP";
-    if (category == "Delays") return "DLY";
-    if (category == "Reverbs") return "RVB";
-    if (category == "Distortions") return "DST";
-    if (category == "Dynamics") return "DYN";
-    if (category == "EQ & Filters") return "EQ";
-    if (category == "Modulations") return "MOD";
-    if (category == "VST3 Plugins") return "VST";
-    return "FX";
-}
-
-static std::vector<PickerPluginInfo> buildPickerInfos(const std::vector<MainWindow::PluginInfo>& available) {
-    std::vector<PickerPluginInfo> plugins;
-    plugins.reserve(available.size());
-    for (const auto& info : available) {
-        QString name = QString::fromStdString(info.name);
-        QString category = QString::fromStdString(info.category);
-        QString brand = QString::fromStdString(info.brand);
-        QString uri = QString::fromStdString(info.uri);
-        QString format = info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : (info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3"));
-        QString searchable = (name + " " + category + " " + brand + " " + uri + " " + format).toLower();
-
-        QStringList featureList;
-        for (const auto& feat : info.features) {
-            featureList.push_back(QString::fromStdString(feat));
-        }
-
-        plugins.push_back({
-            name,
-            uri,
-            category,
-            brand,
-            info.thumbnailPath,
-            format,
-            searchable,
-            info.audioInputs,
-            info.audioOutputs,
-            info.controlPorts,
-            QString::fromStdString(info.version),
-            QString::fromStdString(info.description),
-            featureList,
-            QString::fromStdString(info.path),
-            info.hasNativeGUI
-        });
-    }
-    return plugins;
-}
-
-class PluginPickerDialog final : public QDialog {
-public:
-    PluginPickerDialog(
-        const std::vector<PickerPluginInfo>& plugins,
-        QSet<QString>* favorites,
-        std::function<void()> favoritesChanged,
-        QWidget* parent = nullptr)
-        : QDialog(parent), m_plugins(plugins), m_favorites(favorites), m_favoritesChanged(std::move(favoritesChanged)) {
-        setWindowTitle("Plugin Browser & Selector");
-        setModal(true);
-        resize(840, 560);
-        setStyleSheet(
-            "QDialog { background: #16161a; color: #e9e9ee; }"
-            "QLineEdit, QComboBox, QListWidget { background: #202026; border: 1px solid #33333d; border-radius: 5px; color: #ececf0; padding: 6px 10px; font-size: 12px; }"
-            "QListWidget::item { border: none; padding: 0; }"
-            "QListWidget::item:selected { background: transparent; }"
-            "QToolButton { border: none; color: #ffc857; font-size: 16px; padding: 4px; }"
-            "QPushButton { background: #00a8e8; border: none; border-radius: 5px; color: white; font-weight: bold; padding: 8px 16px; font-size: 12px; }"
-            "QPushButton:hover { background: #27b9f0; }");
-
-        // Pre-load and scale all thumbnails to cache
-        for (const auto& plugin : m_plugins) {
-            if (!plugin.thumbnailPath.isEmpty() && QFileInfo::exists(plugin.thumbnailPath)) {
-                QPixmap thumbnail(plugin.thumbnailPath);
-                m_thumbnailCache.insert(plugin.thumbnailPath, thumbnail.scaled(42, 42, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            }
-        }
-
-        auto* mainLayout = new QVBoxLayout(this);
-        mainLayout->setContentsMargins(16, 16, 16, 16);
-        mainLayout->setSpacing(12);
-
-        // Filter Bar (Search + Format Filter + Category Filter)
-        auto* filterRow = new QHBoxLayout();
-        filterRow->setSpacing(8);
-
-        m_search = new QLineEdit(this);
-        m_search->setPlaceholderText("Search plugins by name, brand, category, or URI...");
-
-        m_formatFilter = new QComboBox(this);
-        m_formatFilter->setMinimumWidth(120);
-        m_formatFilter->addItems({"All Formats", "LV2", "CLAP", "VST3"});
-
-        m_category = new QComboBox(this);
-        m_category->setMinimumWidth(140);
-
-        m_resultCount = new QLabel(this);
-        m_resultCount->setStyleSheet("color: #00b0ff; font-size: 11px; font-weight: bold; padding-left: 4px;");
-
-        filterRow->addWidget(m_search, 1);
-        filterRow->addWidget(m_formatFilter);
-        filterRow->addWidget(m_category);
-        filterRow->addWidget(m_resultCount);
-        mainLayout->addLayout(filterRow);
-
-        // Split Body: Left List + Right Details Pane
-        auto* splitLayout = new QHBoxLayout();
-        splitLayout->setSpacing(14);
-
-        // Left Container: Plugin List
-        m_list = new QListWidget(this);
-        m_list->setSpacing(4);
-        m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-        splitLayout->addWidget(m_list, 5);
-
-        // Right Container: Enhanced Details Pane
-        m_detailsPane = new QWidget(this);
-        m_detailsPane->setStyleSheet("QWidget#detailsPane { background: #1f1f26; border: 1px solid #2e2e38; border-radius: 8px; }");
-        m_detailsPane->setObjectName("detailsPane");
-        
-        auto* detailsLayout = new QVBoxLayout(m_detailsPane);
-        detailsLayout->setContentsMargins(16, 16, 16, 16);
-        detailsLayout->setSpacing(12);
-
-        auto* headerLayout = new QHBoxLayout();
-        headerLayout->setSpacing(12);
-
-        m_detailIconLabel = new QLabel(m_detailsPane);
-        m_detailIconLabel->setFixedSize(48, 48);
-        m_detailIconLabel->setAlignment(Qt::AlignCenter);
-        headerLayout->addWidget(m_detailIconLabel);
-
-        auto* titleBox = new QVBoxLayout();
-        titleBox->setSpacing(2);
-        m_detailNameLabel = new QLabel("Select a plugin", m_detailsPane);
-        m_detailNameLabel->setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff; border: none;");
-        m_detailBrandLabel = new QLabel("", m_detailsPane);
-        m_detailBrandLabel->setStyleSheet("font-size: 11px; color: #8a8a98; border: none;");
-        titleBox->addWidget(m_detailNameLabel);
-        titleBox->addWidget(m_detailBrandLabel);
-        headerLayout->addLayout(titleBox, 1);
-        detailsLayout->addLayout(headerLayout);
-
-        // Badges Row
-        auto* badgeRow = new QHBoxLayout();
-        badgeRow->setSpacing(6);
-        m_detailFormatBadge = new QLabel(m_detailsPane);
-        m_detailFormatBadge->setStyleSheet("background: #00b0ff; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        m_detailCategoryBadge = new QLabel(m_detailsPane);
-        m_detailCategoryBadge->setStyleSheet("background: #2e303c; color: #e0e0e0; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        m_detailAudioBadge = new QLabel(m_detailsPane);
-        m_detailAudioBadge->setStyleSheet("background: #1c2b36; color: #38c5ff; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        m_detailGuiBadge = new QLabel(m_detailsPane);
-        m_detailGuiBadge->setStyleSheet("background: #1b3022; color: #4caf50; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-
-        badgeRow->addWidget(m_detailFormatBadge);
-        badgeRow->addWidget(m_detailCategoryBadge);
-        badgeRow->addWidget(m_detailAudioBadge);
-        badgeRow->addWidget(m_detailGuiBadge);
-        badgeRow->addStretch();
-        detailsLayout->addLayout(badgeRow);
-
-        // Graphical Preview Card (Modgui / Thumbnail Skin Preview)
-        m_detailPreviewLabel = new QLabel(m_detailsPane);
-        m_detailPreviewLabel->setObjectName("detailPreview");
-        m_detailPreviewLabel->setFixedHeight(140);
-        m_detailPreviewLabel->setAlignment(Qt::AlignCenter);
-        m_detailPreviewLabel->setStyleSheet("QLabel#detailPreview { background: #141419; border: 1px solid #2a2a35; border-radius: 6px; padding: 4px; }");
-        detailsLayout->addWidget(m_detailPreviewLabel);
-
-        auto* divider = new QFrame(m_detailsPane);
-        divider->setFrameShape(QFrame::HLine);
-        divider->setStyleSheet("color: #2e2e38;");
-        detailsLayout->addWidget(divider);
-
-        // Metadata Fields
-        auto* formLayout = new QFormLayout();
-        formLayout->setSpacing(8);
-        formLayout->setLabelAlignment(Qt::AlignLeft);
-
-        m_detailUriLabel = new QLabel(m_detailsPane);
-        m_detailUriLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        m_detailUriLabel->setStyleSheet("font-size: 11px; color: #7b93a4; border: none;");
-        m_detailUriLabel->setWordWrap(true);
-
-        m_detailPathLabel = new QLabel(m_detailsPane);
-        m_detailPathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        m_detailPathLabel->setStyleSheet("font-size: 11px; color: #7b93a4; border: none;");
-        m_detailPathLabel->setWordWrap(true);
-
-        m_detailParamsLabel = new QLabel(m_detailsPane);
-        m_detailParamsLabel->setStyleSheet("font-size: 11px; color: #e0e0e0; border: none;");
-
-        m_detailTagsLabel = new QLabel(m_detailsPane);
-        m_detailTagsLabel->setStyleSheet("font-size: 11px; color: #00b0ff; border: none;");
-        m_detailTagsLabel->setWordWrap(true);
-
-        formLayout->addRow("<b style='color:#a0a0b0;'>URI / Identifier:</b>", m_detailUriLabel);
-        formLayout->addRow("<b style='color:#a0a0b0;'>Path / Location:</b>", m_detailPathLabel);
-        formLayout->addRow("<b style='color:#a0a0b0;'>Control Parameters:</b>", m_detailParamsLabel);
-        formLayout->addRow("<b style='color:#a0a0b0;'>Features & Tags:</b>", m_detailTagsLabel);
-        detailsLayout->addLayout(formLayout);
-
-        detailsLayout->addStretch();
-
-        // Details Footer Action Row
-        auto* detailActions = new QHBoxLayout();
-        m_detailFavoriteBtn = new QToolButton(m_detailsPane);
-        m_detailFavoriteBtn->setText("☆ Favorite");
-        m_detailFavoriteBtn->setStyleSheet(
-            "QToolButton { background: #262730; color: #ffc857; font-weight: bold; border-radius: 4px; padding: 6px 10px; font-size: 11px; border: 1px solid #3d3e4d; }"
-            "QToolButton:hover { background: #323440; }"
-        );
-        detailActions->addWidget(m_detailFavoriteBtn);
-        detailActions->addStretch();
-        detailsLayout->addLayout(detailActions);
-
-        splitLayout->addWidget(m_detailsPane, 4);
-        mainLayout->addLayout(splitLayout, 1);
-
-        // Bottom Actions Bar
-        auto* actions = new QHBoxLayout();
-        auto* hint = new QLabel("Tip: Double-click a plugin to quickly add it to your board.", this);
-        hint->setStyleSheet("color: #7d7d8a; font-size: 11px;");
-        auto* cancel = new QPushButton("Cancel", this);
-        cancel->setStyleSheet("QPushButton { background: #2c2c34; } QPushButton:hover { background: #3a3a44; }");
-        auto* add = new QPushButton("Add Plugin to Board", this);
-        add->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
-        actions->addWidget(hint, 1);
-        actions->addWidget(cancel);
-        actions->addWidget(add);
-        mainLayout->addLayout(actions);
-
-        // Populate Category Filter Combo (Filter out format strings)
-        QSet<QString> categories;
-        for (const auto& plugin : m_plugins) {
-            if (!plugin.category.isEmpty() && !plugin.category.contains("Plugin")) {
-                categories.insert(plugin.category);
-            }
-        }
-        m_category->addItem("All Categories");
-        m_category->addItem("Favorites");
-        QStringList categoryList = categories.values();
-        categoryList.sort();
-        m_category->addItems(categoryList);
-
-        m_searchTimer = new QTimer(this);
-        m_searchTimer->setSingleShot(true);
-        connect(m_searchTimer, &QTimer::timeout, this, [this] { refreshResults(); });
-
-        connect(m_search, &QLineEdit::textChanged, this, [this] { m_searchTimer->start(120); });
-        connect(m_search, &QLineEdit::returnPressed, this, [this] { acceptSelection(); });
-        connect(m_formatFilter, &QComboBox::currentTextChanged, this, [this] { refreshResults(); });
-        connect(m_category, &QComboBox::currentTextChanged, this, [this] { refreshResults(); });
-        connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
-        connect(add, &QPushButton::clicked, this, [this] { acceptSelection(); });
-        connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) { acceptSelection(); });
-        connect(m_list, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current, QListWidgetItem*) {
-            if (current) {
-                updateDetailsPane(current->data(Qt::UserRole).toString());
-            }
-        });
-
-        refreshResults();
-        m_search->setFocus();
-    }
-
-    QString selectedUri() const { return m_selectedUri; }
-
-private:
-    void updateDetailsPane(const QString& uri) {
-        auto it = std::find_if(m_plugins.begin(), m_plugins.end(), [&](const PickerPluginInfo& p) {
-            return p.uri == uri;
-        });
-        if (it == m_plugins.end()) return;
-
-        const PickerPluginInfo& plugin = *it;
-        const bool isFav = m_favorites->contains(plugin.uri);
-
-        m_detailNameLabel->setText(plugin.name);
-        m_detailBrandLabel->setText(plugin.brand.isEmpty() ? "Unknown Vendor" : plugin.brand);
-
-        // Format Badge Styling
-        if (plugin.format == "LV2") {
-            m_detailFormatBadge->setText("LV2");
-            m_detailFormatBadge->setStyleSheet("background: #00B0FF; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        } else if (plugin.format == "CLAP") {
-            m_detailFormatBadge->setText("CLAP");
-            m_detailFormatBadge->setStyleSheet("background: #AB47BC; color: #FFF; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        } else {
-            m_detailFormatBadge->setText("VST3");
-            m_detailFormatBadge->setStyleSheet("background: #FFA726; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        }
-
-        m_detailCategoryBadge->setText(plugin.category.toUpper());
-        m_detailUriLabel->setText(plugin.uri);
-        m_detailPathLabel->setText(plugin.path.isEmpty() ? (plugin.thumbnailPath.isEmpty() ? "Standard Plugin Bundle" : plugin.thumbnailPath) : plugin.path);
-
-        // Audio I/O Layout Badge
-        if (plugin.audioInputs == 2 && plugin.audioOutputs == 2) {
-            m_detailAudioBadge->setText("Stereo (2x2)");
-        } else if (plugin.audioInputs == 1 && plugin.audioOutputs == 1) {
-            m_detailAudioBadge->setText("Mono (1x1)");
-        } else {
-            m_detailAudioBadge->setText(QString("Audio (%1 In / %2 Out)").arg(plugin.audioInputs).arg(plugin.audioOutputs));
-        }
-
-        // GUI Badge
-        if (plugin.hasNativeGUI) {
-            m_detailGuiBadge->setText("Native UI");
-            m_detailGuiBadge->setStyleSheet("background: #1b3022; color: #4caf50; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        } else {
-            m_detailGuiBadge->setText("Parameters");
-            m_detailGuiBadge->setStyleSheet("background: #252830; color: #90a0b0; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        }
-
-        // Parameter Ports & Features
-        if (plugin.controlPorts > 0) {
-            m_detailParamsLabel->setText(QString("%1 Parameters").arg(plugin.controlPorts));
-        } else {
-            m_detailParamsLabel->setText("Dynamic / Standard Ports");
-        }
-
-        if (!plugin.features.isEmpty()) {
-            m_detailTagsLabel->setText(plugin.features.join(", "));
-        } else {
-            m_detailTagsLabel->setText("Standard " + plugin.format + " Effect");
-        }
-
-        m_currentThumbnailPath = plugin.thumbnailPath;
-        if (!plugin.thumbnailPath.isEmpty() && QFileInfo::exists(plugin.thumbnailPath)) {
-            QPixmap fullPixmap(plugin.thumbnailPath);
-            if (!fullPixmap.isNull()) {
-                m_detailPreviewLabel->setPixmap(fullPixmap.scaled(340, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                m_detailPreviewLabel->show();
-            } else {
-                m_detailPreviewLabel->hide();
-            }
-        } else {
-            m_detailPreviewLabel->hide();
-        }
-
-        const bool hasThumbnail = !plugin.thumbnailPath.isEmpty() && m_thumbnailCache.contains(plugin.thumbnailPath);
-        if (hasThumbnail) {
-            m_detailIconLabel->setPixmap(m_thumbnailCache.value(plugin.thumbnailPath).scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        } else {
-            m_detailIconLabel->setText(pluginCategoryGlyph(plugin.category));
-            m_detailIconLabel->setStyleSheet("background: #123348; color: #38c5ff; border-radius: 6px; font-weight: bold; font-size: 12px;");
-        }
-
-        m_detailFavoriteBtn->setText(isFav ? "★ Favorited" : "☆ Add Favorite");
-        m_detailFavoriteBtn->disconnect();
-        connect(m_detailFavoriteBtn, &QToolButton::clicked, this, [this, plugin] {
-            if (m_favorites->contains(plugin.uri)) m_favorites->remove(plugin.uri);
-            else m_favorites->insert(plugin.uri);
-            m_favoritesChanged();
-            updateDetailsPane(plugin.uri);
-            if (m_category->currentText() == "Favorites") {
-                refreshResults();
-            }
-        });
-    }
-
-    void refreshResults() {
-        const QString query = m_search->text().trimmed().toLower();
-        const QString formatFilter = m_formatFilter->currentText();
-        const QString category = m_category->currentText();
-        std::vector<PickerPluginInfo> results;
-        for (const auto& plugin : m_plugins) {
-            const bool favorite = m_favorites->contains(plugin.uri);
-            if (formatFilter != "All Formats" && plugin.format != formatFilter) continue;
-            if (category == "Favorites" && !favorite) continue;
-            if (category != "All Categories" && category != "Favorites" && plugin.category != category) continue;
-            if (!query.isEmpty() && !plugin.searchable.contains(query)) continue;
-            results.push_back(plugin);
-        }
-        std::sort(results.begin(), results.end(), [this](const PickerPluginInfo& left, const PickerPluginInfo& right) {
-            const bool leftFavorite = m_favorites->contains(left.uri);
-            const bool rightFavorite = m_favorites->contains(right.uri);
-            if (leftFavorite != rightFavorite) return leftFavorite;
-            return QString::localeAwareCompare(left.name, right.name) < 0;
-        });
-
-        m_list->clear();
-        m_resultCount->setText(QString::number(results.size()) + " plugins");
-        for (const auto& plugin : results) {
-            const bool hasThumbnail = !plugin.thumbnailPath.isEmpty() && m_thumbnailCache.contains(plugin.thumbnailPath);
-            auto* item = new QListWidgetItem(m_list);
-            item->setData(Qt::UserRole, plugin.uri);
-            item->setSizeHint(QSize(0, hasThumbnail ? 54 : 40));
-            auto* row = new QWidget(m_list);
-            row->setStyleSheet("QWidget { background: #202026; border: 1px solid #2e2e38; border-radius: 5px; } QWidget:hover { background: #282832; border-color: #00a8e8; }");
-            auto* rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(6, 4, 6, 4);
-            rowLayout->setSpacing(7);
-
-            auto* visual = new QLabel(row);
-            visual->setFixedSize(hasThumbnail ? 42 : 28, hasThumbnail ? 42 : 28);
-            visual->setAlignment(Qt::AlignCenter);
-            if (hasThumbnail) {
-                visual->setPixmap(m_thumbnailCache.value(plugin.thumbnailPath));
-            } else {
-                visual->setText(pluginCategoryGlyph(plugin.category));
-                visual->setStyleSheet("background: #123348; color: #38c5ff; border-radius: 4px; font-weight: bold; font-size: 9px;");
-            }
-            rowLayout->addWidget(visual);
-
-            auto* name = new QLabel(plugin.name, row);
-            name->setStyleSheet("font-weight: bold; color: #f3f3f6; border: none;");
-            rowLayout->addWidget(name, 1);
-
-            const QString metadata = plugin.brand.isEmpty()
-                ? plugin.category + " · " + plugin.format
-                : plugin.brand + " · " + plugin.category + " · " + plugin.format;
-            auto* metadataLabel = new QLabel(metadata, row);
-            metadataLabel->setStyleSheet("font-size: 10px; color: #8a8a98; border: none;");
-            rowLayout->addWidget(metadataLabel);
-
-            auto* favorite = new QToolButton(row);
-            favorite->setText(m_favorites->contains(plugin.uri) ? "★" : "☆");
-            favorite->setToolTip("Toggle favorite");
-            favorite->setFixedSize(28, 28);
-            connect(favorite, &QToolButton::clicked, this, [this, favorite, plugin] {
-                if (m_favorites->contains(plugin.uri)) {
-                    m_favorites->remove(plugin.uri);
-                    favorite->setText("☆");
-                } else {
-                    m_favorites->insert(plugin.uri);
-                    favorite->setText("★");
-                }
-                m_favoritesChanged();
-                updateDetailsPane(plugin.uri);
-                if (m_category->currentText() == "Favorites") {
-                    refreshResults();
-                }
-            });
-            rowLayout->addWidget(favorite);
-            m_list->setItemWidget(item, row);
-        }
-        if (m_list->count()) {
-            m_list->setCurrentRow(0);
-            updateDetailsPane(m_list->item(0)->data(Qt::UserRole).toString());
-        }
-    }
-
-    void acceptSelection() {
-        if (auto* item = m_list->currentItem()) {
-            m_selectedUri = item->data(Qt::UserRole).toString();
-            accept();
-        }
-    }
-
-    std::vector<PickerPluginInfo> m_plugins;
-    QSet<QString>* m_favorites;
-    std::function<void()> m_favoritesChanged;
-    QLineEdit* m_search = nullptr;
-    QComboBox* m_formatFilter = nullptr;
-    QComboBox* m_category = nullptr;
-    QListWidget* m_list = nullptr;
-    QLabel* m_resultCount = nullptr;
-    QTimer* m_searchTimer = nullptr;
-    QHash<QString, QPixmap> m_thumbnailCache;
-    QString m_selectedUri;
-    QString m_currentThumbnailPath;
-
-    // Enhanced Details Pane Widgets
-    QWidget* m_detailsPane = nullptr;
-    QLabel* m_detailIconLabel = nullptr;
-    QLabel* m_detailNameLabel = nullptr;
-    QLabel* m_detailBrandLabel = nullptr;
-    QLabel* m_detailFormatBadge = nullptr;
-    QLabel* m_detailCategoryBadge = nullptr;
-    QLabel* m_detailAudioBadge = nullptr;
-    QLabel* m_detailGuiBadge = nullptr;
-    QLabel* m_detailPreviewLabel = nullptr;
-    QLabel* m_detailUriLabel = nullptr;
-    QLabel* m_detailPathLabel = nullptr;
-    QLabel* m_detailParamsLabel = nullptr;
-    QLabel* m_detailTagsLabel = nullptr;
-    QToolButton* m_detailFavoriteBtn = nullptr;
-};
 }
 
 #include <QSettings>
+#include "PluginPreviewService.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("RigRoom - Guitar Multieffects host");
@@ -782,6 +294,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     m_networkManager = new QNetworkAccessManager(this);
     m_toneImageLoader = new Tone3000ImageLoader(this);
+    setupRigController();
     
     // Create configs dir and automatically migrate legacy PedalBoard settings & presets
     QString newConfigDir = QDir::homePath() + "/.config/RigRoom";
@@ -853,6 +366,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 savedOutputGain = obj["outputGain"].toDouble();
             }
             m_audioConfigured = obj["audioConfigured"].toBool(false);
+            if (obj.contains("midi")) m_midiConfig = GlobalMidiConfig::fromJson(obj["midi"].toObject());
 
             if (obj.contains("customLV2Paths")) {
                 m_customLV2Paths.clear();
@@ -880,13 +394,22 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     // JACK must be active before asking it to restore the saved buffer size.
     m_engine.start();
+    if (!m_midiConfig.inputPort.empty()) m_engine.setMidiInputPort(m_midiConfig.inputPort);
     m_engine.setBufferSize(savedBufferSize);
 
     // Scan plugins
     scanPlugins();
+    // New plugins get their picture on their own, well after startup so the
+    // scan, the audio engine and the first preset are all settled.
+    QTimer::singleShot(20000, this, [this]() {
+        if (m_pluginPreviewsEnabled && m_pluginPreviewsOnImport) {
+            startPluginPreviews(static_cast<int>(PluginPreviewService::Mode::Missing), true);
+        }
+    });
     
     // Setup UI
     setupUI();
+    setupMidi();
     QSettings windowSettings("RigRoom", "RigRoom");
     const QByteArray windowGeometry = windowSettings.value("main_window_geometry").toByteArray();
     if (!windowGeometry.isEmpty()) restoreGeometry(windowGeometry);
@@ -925,6 +448,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // Connect canvas signals
     connect(m_canvas, &NodeCanvas::editPluginUI, this, &MainWindow::onPluginDoubleClicked);
     connect(m_canvas, &NodeCanvas::nodeSelected, this, &MainWindow::onNodeSelected);
+    connect(m_canvas, &NodeCanvas::nodeBypassToggled, this, &MainWindow::onNodeBypassToggled);
+    connect(m_canvas, &NodeCanvas::boardFull, this, [this]() {
+        if (m_statusLabel) {
+            m_statusLabel->setText("No room to insert: every column holds a block. "
+                                   "Add a column (Columns + in the canvas corner) or remove a block.");
+        }
+    });
+    connect(m_canvas, &NodeCanvas::pluginDropped, this, [this](const QString& uri, int row, int col, int insert) {
+        addPluginAt(uri, row, col, insert);
+    });
     connect(m_canvas, &NodeCanvas::plusButtonClicked, this, &MainWindow::onPlusButtonClicked);
     connect(m_canvas, &NodeCanvas::nodeContextMenuRequested, this, &MainWindow::onNodeContextMenuRequested);
     connect(m_canvas, &NodeCanvas::routingNodeSelected, this, &MainWindow::showRoutingNodeControls);
@@ -932,6 +465,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_canvas, &NodeCanvas::nodeAboutToBeRemoved, this, &MainWindow::closePluginUIForNode);
     connect(m_canvas, &NodeCanvas::routingChanged, this, [this]() {
         updateSlotControls();
+        refreshSceneMarkers();
         if (!m_isLoadingPreset) {
             setUnsavedChanges(true);
         }
@@ -951,36 +485,38 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // Autoload the last used preset if it was saved in config
     QString lastPresetName;
+    int lastSlot = -1;
     QFile configFileCheck(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFileCheck.open(QFile::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(configFileCheck.readAll());
         if (doc.isObject()) {
             QJsonObject obj = doc.object();
+            // The settings page is built before this runs, so the boxes are
+            // brought up to date once the saved values are known.
+            m_pluginPreviewsEnabled = obj["pluginPreviews"].toBool(false);
+            m_pluginPreviewsOnImport = obj["pluginPreviewsOnImport"].toBool(false);
+            refreshPreviewControls();
             if (obj.contains("defaultTrackSlots")) {
                 m_globalDefaultSlots = std::clamp(obj["defaultTrackSlots"].toInt(6), 4, 12);
             }
             if (obj.contains("lastPreset")) {
                 lastPresetName = obj["lastPreset"].toString();
             }
+            lastSlot = obj["lastSlot"].toInt(-1);
         }
         configFileCheck.close();
     }
     
-    if (!lastPresetName.isEmpty()) {
-        int idx = m_presetCombo->findText(lastPresetName);
-        if (idx != -1) {
-            m_presetCombo->setCurrentIndex(idx);
-            m_currentPresetIndex = idx;
-            QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + lastPresetName + ".json";
-            if (QFile::exists(fullPath)) {
-                loadPresetFromFile(fullPath);
-                setUnsavedChanges(false);
-            }
-        }
+    // The name wins over the slot number, in case the library was rearranged.
+    int startupSlot = lastPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(lastPresetName);
+    if (startupSlot < 0 && !lastPresetName.isEmpty() && m_presetLibrary.isOccupied(lastSlot)) {
+        startupSlot = lastSlot;
+    }
+    if (startupSlot >= 0) {
+        loadSlot(startupSlot);
     } else {
-        m_presetCombo->setCurrentIndex(-1);
-        m_presetCombo->setPlaceholderText("Untitled");
-        m_currentPresetIndex = -1;
+        m_currentSlot = -1;
+        m_currentPresetName.clear();
         setUnsavedChanges(false);
     }
 }
@@ -1017,6 +553,11 @@ void MainWindow::setupUI() {
             color: #E0E0E0;
             font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 13px;
+        }
+        /* Text sits on whatever is behind it; without this every label paints
+           its own dark slab over panels and group boxes. */
+        QLabel, QCheckBox, QRadioButton, QToolButton {
+            background: transparent;
         }
         QTreeWidget, QListWidget, QLineEdit, QComboBox {
             background-color: #1E1E1E;
@@ -1101,117 +642,102 @@ void MainWindow::setupUI() {
     QLabel* logo = new QLabel("RIGROOM", this);
     logo->setStyleSheet("font-size: 20px; font-weight: bold; color: #00B0FF; letter-spacing: 2px;");
     topBar->addWidget(logo);
+    topBar->addSpacing(18);
+    auto* pluginsBtn = new QPushButton("＋  Plugins", this);
+    pluginsBtn->setToolTip("Open the plugin browser (Ctrl+B). Keep it open and drag plugins onto the signal chain, "
+                           "or double-click one to add it at the end. The + buttons on the board still add one at a time.");
+    pluginsBtn->setCursor(Qt::PointingHandCursor);
+    pluginsBtn->setStyleSheet(
+        "QPushButton { background-color: #1D5B79; color: white; font-weight: bold; border-radius: 4px; padding: 6px 14px; font-size: 12px; border: none; }"
+        "QPushButton:hover { background-color: #23739A; }");
+    connect(pluginsBtn, &QPushButton::clicked, this, &MainWindow::togglePluginLibrary);
+    topBar->addWidget(pluginsBtn);
+    auto* pluginsSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_B), this);
+    connect(pluginsSc, &QShortcut::activated, this, &MainWindow::togglePluginLibrary);
     
-    topBar->addSpacing(30);
-    
-    // Preset actions bar
-    topBar->addWidget(new QLabel("Preset:", this));
-
-    m_prevPresetBtn = new QToolButton(this);
-    m_prevPresetBtn->setText("◀");
-    m_prevPresetBtn->setToolTip("Previous Pedalboard Preset (Ctrl+PageUp)");
-    m_prevPresetBtn->setFixedSize(26, 26);
-    m_prevPresetBtn->setCursor(Qt::PointingHandCursor);
-    m_prevPresetBtn->setStyleSheet(
-        "QToolButton { background-color: #242528; color: #00B0FF; font-size: 11px; border: 1px solid #333438; border-radius: 4px; }"
-        "QToolButton:hover { background-color: #303236; color: white; }"
-        "QToolButton:disabled { color: #555555; background-color: #1A1A1C; border-color: #252528; }"
-    );
-    connect(m_prevPresetBtn, &QToolButton::clicked, this, &MainWindow::onPrevPreset);
-    topBar->addWidget(m_prevPresetBtn);
-
-    m_presetCombo = new QComboBox(this);
-    m_presetCombo->setMinimumWidth(180);
-    m_presetCombo->setEditable(false);
-    m_presetCombo->setToolTip("Select pedalboard preset");
-    m_presetCombo->setStyleSheet(
-        "QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #00B0FF; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
-        "QComboBox::drop-down { border: none; width: 20px; }"
-        "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
-    );
-    connect(m_presetCombo, &QComboBox::activated, this, &MainWindow::onPresetComboActivated);
-    topBar->addWidget(m_presetCombo);
-
-    m_nextPresetBtn = new QToolButton(this);
-    m_nextPresetBtn->setText("▶");
-    m_nextPresetBtn->setToolTip("Next Pedalboard Preset (Ctrl+PageDown)");
-    m_nextPresetBtn->setFixedSize(26, 26);
-    m_nextPresetBtn->setCursor(Qt::PointingHandCursor);
-    m_nextPresetBtn->setStyleSheet(m_prevPresetBtn->styleSheet());
-    connect(m_nextPresetBtn, &QToolButton::clicked, this, &MainWindow::onNextPreset);
-    topBar->addWidget(m_nextPresetBtn);
-
+    // Preset actions live in the preset panel below; they are created here so
+    // setUnsavedChanges() can restyle the Save button from the start.
     m_savePresetButton = new QPushButton("Save", this);
-    m_savePresetButton->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
     m_savePresetButton->setToolTip("Save current preset (Ctrl+S)");
+    m_savePresetButton->setCursor(Qt::PointingHandCursor);
     m_savePresetButton->setStyleSheet(
         "QPushButton { background-color: #00897B; color: white; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
         "QPushButton:hover { background-color: #009688; }"
     );
     connect(m_savePresetButton, &QPushButton::clicked, this, &MainWindow::onSavePreset);
-    topBar->addWidget(m_savePresetButton);
 
-    QPushButton* newBtn = new QPushButton("New", this);
-    newBtn->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
-    newBtn->setToolTip("Create new empty preset (Ctrl+N)");
-    newBtn->setStyleSheet(
-        "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
-        "QPushButton:hover { background-color: #44444A; }"
-    );
-    connect(newBtn, &QPushButton::clicked, this, &MainWindow::onNewPreset);
-    topBar->addWidget(newBtn);
-
-    QPushButton* presetOptionsBtn = new QPushButton("Options ▾", this);
-    presetOptionsBtn->setToolTip("Preset actions (Save As, Rename, Delete)");
-    presetOptionsBtn->setStyleSheet(
-        "QPushButton { background-color: #333338; color: #E0E0E0; font-weight: bold; border-radius: 4px; padding: 5px 10px; font-size: 11px; border: none; }"
-        "QPushButton:hover { background-color: #44444A; }"
-    );
-
-    QMenu* presetMenu = new QMenu(this);
-    QAction* saveAsAct = presetMenu->addAction("Save As...");
-    QAction* renameAct = presetMenu->addAction("Rename...");
-    QAction* deleteAct = presetMenu->addAction("Delete Preset");
-
+    m_presetMenu = new QMenu(this);
+    m_presetMenu->setStyleSheet(
+        "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
+        "QMenu::item:selected { background-color: #007ACC; color: white; }"
+        "QMenu::item:disabled { color: #555555; }");
+    QAction* newAct = m_presetMenu->addAction("New Preset");
+    newAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_N));
+    QAction* saveAsAct = m_presetMenu->addAction("Save As...");
+    saveAsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    m_presetMenu->addSeparator();
+    QAction* renameAct = m_presetMenu->addAction("Rename...");
+    QAction* duplicateAct = m_presetMenu->addAction("Duplicate to Next Free Slot");
+    QAction* deleteAct = m_presetMenu->addAction("Delete...");
+    m_presetMenu->addSeparator();
+    QAction* midiAct = m_presetMenu->addAction("MIDI Assignments...");
+    connect(midiAct, &QAction::triggered, this, [this]() { showMidiAssignmentsDialog(); });
+    QAction* browseAct = m_presetMenu->addAction("All Banks...");
+    browseAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
+    // Shortcuts are handled by window-level QShortcuts; these only display them.
+    for (QAction* act : {newAct, saveAsAct, browseAct}) act->setShortcutContext(Qt::WidgetShortcut);
+    connect(newAct, &QAction::triggered, this, &MainWindow::onNewPreset);
     connect(saveAsAct, &QAction::triggered, this, &MainWindow::onSavePresetAs);
     connect(renameAct, &QAction::triggered, this, &MainWindow::onRenamePreset);
-    connect(deleteAct, &QAction::triggered, this, &MainWindow::onDeletePreset);
-
-    connect(presetOptionsBtn, &QPushButton::clicked, this, [this, presetOptionsBtn, presetMenu]() {
-        presetMenu->exec(presetOptionsBtn->mapToGlobal(QPoint(0, presetOptionsBtn->height())));
+    connect(duplicateAct, &QAction::triggered, this, [this]() {
+        if (m_currentSlot >= 0) { duplicatePresetInSlot(m_currentSlot); rebuildSlotButtons(); }
     });
-    topBar->addWidget(presetOptionsBtn);
+    connect(deleteAct, &QAction::triggered, this, &MainWindow::onDeletePreset);
+    connect(browseAct, &QAction::triggered, this, &MainWindow::onPresetButtonClicked);
+    connect(m_presetMenu, &QMenu::aboutToShow, this, [this, renameAct, duplicateAct, deleteAct]() {
+        const bool saved = m_currentSlot >= 0;
+        renameAct->setEnabled(saved);
+        duplicateAct->setEnabled(saved);
+        deleteAct->setEnabled(saved);
+    });
 
-    topBar->addSpacing(12);
-    QLabel* slotTitleLabel = new QLabel("Slots:", this);
-    slotTitleLabel->setStyleSheet("color: #AAAAAA; font-weight: bold; font-size: 11px;");
-    topBar->addWidget(slotTitleLabel);
+    // Canvas width belongs with the canvas: this group goes into its zoom box.
+    m_columnsGroup = new QWidget(this);
+    auto* columnsLayout = new QHBoxLayout(m_columnsGroup);
+    columnsLayout->setContentsMargins(0, 0, 0, 0);
+    columnsLayout->setSpacing(4);
+    QLabel* slotTitleLabel = new QLabel("Columns", m_columnsGroup);
+    slotTitleLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    slotTitleLabel->setStyleSheet("color: #AAAAAA; font-weight: bold; font-size: 10px;");
+    columnsLayout->addWidget(slotTitleLabel);
 
-    m_slotMinusBtn = new QToolButton(this);
+    m_slotMinusBtn = new QToolButton(m_columnsGroup);
     m_slotMinusBtn->setText("−");
-    m_slotMinusBtn->setToolTip("Remove empty tail slot (Ctrl+-)");
-    m_slotMinusBtn->setFixedSize(24, 24);
+    m_slotMinusBtn->setToolTip("Remove empty last column (Ctrl+-)");
+    m_slotMinusBtn->setFixedSize(22, 22);
     m_slotMinusBtn->setCursor(Qt::PointingHandCursor);
     m_slotMinusBtn->setStyleSheet(
-        "QToolButton { background-color: #242528; color: #E0E0E0; font-size: 10px; border: 1px solid #333438; border-radius: 4px; }"
-        "QToolButton:hover { background-color: #303236; color: white; }"
+        "QToolButton { background-color: #262830; color: #E0E0E0; font-size: 10px; border: 1px solid #363842; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #363844; color: white; border-color: #00B0FF; }"
         "QToolButton:disabled { color: #555555; background-color: #1A1A1C; border-color: #252528; }"
     );
     connect(m_slotMinusBtn, &QToolButton::clicked, this, &MainWindow::onSlotMinusClicked);
-    topBar->addWidget(m_slotMinusBtn);
+    columnsLayout->addWidget(m_slotMinusBtn);
 
-    m_slotCountLabel = new QLabel("6", this);
-    m_slotCountLabel->setStyleSheet("font-weight: bold; color: #00B0FF; padding: 0 4px; font-size: 12px;");
-    topBar->addWidget(m_slotCountLabel);
+    m_slotCountLabel = new QLabel("6", m_columnsGroup);
+    m_slotCountLabel->setAlignment(Qt::AlignCenter);
+    m_slotCountLabel->setMinimumWidth(m_slotCountLabel->fontMetrics().horizontalAdvance("12") + 8);
+    m_slotCountLabel->setStyleSheet("font-weight: bold; color: #00B0FF; padding: 0 2px; font-size: 11px;");
+    columnsLayout->addWidget(m_slotCountLabel);
 
-    m_slotPlusBtn = new QToolButton(this);
+    m_slotPlusBtn = new QToolButton(m_columnsGroup);
     m_slotPlusBtn->setText("+");
-    m_slotPlusBtn->setToolTip("Add extra track slot (Ctrl+=)");
-    m_slotPlusBtn->setFixedSize(24, 24);
+    m_slotPlusBtn->setToolTip("Add a column (Ctrl+=)");
+    m_slotPlusBtn->setFixedSize(22, 22);
     m_slotPlusBtn->setCursor(Qt::PointingHandCursor);
     m_slotPlusBtn->setStyleSheet(m_slotMinusBtn->styleSheet());
     connect(m_slotPlusBtn, &QToolButton::clicked, this, &MainWindow::onSlotPlusClicked);
-    topBar->addWidget(m_slotPlusBtn);
+    columnsLayout->addWidget(m_slotPlusBtn);
 
     // Global Keyboard Shortcuts
     auto* zoomResetSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_0), this);
@@ -1231,14 +757,27 @@ void MainWindow::setupUI() {
 
     auto* nextSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_PageDown), this);
     connect(nextSc, &QShortcut::activated, this, &MainWindow::onNextPreset);
+
+    auto* prevBankSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_PageUp), this);
+    connect(prevBankSc, &QShortcut::activated, this, &MainWindow::onPrevBank);
+
+    auto* nextBankSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_PageDown), this);
+    connect(nextBankSc, &QShortcut::activated, this, &MainWindow::onNextBank);
+
+    auto* browseSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_P), this);
+    connect(browseSc, &QShortcut::activated, this, &MainWindow::onPresetButtonClicked);
+
+    auto* saveAsSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this);
+    connect(saveAsSc, &QShortcut::activated, this, &MainWindow::onSavePresetAs);
     
     topBar->addStretch();
     
     // Setup Settings Dialog
     m_settingsDialog = new QDialog(this);
     m_settingsDialog->setWindowTitle("Application Settings");
-    m_settingsDialog->setMinimumWidth(620);
-    m_settingsDialog->setMinimumHeight(520);
+    m_settingsDialog->setMinimumWidth(860);
+    m_settingsDialog->setMinimumHeight(640);
+    m_settingsDialog->resize(920, 860);
     m_settingsDialog->setStyleSheet(styleSheet());
     
     QVBoxLayout* dialogLayout = new QVBoxLayout(m_settingsDialog);
@@ -1257,13 +796,13 @@ void MainWindow::setupUI() {
     QVBoxLayout* audioTabLayout = new QVBoxLayout(audioTab);
     audioTabLayout->setContentsMargins(10, 10, 10, 10);
     
-    QGroupBox* ioBox = new QGroupBox("Audio & Hardware Configuration", audioTab);
-    ioBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 15px; background: #1a1a1f; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-    );
-    QFormLayout* formLayout = new QFormLayout(ioBox);
-    formLayout->setSpacing(10);
+    auto* ioBox = new SettingsUi::Group("Audio & Hardware Configuration", audioTab,
+        "The JACK ports RigRoom plays through, and the block size it asks for.<br><br>"
+        "A smaller block size means less delay but more work for the processor; if you hear clicks or "
+        "the xrun count climbs, choose a larger one.<br><br>"
+        "Mono input takes the left port only, which suits a single guitar.");
+    ioBox->setStyleSheet(SettingsUi::kGroupStyle);
+    QFormLayout* formLayout = SettingsUi::form(ioBox);
     
     m_hwInputModeCombo = new QComboBox(m_settingsDialog);
     m_hwInputModeCombo->addItems({"Mono", "Stereo"});
@@ -1310,12 +849,37 @@ void MainWindow::setupUI() {
     formLayout->addRow("Output Mode:", m_hwOutputModeCombo);
     formLayout->addRow("Output Device:", m_hwOutputCombo);
     formLayout->addRow("Buffer Size:", m_bufferSizeCombo);
-    formLayout->addRow("Default Track Slots:", defaultTrackSlotsCombo);
+    formLayout->addRow("Default Columns:", defaultTrackSlotsCombo);
+
+    // Preset library: banks of 4 (A-D). Presets stay pinned to their bank and
+    // letter; the bank count can't drop below the highest bank in use.
+    QSpinBox* numBanksSpin = new QSpinBox(m_settingsDialog);
+    numBanksSpin->setRange(1, 128);
+    numBanksSpin->setToolTip("Number of preset banks (4 presets each, A-D). "
+                             "Can't be set below the highest bank that holds a preset.");
+    numBanksSpin->setKeyboardTracking(false);
+    auto syncLibraryLayoutControls = [this, numBanksSpin]() {
+        QSignalBlocker blocker(numBanksSpin);
+        numBanksSpin->setMinimum(m_presetLibrary.minBanks());
+        numBanksSpin->setValue(m_presetLibrary.numBanks());
+    };
+    connect(numBanksSpin, &QSpinBox::valueChanged, this, [this](int banks) {
+        m_presetLibrary.setNumBanks(banks);
+        m_presetLibrary.save();
+        rebuildSlotButtons();
+    });
+    // The minimum depends on where presets are; refresh it each time Settings opens.
+    connect(m_settingsDialog, &QDialog::finished, this, syncLibraryLayoutControls);
+    QTimer::singleShot(0, this, syncLibraryLayoutControls);
+    formLayout->addRow("Preset Banks:", numBanksSpin);
     
     audioTabLayout->addWidget(ioBox);
     audioTabLayout->addStretch();
     int audioTabIdx = mainSettingsTab->addTab(audioTab, "Audio");
-    mainSettingsTab->setTabIcon(audioTabIdx, style()->standardIcon(QStyle::SP_MediaVolume));
+    m_settingsTabs = mainSettingsTab;
+    m_midiTabIndex = mainSettingsTab->addTab(buildMidiSettingsTab(), "MIDI");
+    mainSettingsTab->setTabIcon(m_midiTabIndex, SettingsUi::tabIcon(SettingsUi::TabIcon::Midi));
+    mainSettingsTab->setTabIcon(audioTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Audio));
 
     // TAB 2: Plugins & Formats
     QWidget* pluginsTab = new QWidget();
@@ -1323,13 +887,13 @@ void MainWindow::setupUI() {
     pluginsLayout->setContentsMargins(10, 10, 10, 10);
     pluginsLayout->setSpacing(12);
 
-    QGroupBox* pathsBox = new QGroupBox("Custom Plugin Search Directories", pluginsTab);
-    pathsBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 12px; background: #1a1a1f; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-    );
+    auto* pathsBox = new SettingsUi::Group("Custom Plugin Search Directories", pluginsTab,
+        "Folders to search besides the standard ones for each format. Add the folder that holds the "
+        "bundles, not a single plugin.<br><br>"
+        "Changes take effect on the next scan: use <b>Rescan Plugins Now</b> below.");
+    pathsBox->setStyleSheet(SettingsUi::kGroupStyle);
     QVBoxLayout* pathsLayout = new QVBoxLayout(pathsBox);
-    pathsLayout->setSpacing(8);
+    pathsLayout->setSpacing(SettingsUi::kGroupSpacing);
 
     QTabWidget* formatPathsTab = new QTabWidget(pathsBox);
     formatPathsTab->setStyleSheet(
@@ -1344,6 +908,8 @@ void MainWindow::setupUI() {
         pageLayout->setContentsMargins(8, 8, 8, 8);
         
         QListWidget* listWidget = new QListWidget(page);
+        listWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        listWidget->setMinimumHeight(110);
         listWidget->setStyleSheet("QListWidget { background: #1c1c22; border: 1px solid #2d2d38; border-radius: 4px; color: #ECECF0; font-size: 11px; }");
         for (const auto& path : pathList) {
             listWidget->addItem(path);
@@ -1354,11 +920,15 @@ void MainWindow::setupUI() {
 
         QPushButton* addBtn = new QPushButton("Add Folder", page);
         addBtn->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
-        addBtn->setStyleSheet("QPushButton { background: #282834; color: #00B0FF; font-weight: bold; border: 1px solid #00B0FF; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #00B0FF; color: white; }");
+        addBtn->setStyleSheet("QPushButton { background: transparent; color: #6FBEEA; border: 1px solid #2F3A46;"
+                              " border-radius: 4px; padding: 6px 12px; font-size: 11px; }"
+                              "QPushButton:hover { background: #1D2733; border-color: #6FBEEA; }");
         
         QPushButton* removeBtn = new QPushButton("Remove", page);
         removeBtn->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
-        removeBtn->setStyleSheet("QPushButton { background: #352528; color: #FF6B6B; font-weight: bold; border: 1px solid #4a3034; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #4a2d32; color: #FF8787; border-color: #FF5252; }");
+        removeBtn->setStyleSheet("QPushButton { background: transparent; color: #D8888E; border: 1px solid #3A2A2E;"
+                                 " border-radius: 4px; padding: 6px 12px; font-size: 11px; }"
+                                 "QPushButton:hover { background: #2E1F22; border-color: #D8888E; }");
 
         btnCol->addWidget(addBtn);
         btnCol->addWidget(removeBtn);
@@ -1394,7 +964,74 @@ void MainWindow::setupUI() {
     formatPathsTab->addTab(createPathPage(m_customCLAPPaths), "CLAP Search Paths");
 
     pathsLayout->addWidget(formatPathsTab);
+    pathsBox->setMaximumHeight(240);
     pluginsLayout->addWidget(pathsBox);
+
+    // Plugin GUI previews: opens each plugin's own window on a hidden display
+    // and keeps a picture of it for the browser. Experimental and optional.
+    auto* previewBox = new SettingsUi::Group("Plugin Pictures (experimental)", pluginsTab,
+                                             PluginPreviewService::requirementsText());
+    previewBox->setStyleSheet(SettingsUi::kGroupStyle);
+    QVBoxLayout* previewLayout = new QVBoxLayout(previewBox);
+    previewLayout->setSpacing(SettingsUi::kGroupSpacing);
+    const auto previewEnv = PluginPreviewService::environment();
+
+    m_previewToggle = new QCheckBox("Show each plugin's own GUI in the browser", previewBox);
+    m_previewToggle->setEnabled(previewEnv.available);
+    previewLayout->addWidget(m_previewToggle);
+    m_previewImportToggle = new QCheckBox("Make pictures for new plugins after a scan", previewBox);
+    previewLayout->addWidget(m_previewImportToggle);
+
+    auto* previewEnvLabel = SettingsUi::hint(
+        previewEnv.available ? QString("This computer: ready (%1).").arg(previewEnv.tool)
+                             : QString("This computer: no hidden display found, so pictures cannot be made."),
+        previewBox);
+    if (!previewEnv.available) previewEnvLabel->setStyleSheet(SettingsUi::kWarningCss);
+    previewLayout->addWidget(previewEnvLabel);
+
+    // One button, and a choice that says exactly what it will work through.
+    auto* previewRunRow = new QHBoxLayout();
+    previewRunRow->addWidget(new QLabel("Make pictures for:", previewBox));
+    m_previewScopeCombo = new QComboBox(previewBox);
+    m_previewScopeCombo->addItem("Plugins never tried");
+    m_previewScopeCombo->addItem("Those, plus the ones that failed before");
+    m_previewScopeCombo->addItem("Every plugin again, replacing the pictures");
+    previewRunRow->addWidget(m_previewScopeCombo, 1);
+    m_previewGenerateButton = new QPushButton(previewBox);
+    previewRunRow->addWidget(m_previewGenerateButton);
+    m_previewCancelButton = new QPushButton("Cancel", previewBox);
+    m_previewCancelButton->setEnabled(false);
+    previewRunRow->addWidget(m_previewCancelButton);
+    previewLayout->addLayout(previewRunRow);
+
+    m_previewStatusLabel = new QLabel(previewBox);
+    m_previewStatusLabel->setWordWrap(true);
+    m_previewStatusLabel->setStyleSheet(SettingsUi::kHintCss);
+    previewLayout->addWidget(m_previewStatusLabel);
+    pluginsLayout->addWidget(previewBox);
+
+    connect(m_previewToggle, &QCheckBox::toggled, this, [this](bool on) {
+        m_pluginPreviewsEnabled = on;
+        saveConfigSettings();
+        refreshPreviewControls();
+    });
+    connect(m_previewImportToggle, &QCheckBox::toggled, this, [this](bool on) {
+        m_pluginPreviewsOnImport = on;
+        saveConfigSettings();
+    });
+    connect(m_previewScopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this]() { refreshPreviewControls(); });
+    connect(m_previewGenerateButton, &QPushButton::clicked, this, [this]() {
+        startPluginPreviews(previewScopeMode(), false);
+    });
+    connect(m_previewCancelButton, &QPushButton::clicked, this, [this]() {
+        if (!m_previewService || !m_previewService->running()) return;
+        m_previewService->cancel();
+        m_previewCancelButton->setEnabled(false);
+        m_previewCancelButton->setText("Cancelling…");
+        updatePreviewStatus("Stopping after the plugin being opened now…");
+    });
+    refreshPreviewControls();
 
     QHBoxLayout* rescanLayout = new QHBoxLayout();
     QPushButton* rescanBtn = new QPushButton("Rescan Plugins Now", pluginsTab);
@@ -1414,7 +1051,7 @@ void MainWindow::setupUI() {
             previousUris.insert(QString::fromStdString(plugin.uri));
         }
 
-        rescanBtn->setText("⏳ Scanning...");
+        rescanBtn->setText("Scanning…");
         rescanBtn->setEnabled(false);
         qApp->processEvents();
         
@@ -1457,23 +1094,27 @@ void MainWindow::setupUI() {
             scanSummary->setInformativeText(formatCounts.join("  ·  "));
         }
         scanSummary->show();
+        if (m_pluginPreviewsEnabled && m_pluginPreviewsOnImport) {
+            startPluginPreviews(static_cast<int>(PluginPreviewService::Mode::Missing), true);
+        }
     });
 
     int pluginsTabIdx = mainSettingsTab->addTab(pluginsTab, "Plugins & Formats");
-    mainSettingsTab->setTabIcon(pluginsTabIdx, style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+    mainSettingsTab->setTabIcon(pluginsTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Plugins));
 
     // TAB 3: TONE3000 Integration
     QWidget* toneTab = new QWidget();
     QVBoxLayout* toneTabLayout = new QVBoxLayout(toneTab);
     toneTabLayout->setContentsMargins(10, 10, 10, 10);
     
-    QGroupBox* toneBox = new QGroupBox("TONE3000 Integration", toneTab);
-    toneBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 15px; background: #1a1a1f; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-    );
+    auto* toneBox = new SettingsUi::Group("TONE3000 Integration", toneTab,
+        "An API key lets RigRoom search tone3000.com and download NAM captures and IRs straight into "
+        "a block.<br><br>"
+        "Make a key on your TONE3000 account page, paste it here and save. It is kept in RigRoom's "
+        "own settings and sent only to tone3000.com.");
+    toneBox->setStyleSheet(SettingsUi::kGroupStyle);
     QVBoxLayout* toneLayout = new QVBoxLayout(toneBox);
-    toneLayout->setSpacing(10);
+    toneLayout->setSpacing(SettingsUi::kGroupSpacing);
 
     QLabel* toneStatusLabel = new QLabel(toneBox);
     toneStatusLabel->setStyleSheet("font-size: 11px; font-weight: bold; border: none; background: transparent;");
@@ -1523,11 +1164,11 @@ void MainWindow::setupUI() {
         QString text = apiKeyEdit->text().trimmed();
         if (text.isEmpty()) {
             toneStatusLabel->setText("Secret Key Required: Enter your Secret Key (t3k_cs_...) to enable online searches");
-            toneStatusLabel->setStyleSheet("color: #FFB74D; font-size: 11px; font-weight: bold; border: none;");
+            toneStatusLabel->setStyleSheet(QString(SettingsUi::kWarningCss) + "font-weight: bold; border: none;");
             clearKeyBtn->setEnabled(false);
         } else {
             toneStatusLabel->setText("Mode: Secret Key Configured — Full TONE3000 API Access");
-            toneStatusLabel->setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold; border: none;");
+            toneStatusLabel->setStyleSheet(QString(SettingsUi::kOkCss) + "font-weight: bold; border: none;");
             clearKeyBtn->setEnabled(true);
         }
     };
@@ -1567,10 +1208,11 @@ void MainWindow::setupUI() {
     toneTabLayout->addWidget(toneBox);
     toneTabLayout->addStretch();
     int toneTabIdx = mainSettingsTab->addTab(toneTab, "TONE3000");
-    mainSettingsTab->setTabIcon(toneTabIdx, style()->standardIcon(QStyle::SP_DriveNetIcon));
+    mainSettingsTab->setTabIcon(toneTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Cloud));
 
     AboutWidget* aboutWidget = new AboutWidget(m_settingsDialog);
-    mainSettingsTab->addTab(aboutWidget, "ℹ️ About");
+    const int aboutTabIdx = mainSettingsTab->addTab(aboutWidget, "About");
+    mainSettingsTab->setTabIcon(aboutTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Info));
 
     dialogLayout->addWidget(mainSettingsTab);
     
@@ -1654,18 +1296,156 @@ void MainWindow::setupUI() {
     // Settings Button
     QPushButton* settingsBtn = new QPushButton("Settings", this);
     settingsBtn->setToolTip("Open audio input/output and buffer settings");
-    connect(settingsBtn, &QPushButton::clicked, this, [this]() {
-        if (m_apiKeyEdit) {
-            m_apiKeyEdit->setText(CredentialStore::tone3000ApiKey());
-            if (m_updateKeyStatusFunc) m_updateKeyStatusFunc();
-        }
-        m_settingsDialog->exec();
-    });
+    connect(settingsBtn, &QPushButton::clicked, this, [this]() { openSettings(); });
     topBar->addWidget(settingsBtn);
 
     topBar->addSpacing(15);
 
     mainLayout->addWidget(topBarWidget);
+
+    // --- PRESET PANEL: Bank | Presets (A-D) | Loaded preset | Scenes ---
+    // Laid out like a floor unit: bank up/down chooses which presets the A-D
+    // switches show, a switch loads one, and scenes vary the loaded preset.
+    auto* panel = new QFrame(central);
+    panel->setObjectName("presetPanel");
+    panel->setStyleSheet(
+        "QFrame#presetPanel { background-color: #17171A; border: 1px solid #2A2A30; border-radius: 8px; }"
+        "QFrame#presetPanel QLabel { background: transparent; border: none; }");
+    auto* panelLayout = new QHBoxLayout(panel);
+    panelLayout->setContentsMargins(10, 6, 10, 8);
+    panelLayout->setSpacing(12);
+
+    auto makeCaption = [panel](const QString& text) {
+        auto* caption = new QLabel(text, panel);
+        caption->setStyleSheet("color: #7A7A86; font-weight: bold; font-size: 9px; letter-spacing: 1px;");
+        return caption;
+    };
+    auto makeSection = [panel](QBoxLayout*& body, const QString& caption, auto makeCaptionFn) {
+        auto* section = new QWidget(panel);
+        auto* v = new QVBoxLayout(section);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(3);
+        v->addWidget(makeCaptionFn(caption));
+        body = new QHBoxLayout();
+        body->setSpacing(4);
+        v->addLayout(body);
+        return section;
+    };
+    auto makeDivider = [panel]() {
+        auto* divider = new QFrame(panel);
+        divider->setFrameShape(QFrame::VLine);
+        divider->setStyleSheet("QFrame { color: #2A2A30; }");
+        return divider;
+    };
+    const QString smallBtnStyle =
+        "QToolButton { background-color: #242528; color: #00B0FF; font-size: 11px; border: 1px solid #333438; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #303236; color: white; }";
+
+    // Bank
+    QBoxLayout* bankBody = nullptr;
+    QWidget* bankSection = makeSection(bankBody, "BANK", makeCaption);
+    m_bankPrevBtn = new QToolButton(bankSection);
+    m_bankPrevBtn->setText("◀");
+    m_bankPrevBtn->setToolTip("Show previous bank (Ctrl+Shift+PageUp). Nothing loads until you pick a preset.");
+    m_bankPrevBtn->setFixedSize(22, 44);
+    m_bankPrevBtn->setCursor(Qt::PointingHandCursor);
+    m_bankPrevBtn->setStyleSheet(smallBtnStyle);
+    connect(m_bankPrevBtn, &QToolButton::clicked, this, [this]() { m_rig->stepBank(-1); });
+    bankBody->addWidget(m_bankPrevBtn);
+
+    auto* bankMiddle = new QVBoxLayout();
+    bankMiddle->setSpacing(2);
+    m_bankLabel = new QLabel(bankSection);
+    m_bankLabel->setAlignment(Qt::AlignCenter);
+    m_bankLabel->setFixedWidth(118);
+    m_bankLabel->setFixedHeight(24);
+    m_bankLabel->installEventFilter(this);
+    bankMiddle->addWidget(m_bankLabel);
+    m_slotGridBtn = new QToolButton(bankSection);
+    m_slotGridBtn->setText("▦  All banks");
+    m_slotGridBtn->setToolTip("Grid of all banks (Ctrl+P): move, swap, rename and browse presets");
+    m_slotGridBtn->setFixedWidth(118);
+    m_slotGridBtn->setFixedHeight(18);
+    m_slotGridBtn->setCursor(Qt::PointingHandCursor);
+    m_slotGridBtn->setStyleSheet(
+        "QToolButton { background: transparent; color: #8A8A96; font-size: 10px; border: none; }"
+        "QToolButton:hover { color: #00B0FF; }");
+    connect(m_slotGridBtn, &QToolButton::clicked, this, &MainWindow::onPresetButtonClicked);
+    bankMiddle->addWidget(m_slotGridBtn);
+    bankBody->addLayout(bankMiddle);
+
+    m_bankNextBtn = new QToolButton(bankSection);
+    m_bankNextBtn->setText("▶");
+    m_bankNextBtn->setToolTip("Show next bank (Ctrl+Shift+PageDown). Nothing loads until you pick a preset.");
+    m_bankNextBtn->setFixedSize(22, 44);
+    m_bankNextBtn->setCursor(Qt::PointingHandCursor);
+    m_bankNextBtn->setStyleSheet(smallBtnStyle);
+    connect(m_bankNextBtn, &QToolButton::clicked, this, [this]() { m_rig->stepBank(1); });
+    bankBody->addWidget(m_bankNextBtn);
+    panelLayout->addWidget(bankSection);
+    panelLayout->addWidget(makeDivider());
+
+    // Presets in the shown bank
+    QBoxLayout* slotBody = nullptr;
+    QWidget* slotSection = makeSection(slotBody, "PRESETS", makeCaption);
+    m_slotBarLayout = static_cast<QHBoxLayout*>(slotBody);
+    panelLayout->addWidget(slotSection, 0);
+    panelLayout->addWidget(makeDivider());
+
+    // Scenes of the loaded preset
+    auto* sceneSection = new QWidget(panel);
+    auto* sceneSectionLayout = new QVBoxLayout(sceneSection);
+    sceneSectionLayout->setContentsMargins(0, 0, 0, 0);
+    sceneSectionLayout->setSpacing(3);
+    auto* sceneCaption = makeCaption("SCENES");
+    sceneCaption->setToolTip("Scenes switch blocks on/off, per-scene parameters and scene level without reloading plugins.\n"
+                             "Alt+1..8 selects a scene, Alt+Left/Right steps. Double-click to rename, right-click for more.");
+    sceneSectionLayout->addWidget(sceneCaption);
+    m_sceneBar = new QWidget(sceneSection);
+    m_sceneBarLayout = new QHBoxLayout(m_sceneBar);
+    m_sceneBarLayout->setContentsMargins(0, 0, 0, 0);
+    m_sceneBarLayout->setSpacing(4);
+    sceneSectionLayout->addWidget(m_sceneBar);
+    panelLayout->addWidget(sceneSection, 0);
+    panelLayout->addStretch(1);
+
+    // Preset actions: out of the way at the right edge, but always visible.
+    auto* actionsSection = new QWidget(panel);
+    auto* actionsLayout = new QVBoxLayout(actionsSection);
+    actionsLayout->setContentsMargins(0, 0, 0, 0);
+    actionsLayout->setSpacing(3);
+    actionsLayout->addWidget(makeCaption("PRESET"));
+    auto* actionButtons = new QHBoxLayout();
+    actionButtons->setSpacing(4);
+    m_savePresetButton->setParent(actionsSection);
+    m_savePresetButton->setFixedHeight(44);
+    actionButtons->addWidget(m_savePresetButton);
+    auto* moreBtn = new QToolButton(actionsSection);
+    moreBtn->setText("⋯");
+    moreBtn->setToolTip("New, Save As, Rename, Duplicate, Delete, All banks");
+    moreBtn->setFixedSize(32, 44);
+    moreBtn->setCursor(Qt::PointingHandCursor);
+    moreBtn->setStyleSheet(
+        "QToolButton { background-color: #2A2A30; color: #E0E0E0; font-weight: bold; font-size: 15px; border-radius: 5px; border: 1px solid #35363C; }"
+        "QToolButton:hover { background-color: #3A3A42; }");
+    connect(moreBtn, &QToolButton::clicked, this, [this, moreBtn]() {
+        m_presetMenu->exec(moreBtn->mapToGlobal(QPoint(0, moreBtn->height())));
+    });
+    actionButtons->addWidget(moreBtn);
+    actionsLayout->addLayout(actionButtons);
+    panelLayout->addWidget(actionsSection, 0);
+
+    mainLayout->addWidget(panel);
+
+    for (int i = 0; i < SceneModel::kMaxScenes; ++i) {
+        auto* sceneSc = new QShortcut(QKeySequence(Qt::ALT | (Qt::Key_1 + i)), this);
+        connect(sceneSc, &QShortcut::activated, this, [this, i]() { m_rig->selectScene(i); });
+    }
+    auto* prevSceneSc = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Left), this);
+    connect(prevSceneSc, &QShortcut::activated, this, [this]() { m_rig->stepScene(-1); });
+    auto* nextSceneSc = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Right), this);
+    connect(nextSceneSc, &QShortcut::activated, this, [this]() { m_rig->stepScene(1); });
+    rebuildSceneBar();
     
     // --- WORKSPACE SPLITTER ---
     QSplitter* midSplitter = m_workspaceSplitter = new QSplitter(Qt::Vertical, this);
@@ -1673,6 +1453,17 @@ void MainWindow::setupUI() {
     // Center: Node Graph Canvas
     m_canvas = new NodeCanvas(&m_engine, this);
     m_canvas->setMinimumHeight(260);
+    m_canvas->addZoomOverlayWidget(m_columnsGroup);
+    {
+        QSettings canvasSettings("RigRoom", "RigRoom");
+        m_canvas->setAutoFit(canvasSettings.value("canvas_auto_fit", false).toBool());
+        connect(m_canvas, &NodeCanvas::autoFitChanged, this, [](bool enabled) {
+            QSettings("RigRoom", "RigRoom").setValue("canvas_auto_fit", enabled);
+        });
+    }
+    m_presetNameLabel = m_canvas->infoOverlay();
+    m_presetNameLabel->setCursor(Qt::PointingHandCursor);
+    m_presetNameLabel->installEventFilter(this);
     midSplitter->addWidget(m_canvas);
     midSplitter->setStretchFactor(0, 1);
     
@@ -1735,6 +1526,17 @@ void MainWindow::setupUI() {
     m_statusLabel->setStyleSheet("color: #888888; font-size: 11px;");
     statusLayout->addWidget(m_statusLabel);
     statusLayout->addStretch();
+
+    m_midiIndicator = new QToolButton(this);
+    m_midiIndicator->setText(QString::fromUtf8("● MIDI"));
+    m_midiIndicator->setCursor(Qt::PointingHandCursor);
+    m_midiIndicator->setToolTip("MIDI input activity. Click for MIDI settings.");
+    m_midiIndicator->setStyleSheet(
+        "QToolButton { background-color: #263238; color: #546E7A; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+        "QToolButton:hover { background-color: #37474F; }");
+    connect(m_midiIndicator, &QToolButton::clicked, this, [this]() { openSettings(m_midiTabIndex); });
+    statusLayout->addWidget(m_midiIndicator);
+    statusLayout->addSpacing(8);
 
     m_dspCpuButton = new QToolButton(this);
     m_dspCpuButton->setText("DSP 0%");
@@ -1808,6 +1610,18 @@ void MainWindow::scanPlugins() {
     const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
     LilvNode* brandProperty = lilv_new_uri(m_lilvWorld, "http://moddevices.com/ns/mod#brand");
     LilvNode* thumbnailProperty = lilv_new_uri(m_lilvWorld, "http://moddevices.com/ns/modgui#thumbnail");
+    LilvNode* commentProperty = lilv_new_uri(m_lilvWorld, "http://www.w3.org/2000/01/rdf-schema#comment");
+    LilvNode* licenseProperty = lilv_new_uri(m_lilvWorld, "http://usefulinc.com/ns/doap#license");
+    LilvNode* minorVersionProperty = lilv_new_uri(m_lilvWorld, "http://lv2plug.in/ns/lv2core#minorVersion");
+    LilvNode* microVersionProperty = lilv_new_uri(m_lilvWorld, "http://lv2plug.in/ns/lv2core#microVersion");
+    auto firstValue = [](const LilvPlugin* plugin, LilvNode* property) -> std::string {
+        std::string value;
+        if (LilvNodes* nodes = lilv_plugin_get_value(plugin, property)) {
+            if (const LilvNode* node = lilv_nodes_get_first(nodes)) value = lilv_node_as_string(node);
+            lilv_nodes_free(nodes);
+        }
+        return value;
+    };
     
     LILV_FOREACH(plugins, i, plugins) {
         const LilvPlugin* p = lilv_plugins_get(plugins, i);
@@ -1837,6 +1651,23 @@ void MainWindow::scanPlugins() {
         }
         
         info.isLV2 = true;
+        if (LilvNode* author = lilv_plugin_get_author_name(p)) {
+            info.author = lilv_node_as_string(author);
+            lilv_node_free(author);
+        }
+        info.description = firstValue(p, commentProperty);
+        {
+            // doap:license is usually a URI; show its last path segment ("GPL-3.0").
+            std::string license = firstValue(p, licenseProperty);
+            const auto slash = license.find_last_of("/#");
+            if (slash != std::string::npos && slash + 1 < license.size()) license = license.substr(slash + 1);
+            info.license = license;
+        }
+        {
+            const std::string minor = firstValue(p, minorVersionProperty);
+            const std::string micro = firstValue(p, microVersionProperty);
+            if (!minor.empty()) info.version = minor + "." + (micro.empty() ? "0" : micro);
+        }
 
         // Extract LV2 port details & bundle path
         LilvNode* audioPortClass = lilv_new_uri(m_lilvWorld, LILV_URI_AUDIO_PORT);
@@ -1903,12 +1734,16 @@ void MainWindow::scanPlugins() {
         else if (classURI.find("Dynamics") != std::string::npos) info.category = "Dynamics";
         else if (classURI.find("Filter") != std::string::npos || classURI.find("EQ") != std::string::npos) info.category = "EQ & Filters";
         else if (classURI.find("Modulator") != std::string::npos || classURI.find("Chorus") != std::string::npos || classURI.find("Flanger") != std::string::npos || classURI.find("Phaser") != std::string::npos) info.category = "Modulations";
-        else info.category = "Utilities";
+        else info.category = inferPluginCategory(QString::fromStdString(info.name), {}).toStdString();
         
         m_availablePlugins.push_back(info);
     }
     lilv_node_free(brandProperty);
     lilv_node_free(thumbnailProperty);
+    lilv_node_free(commentProperty);
+    lilv_node_free(licenseProperty);
+    lilv_node_free(minorVersionProperty);
+    lilv_node_free(microVersionProperty);
     
     // Scan VST3 plugins
     std::vector<std::string> vst3Dirs = {
@@ -1933,13 +1768,7 @@ void MainWindow::scanPlugins() {
                     scannedPaths.insert(fullPath);
                     
                     std::string name = entry.path().stem().string();
-                    std::string category = "Utilities";
-                    std::string lowerName = QString::fromStdString(name).toLower().toStdString();
-                    if (lowerName.find("delay") != std::string::npos) category = "Delays";
-                    else if (lowerName.find("reverb") != std::string::npos) category = "Reverbs";
-                    else if (lowerName.find("amp") != std::string::npos || lowerName.find("gx") != std::string::npos || lowerName.find("guitarix") != std::string::npos) category = "Amplifiers";
-                    else if (lowerName.find("dist") != std::string::npos || lowerName.find("fuzz") != std::string::npos || lowerName.find("drive") != std::string::npos) category = "Distortions";
-                    else if (lowerName.find("eq") != std::string::npos || lowerName.find("filter") != std::string::npos) category = "EQ & Filters";
+                    const std::string category = inferPluginCategory(QString::fromStdString(name), {}).toStdString();
                     PluginInfo vstInfo = { name, entry.path().string(), category, "", "", false, 2, 2, 0, "", "", {}, entry.path().string(), true };
                     m_availablePlugins.push_back(vstInfo);
                 }
@@ -1954,17 +1783,67 @@ void MainWindow::scanPlugins() {
     for (const auto& p : m_customCLAPPaths) {
         if (!p.isEmpty()) customClapDirs.push_back(p.toStdString());
     }
-    auto clapPlugins = CLAPPluginNode::scanStandardPaths(customClapDirs);
+    // CLAP scanning loads every library, so results are cached per file
+    // (modification time + size) and only new or changed files are opened.
+    const QString clapCachePath = QDir::homePath() + "/.cache/RigRoom/plugin-scan.json";
+    QJsonObject clapCache;
+    {
+        QFile cacheFile(clapCachePath);
+        if (cacheFile.open(QFile::ReadOnly)) {
+            clapCache = QJsonDocument::fromJson(cacheFile.readAll()).object()["clap"].toObject();
+        }
+    }
+    QJsonObject newClapCache;
+    std::vector<CLAPPluginDescriptor> clapPlugins;
+    for (const std::string& libraryPath : CLAPPluginNode::listLibraries(customClapDirs)) {
+        const QString key = QString::fromStdString(libraryPath);
+        const QFileInfo fileInfo(key);
+        const QString stamp = QString("%1:%2").arg(fileInfo.lastModified().toMSecsSinceEpoch()).arg(fileInfo.size());
+        std::vector<CLAPPluginDescriptor> descs;
+        const QJsonObject cached = clapCache[key].toObject();
+        if (cached["stamp"].toString() == stamp) {
+            for (const QJsonValue& v : cached["plugins"].toArray()) {
+                const QJsonObject o = v.toObject();
+                CLAPPluginDescriptor d;
+                d.id = o["id"].toString().toStdString();
+                d.name = o["name"].toString().toStdString();
+                d.vendor = o["vendor"].toString().toStdString();
+                d.version = o["version"].toString().toStdString();
+                d.description = o["description"].toString().toStdString();
+                for (const QJsonValue& f : o["features"].toArray()) d.features.push_back(f.toString().toStdString());
+                d.pluginPath = libraryPath;
+                d.pluginIndex = static_cast<uint32_t>(o["index"].toInt());
+                descs.push_back(d);
+            }
+        } else {
+            descs = CLAPPluginNode::scanLibrary(libraryPath);
+        }
+        QJsonArray plugins;
+        for (const auto& d : descs) {
+            QJsonArray features;
+            for (const auto& f : d.features) features.append(QString::fromStdString(f));
+            plugins.append(QJsonObject{
+                {"id", QString::fromStdString(d.id)}, {"name", QString::fromStdString(d.name)},
+                {"vendor", QString::fromStdString(d.vendor)}, {"version", QString::fromStdString(d.version)},
+                {"description", QString::fromStdString(d.description)}, {"features", features},
+                {"index", static_cast<int>(d.pluginIndex)},
+            });
+        }
+        newClapCache[key] = QJsonObject{{"stamp", stamp}, {"plugins", plugins}};
+        clapPlugins.insert(clapPlugins.end(), descs.begin(), descs.end());
+    }
+    if (newClapCache != clapCache) {
+        QDir().mkpath(QFileInfo(clapCachePath).absolutePath());
+        QFile cacheFile(clapCachePath);
+        if (cacheFile.open(QFile::WriteOnly | QFile::Truncate)) {
+            cacheFile.write(QJsonDocument(QJsonObject{{"version", 1}, {"clap", newClapCache}}).toJson(QJsonDocument::Compact));
+        }
+    }
     for (const auto& clapDesc : clapPlugins) {
         std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
-        std::string category = "Utilities";
-        if (!clapDesc.features.empty()) {
-            std::string feat = clapDesc.features[0];
-            if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
-            else if (feat.find("delay") != std::string::npos || feat.find("reverb") != std::string::npos) category = "Delays & Reverbs";
-            else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
-            else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
-        }
+        QStringList featureTags;
+        for (const auto& f : clapDesc.features) featureTags << QString::fromStdString(f);
+        const std::string category = inferPluginCategory(QString::fromStdString(clapDesc.name), featureTags).toStdString();
         PluginInfo clapInfo = {
             clapDesc.name,
             uri,
@@ -1983,15 +1862,19 @@ void MainWindow::scanPlugins() {
     }
 }
 
-void MainWindow::refreshPresetList() {
-    m_presetCombo->clear();
-    QDir presetsDir(QDir::homePath() + "/.config/RigRoom/presets");
-    QStringList files = presetsDir.entryList({"*.json"}, QDir::Files);
-    for (const auto& file : files) {
-        m_presetCombo->addItem(file.left(file.length() - 5));
-    }
-    updatePresetNavigationButtons();
+QString MainWindow::presetsDirPath() const {
+    return QDir::homePath() + "/.config/RigRoom/presets";
 }
+
+void MainWindow::refreshPresetList() {
+    QDir().mkpath(presetsDirPath());
+    m_presetLibrary.setPaths(presetsDirPath(), QDir::homePath() + "/.config/RigRoom/library.json");
+    m_presetLibrary.load();
+    m_currentSlot = m_currentPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(m_currentPresetName);
+    if (m_currentSlot >= 0) m_viewBank = m_presetLibrary.bankOf(m_currentSlot);
+    rebuildSlotButtons();
+}
+
 
 void MainWindow::loadFavoritePlugins() {
     QFile file(QDir::homePath() + "/.config/RigRoom/plugin-favorites.json");
@@ -1999,6 +1882,12 @@ void MainWindow::loadFavoritePlugins() {
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
     for (const QJsonValue& value : document.array()) {
         if (value.isString()) m_favoritePluginUris.insert(value.toString());
+    }
+    QFile recentFile(QDir::homePath() + "/.config/RigRoom/plugin-recent.json");
+    if (recentFile.open(QFile::ReadOnly)) {
+        for (const QJsonValue& value : QJsonDocument::fromJson(recentFile.readAll()).array()) {
+            if (value.isString()) m_recentPluginUris.append(value.toString());
+        }
     }
 }
 
@@ -2010,6 +1899,12 @@ void MainWindow::saveFavoritePlugins() const {
     QFile file(QDir::homePath() + "/.config/RigRoom/plugin-favorites.json");
     if (file.open(QFile::WriteOnly | QFile::Truncate)) {
         file.write(QJsonDocument(favorites).toJson());
+    }
+    QJsonArray recent;
+    for (const QString& uri : m_recentPluginUris) recent.append(uri);
+    QFile recentFile(QDir::homePath() + "/.config/RigRoom/plugin-recent.json");
+    if (recentFile.open(QFile::WriteOnly | QFile::Truncate)) {
+        recentFile.write(QJsonDocument(recent).toJson());
     }
 }
 
@@ -2201,52 +2096,116 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
     return true;
 }
 
-void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol) {
-    Q_UNUSED(screenPos);
-    std::vector<PickerPluginInfo> plugins = buildPickerInfos(m_availablePlugins);
-    PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
-    if (picker.exec() != QDialog::Accepted) return;
-
-    const std::string uri = picker.selectedUri().toStdString();
-    std::shared_ptr<AudioNode> newNode;
+std::vector<PluginEntry> MainWindow::buildPluginEntries() const {
+    std::vector<PluginEntry> entries;
+    entries.reserve(m_availablePlugins.size());
     for (const auto& info : m_availablePlugins) {
-        if (info.uri == uri) {
-            if (uri == "builtin:bypass") {
-                newNode = std::make_shared<BypassNode>();
-            } else if (info.isLV2) {
-                const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
-                LILV_FOREACH(plugins, i, plugins) {
-                    const LilvPlugin* p = lilv_plugins_get(plugins, i);
-                    const LilvNode* uriNode = lilv_plugin_get_uri(p);
-                    std::string puri = lilv_node_as_string(uriNode);
-                    if (puri == uri) {
-                        newNode = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
-                        break;
-                    }
+        PluginEntry e;
+        e.name = QString::fromStdString(info.name);
+        e.uri = QString::fromStdString(info.uri);
+        e.category = QString::fromStdString(info.category);
+        e.brand = QString::fromStdString(info.brand);
+        e.author = QString::fromStdString(info.author);
+        e.format = info.isLV2 ? "LV2" : (info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3");
+        e.version = QString::fromStdString(info.version);
+        e.description = QString::fromStdString(info.description);
+        e.license = QString::fromStdString(info.license);
+        e.path = QString::fromStdString(info.path);
+        e.thumbnailPath = info.thumbnailPath;
+        for (const auto& f : info.features) e.features << QString::fromStdString(f);
+        e.audioInputs = info.audioInputs;
+        e.audioOutputs = info.audioOutputs;
+        e.controlPorts = info.controlPorts;
+        e.hasNativeGUI = info.hasNativeGUI;
+        e.finalize();
+        entries.push_back(std::move(e));
+    }
+    return entries;
+}
+
+QString MainWindow::choosePlugin() {
+    PluginBrowserDialog browser(buildPluginEntries(), &m_favoritePluginUris, &m_recentPluginUris,
+                                [this] { saveFavoritePlugins(); }, this);
+    if (browser.exec() != QDialog::Accepted) return QString();
+    return browser.selectedUri();
+}
+
+std::shared_ptr<AudioNode> MainWindow::createPluginNode(const std::string& uri) {
+    if (uri == "builtin:bypass") return std::make_shared<BypassNode>();
+    for (const auto& info : m_availablePlugins) {
+        if (info.uri != uri) continue;
+        if (info.isLV2) {
+            const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
+            LILV_FOREACH(plugins, i, plugins) {
+                const LilvPlugin* p = lilv_plugins_get(plugins, i);
+                if (uri == lilv_node_as_string(lilv_plugin_get_uri(p))) {
+                    return std::make_shared<LV2PluginNode>(m_lilvWorld, p);
                 }
-            } else if (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos) {
-                std::string path = info.uri;
-                uint32_t idx = 0;
-                auto colonPos = path.rfind(':');
-                if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
-                    idx = std::stoul(path.substr(colonPos + 1));
-                    path = path.substr(0, colonPos);
-                }
-                newNode = std::make_shared<CLAPPluginNode>(path, idx);
-            } else {
-                newNode = std::make_shared<VST3PluginNode>(info.uri);
             }
-            break;
+            return nullptr;
         }
+        if (info.uri.find(".clap") != std::string::npos) {
+            std::string path = info.uri;
+            uint32_t idx = 0;
+            auto colonPos = path.rfind(':');
+            if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
+                idx = std::stoul(path.substr(colonPos + 1));
+                path = path.substr(0, colonPos);
+            }
+            return std::make_shared<CLAPPluginNode>(path, idx);
+        }
+        return std::make_shared<VST3PluginNode>(info.uri);
     }
-    
-    if (newNode) {
-        newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-        // col here is the chain insertion index (from PlusButtonWidget), not a fixed grid column.
-        // Use insertPluginBefore to shift the chain correctly.
-        m_canvas->insertPluginBefore(row, col, newNode, isSecondOfCol);
-        showPluginControls(newNode);
+    return nullptr;
+}
+
+bool MainWindow::addPluginAt(const QString& uri, int row, int col, int insert) {
+    std::shared_ptr<AudioNode> newNode = createPluginNode(uri.toStdString());
+    if (!newNode) return false;
+    newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    // `insert` = an insert marker between blocks: later blocks shift right.
+    if (!m_canvas->insertPluginBefore(row, col, newNode, insert)) {
+        return false; // boardFull() already told the user
     }
+    showPluginControls(newNode);
+    return true;
+}
+
+bool MainWindow::appendPluginToChain(const QString& uri) {
+    int last = -1;
+    for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+        if (m_canvas->getPluginAt(NodeCanvas::MAIN_ROW, c)) last = c;
+    }
+    const int col = last + 1;
+    const bool free = col < m_canvas->getNumCols() && !m_canvas->getPluginAt(NodeCanvas::MAIN_ROW, col);
+    return addPluginAt(uri, NodeCanvas::MAIN_ROW, col, !free);
+}
+
+void MainWindow::togglePluginLibrary() {
+    if (m_pluginLibrary) {
+        if (m_pluginLibrary->isVisible()) {
+            m_pluginLibrary->close();
+        } else {
+            m_pluginLibrary->show();
+            m_pluginLibrary->raise();
+        }
+        return;
+    }
+    auto* library = new PluginBrowserDialog(buildPluginEntries(), &m_favoritePluginUris, &m_recentPluginUris,
+                                            [this] { saveFavoritePlugins(); }, this, true);
+    library->setAttribute(Qt::WA_DeleteOnClose);
+    connect(library, &PluginBrowserDialog::pluginChosen, this, [this](const QString& uri) {
+        if (appendPluginToChain(uri) && m_statusLabel) m_statusLabel->setText("Added at the end of the chain.");
+    });
+    m_pluginLibrary = library;
+    library->show();
+}
+
+void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, int insert) {
+    Q_UNUSED(screenPos);
+    const QString uri = choosePlugin();
+    if (uri.isEmpty()) return;
+    addPluginAt(uri, row, col, insert);
 }
 
 void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) {
@@ -2267,58 +2226,35 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
     )");
     
     QAction* bypassAct = menu.addAction(node->isBypassed() ? "Enable" : "Bypass");
+    menu.addSeparator();
+    const MidiAssignment* midiOnOff = m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Bypass);
+    QAction* midiLearnAct = menu.addAction(midiOnOff ? QString("MIDI On/Off: CC %1 - Learn Again...").arg(midiOnOff->cc)
+                                                     : QString("MIDI Learn On/Off..."));
+    QAction* midiRemoveAct = midiOnOff ? menu.addAction(QString("Remove MIDI On/Off (CC %1)").arg(midiOnOff->cc)) : nullptr;
+    menu.addSeparator();
     QAction* removeAct = menu.addAction("Remove Effect");
     QAction* replaceAct = menu.addAction("Replace Effect");
     
     QAction* selected = menu.exec(screenPos);
     if (!selected) return;
     
-    if (selected == bypassAct) {
+    if (selected == midiLearnAct) {
+        learnBlockMidi(node);
+    } else if (midiRemoveAct && selected == midiRemoveAct) {
+        m_presetMidi.removeFor(node->uniqueId, MidiAssignment::Target::Bypass);
+        setUnsavedChanges(true);
+        refreshSceneMarkers();
+    } else if (selected == bypassAct) {
         node->setBypassed(!node->isBypassed());
         m_canvas->updateLayout();
+        emit m_canvas->nodeBypassToggled(node);
     } else if (selected == removeAct) {
         m_canvas->removePluginAt(row, col);
         showPluginControls(nullptr);
     } else if (selected == replaceAct) {
-        std::vector<PickerPluginInfo> plugins = buildPickerInfos(m_availablePlugins);
-        PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
-        if (picker.exec() == QDialog::Accepted) {
-            std::string uri = picker.selectedUri().toStdString();
-            
-            std::shared_ptr<AudioNode> newNode;
-            if (uri == "builtin:bypass") {
-                newNode = std::make_shared<BypassNode>();
-            } else {
-                for (const auto& info : m_availablePlugins) {
-                    if (info.uri == uri) {
-                        if (info.isLV2) {
-                            const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
-                            LILV_FOREACH(plugins, i, plugins) {
-                                const LilvPlugin* p = lilv_plugins_get(plugins, i);
-                                const LilvNode* uriNode = lilv_plugin_get_uri(p);
-                                std::string puri = lilv_node_as_string(uriNode);
-                                if (puri == uri) {
-                                    newNode = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
-                                    break;
-                                }
-                            }
-                        } else if (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos) {
-                            std::string path = info.uri;
-                            uint32_t idx = 0;
-                            auto colonPos = path.rfind(':');
-                            if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
-                                idx = std::stoul(path.substr(colonPos + 1));
-                                path = path.substr(0, colonPos);
-                            }
-                            newNode = std::make_shared<CLAPPluginNode>(path, idx);
-                        } else {
-                            newNode = std::make_shared<VST3PluginNode>(info.uri);
-                        }
-                        break;
-                    }
-                }
-            }
-            
+        const QString uri = choosePlugin();
+        if (!uri.isEmpty()) {
+            std::shared_ptr<AudioNode> newNode = createPluginNode(uri.toStdString());
             if (newNode) {
                 newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
                 m_canvas->replacePluginAt(row, col, newNode);
@@ -2331,18 +2267,24 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
 void MainWindow::setUnsavedChanges(bool unsaved) {
     m_unsavedChanges = unsaved;
     
-    QString currentPreset = m_presetCombo->currentText();
-    if (currentPreset.isEmpty()) currentPreset = "Untitled";
+    QString currentPreset = m_currentPresetName.isEmpty() ? QString("Untitled") : m_currentPresetName;
+    if (m_currentSlot >= 0) currentPreset = m_presetLibrary.slotLabel(m_currentSlot) + " " + currentPreset;
     
     QString title = "RigRoom - Guitar Multieffects host [" + currentPreset + (m_unsavedChanges ? " *" : "") + "]";
     setWindowTitle(title);
 
+    if (m_unsavedChanges && m_scenes.count() > 1) {
+        // A parameter edit can make a block differ between scenes.
+        if (!m_sceneMarkerTimer) {
+            m_sceneMarkerTimer = new QTimer(this);
+            m_sceneMarkerTimer->setSingleShot(true);
+            m_sceneMarkerTimer->setInterval(300);
+            connect(m_sceneMarkerTimer, &QTimer::timeout, this, &MainWindow::refreshSceneMarkers);
+        }
+        m_sceneMarkerTimer->start();
+    }
+
     if (m_unsavedChanges) {
-        m_presetCombo->setStyleSheet(
-            "QComboBox { background-color: #2D2214; color: #FFE0B2; border: 1px solid #FF9800; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
-            "QComboBox::drop-down { border: none; width: 20px; }"
-            "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
-        );
         if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
             m_savePresetButton->setText("Save *");
             m_savePresetButton->setStyleSheet(
@@ -2351,11 +2293,6 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
             );
         }
     } else {
-        m_presetCombo->setStyleSheet(
-            "QComboBox { background-color: #242528; color: #E0E0E0; border: 1px solid #00B0FF; border-radius: 4px; padding: 3px 8px; font-weight: bold; font-size: 12px; }"
-            "QComboBox::drop-down { border: none; width: 20px; }"
-            "QComboBox QAbstractItemView { background-color: #1E1E22; color: #E0E0E0; selection-background-color: #00897B; selection-color: white; border: 1px solid #333438; }"
-        );
         if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
             m_savePresetButton->setText("Save");
             m_savePresetButton->setStyleSheet(
@@ -2364,7 +2301,7 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
             );
         }
     }
-    updatePresetNavigationButtons();
+    rebuildSlotButtons();
 }
 
 bool MainWindow::promptUnsavedChanges() {
@@ -2405,6 +2342,20 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        if (watched == m_bankLabel) {
+            renameViewBank();
+            return true;
+        }
+    }
+    if (event->type() == QEvent::MouseButtonDblClick && watched == m_presetNameLabel) {
+        startPresetRename();
+        return true;
+    }
+    if (event->type() == QEvent::MouseButtonRelease && watched == m_presetNameLabel) {
+        if (m_currentSlot >= 0) setViewBank(m_presetLibrary.bankOf(m_currentSlot));
+        return true;
+    }
     if (event->type() == QEvent::MouseButtonDblClick && watched->property("branchResetValue").isValid()) {
         if (auto* slider = qobject_cast<QSlider*>(watched)) {
             slider->setValue(watched->property("branchResetValue").toInt());
@@ -2449,14 +2400,17 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::onSavePreset() {
-    QString presetName = m_presetCombo->currentText();
+    const QString presetName = m_currentPresetName;
     if (presetName.isEmpty()) {
         onSavePresetAs();
         return;
     }
     
-    QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
+    QString fullPath = presetsDirPath() + "/" + presetName + ".json";
     savePresetToFile(fullPath);
+    if (m_presetLibrary.slotOfName(presetName) < 0) {
+        refreshPresetList();
+    }
     setUnsavedChanges(false);
     triggerSaveFeedback();
     saveConfigSettings();
@@ -2472,9 +2426,10 @@ void MainWindow::onNewPreset() {
     m_canvas->clearCanvas();
     m_canvas->setNumCols(m_globalDefaultSlots);
     updateSlotControls();
-    m_presetCombo->setCurrentIndex(-1);
-    m_presetCombo->setPlaceholderText("Untitled");
-    m_currentPresetIndex = -1;
+    m_currentSlot = -1;
+    m_currentPresetName.clear();
+    m_presetMidi.clear();
+    resetScenesFromBoard();
     m_isLoadingPreset = false;
     setUnsavedChanges(true);
     saveConfigSettings();
@@ -2495,7 +2450,7 @@ void MainWindow::onSlotMinusClicked() {
 void MainWindow::onSlotPlusClicked() {
     if (!m_canvas) return;
     int curr = m_canvas->getNumCols();
-    if (curr < 12) {
+    if (curr < NodeCanvas::MAX_COLS) {
         m_canvas->setNumCols(curr + 1);
         updateSlotControls();
         setUnsavedChanges(true);
@@ -2509,155 +2464,1582 @@ void MainWindow::updateSlotControls() {
     int minAllowed = std::max(4, highest + 1);
     m_slotCountLabel->setText(QString::number(curr));
     m_slotMinusBtn->setEnabled(curr > minAllowed);
-    m_slotPlusBtn->setEnabled(curr < 12);
+    m_slotPlusBtn->setEnabled(curr < NodeCanvas::MAX_COLS);
+}
+
+namespace {
+QString sanitizePresetName(QString name) {
+    name = name.trimmed();
+    name.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
+    return name.trimmed();
+}
+}
+
+int MainWindow::promptTargetSlot(int defaultSlot, const QString& presetName) {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Choose Preset Slot");
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* label = new QLabel(QString("Slot for \"%1\":").arg(presetName), &dialog);
+    auto* combo = new QComboBox(&dialog);
+    for (int slot = 0; slot < m_presetLibrary.slotCount(); ++slot) {
+        const QString name = m_presetLibrary.nameAt(slot);
+        combo->addItem(m_presetLibrary.slotLabel(slot) + "   " + (name.isEmpty() ? QString::fromUtf8("— empty —") : name), slot);
+    }
+    combo->setCurrentIndex(std::max(0, defaultSlot));
+    combo->setMaxVisibleItems(16);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(label);
+    layout->addWidget(combo);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) return -1;
+    return combo->currentData().toInt();
+}
+
+bool MainWindow::savePresetToSlot(int targetSlot, const QString& suggestedName) {
+    bool ok = false;
+    const QString presetName = sanitizePresetName(QInputDialog::getText(
+        this, "Save Preset As", "Enter preset name:", QLineEdit::Normal, suggestedName, &ok));
+    if (!ok || presetName.isEmpty()) return false;
+
+    const QString fileName = presetName + ".json";
+    const QString fullPath = presetsDirPath() + "/" + fileName;
+    const int existingSlot = m_presetLibrary.slotOf(fileName);
+
+    if (targetSlot < 0) {
+        const int defaultSlot = existingSlot >= 0 ? existingSlot : m_presetLibrary.firstFreeSlot();
+        targetSlot = promptTargetSlot(defaultSlot, presetName);
+        if (targetSlot < 0) return false;
+    }
+
+    if (QFile::exists(fullPath)) {
+        const auto reply = QMessageBox::question(this, "Overwrite Preset?",
+            "A preset named \"" + presetName + "\" already exists. Overwrite?",
+            QMessageBox::Yes | QMessageBox::No);
+        if (reply == QMessageBox::No) return false;
+    }
+
+    const QString displaced = m_presetLibrary.presetAt(targetSlot);
+    if (!displaced.isEmpty() && displaced != fileName) {
+        const auto reply = QMessageBox::question(this, "Slot In Use",
+            QString("Slot %1 holds \"%2\". Move it to the next free slot?")
+                .arg(m_presetLibrary.slotLabel(targetSlot), m_presetLibrary.nameAt(targetSlot)),
+            QMessageBox::Yes | QMessageBox::No);
+        if (reply == QMessageBox::No) return false;
+    }
+
+    savePresetToFile(fullPath);
+    m_presetLibrary.reconcileWithDisk();
+    if (!displaced.isEmpty() && displaced != fileName) {
+        // The displaced preset keeps its file; it simply moves to a free slot.
+        m_presetLibrary.clear(targetSlot);
+        m_presetLibrary.assign(targetSlot, fileName);
+        const int free = m_presetLibrary.firstFreeSlot(targetSlot);
+        if (free >= 0) m_presetLibrary.assign(free, displaced);
+    } else {
+        m_presetLibrary.assign(targetSlot, fileName);
+    }
+    m_presetLibrary.save();
+
+    m_currentPresetName = presetName;
+    m_currentSlot = m_presetLibrary.slotOf(fileName);
+    setUnsavedChanges(false);
+    triggerSaveFeedback();
+    saveConfigSettings();
+    return true;
 }
 
 void MainWindow::onSavePresetAs() {
-    bool ok;
-    QString name = QInputDialog::getText(this, "Save Preset As",
-                                         "Enter preset name:", QLineEdit::Normal,
-                                         "", &ok);
-    if (ok && !name.trimmed().isEmpty()) {
-        QString presetName = name.trimmed();
-        presetName.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
-        if (presetName.isEmpty()) return;
-        
-        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-        
-        if (QFile::exists(fullPath)) {
-            QMessageBox::StandardButton reply = QMessageBox::question(this, "Overwrite Preset?",
-                                               "A preset named \"" + presetName + "\" already exists. Overwrite?",
-                                               QMessageBox::Yes|QMessageBox::No);
-            if (reply == QMessageBox::No) return;
-        }
-        
-        savePresetToFile(fullPath);
-        refreshPresetList();
-        m_presetCombo->setCurrentText(presetName);
-        m_currentPresetIndex = m_presetCombo->currentIndex();
-        setUnsavedChanges(false);
-        triggerSaveFeedback();
-        saveConfigSettings();
+    savePresetToSlot(-1, m_currentPresetName);
+}
+
+void MainWindow::renamePresetInSlot(int slot, const QString& requestedName) {
+    const QString oldPresetName = m_presetLibrary.nameAt(slot);
+    if (oldPresetName.isEmpty()) return;
+
+    QString newPresetName;
+    if (requestedName.isNull()) {
+        bool ok = false;
+        newPresetName = sanitizePresetName(QInputDialog::getText(
+            this, "Rename Preset", "Enter new name for \"" + oldPresetName + "\":",
+            QLineEdit::Normal, oldPresetName, &ok));
+        if (!ok) return;
+    } else {
+        newPresetName = sanitizePresetName(requestedName);
     }
+    if (newPresetName.isEmpty() || newPresetName == oldPresetName) return;
+
+    const QString oldPath = presetsDirPath() + "/" + oldPresetName + ".json";
+    const QString newPath = presetsDirPath() + "/" + newPresetName + ".json";
+    if (QFile::exists(newPath)) {
+        QMessageBox::critical(this, "Error", "A preset named \"" + newPresetName + "\" already exists.");
+        return;
+    }
+    if (!QFile::rename(oldPath, newPath)) {
+        QMessageBox::critical(this, "Error", "Failed to rename the preset file.");
+        return;
+    }
+    m_presetLibrary.renameFile(oldPresetName + ".json", newPresetName + ".json");
+    m_presetLibrary.save();
+    if (m_currentPresetName == oldPresetName) {
+        m_currentPresetName = newPresetName;
+    }
+    refreshPresetList();
+    setUnsavedChanges(m_unsavedChanges);
+    saveConfigSettings();
 }
 
 void MainWindow::onRenamePreset() {
-    QString oldPresetName = m_presetCombo->currentText();
-    if (oldPresetName.isEmpty()) return;
-    
-    bool ok;
-    QString name = QInputDialog::getText(this, "Rename Preset",
-                                         "Enter new name for \"" + oldPresetName + "\":",
-                                         QLineEdit::Normal, oldPresetName, &ok);
-    if (ok && !name.trimmed().isEmpty()) {
-        QString newPresetName = name.trimmed();
-        newPresetName.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
-        if (newPresetName.isEmpty() || newPresetName == oldPresetName) return;
-        
-        QString oldPath = QDir::homePath() + "/.config/RigRoom/presets/" + oldPresetName + ".json";
-        QString newPath = QDir::homePath() + "/.config/RigRoom/presets/" + newPresetName + ".json";
-        
-        if (QFile::exists(newPath)) {
-            QMessageBox::critical(this, "Error", "A preset named \"" + newPresetName + "\" already exists.");
-            return;
-        }
-        
-        if (QFile::rename(oldPath, newPath)) {
-            refreshPresetList();
-            m_presetCombo->setCurrentText(newPresetName);
-            m_currentPresetIndex = m_presetCombo->currentIndex();
-            setUnsavedChanges(m_unsavedChanges);
-            saveConfigSettings();
-        } else {
-            QMessageBox::critical(this, "Error", "Failed to rename the preset file.");
-        }
+    if (m_currentSlot >= 0) renamePresetInSlot(m_currentSlot);
+}
+
+void MainWindow::duplicatePresetInSlot(int slot) {
+    const QString name = m_presetLibrary.nameAt(slot);
+    if (name.isEmpty()) return;
+    QString copyName = name + " copy";
+    for (int n = 2; QFile::exists(presetsDirPath() + "/" + copyName + ".json"); ++n) {
+        copyName = QString("%1 copy %2").arg(name).arg(n);
+    }
+    const int target = m_presetLibrary.firstFreeSlot(slot);
+    if (target < 0) {
+        QMessageBox::warning(this, "No Free Slots", "All preset slots are in use.");
+        return;
+    }
+    if (!QFile::copy(m_presetLibrary.pathAt(slot), presetsDirPath() + "/" + copyName + ".json")) {
+        QMessageBox::critical(this, "Error", "Failed to copy the preset file.");
+        return;
+    }
+    m_presetLibrary.assign(target, copyName + ".json");
+    m_presetLibrary.save();
+    if (m_statusLabel) {
+        m_statusLabel->setText(QString("Duplicated '%1' to %2").arg(name, m_presetLibrary.slotLabel(target)));
+    }
+}
+
+void MainWindow::deletePresetInSlot(int slot) {
+    const QString presetName = m_presetLibrary.nameAt(slot);
+    if (presetName.isEmpty()) return;
+
+    const auto reply = QMessageBox::question(this, "Delete Preset",
+        "Are you sure you want to delete the preset \"" + presetName + "\"?\nThis cannot be undone.",
+        QMessageBox::Yes | QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+
+    if (!QFile::remove(m_presetLibrary.pathAt(slot))) {
+        QMessageBox::critical(this, "Error", "Failed to delete the preset file.");
+        return;
+    }
+    m_presetLibrary.clear(slot);
+    m_presetLibrary.save();
+
+    if (slot != m_currentSlot) {
+        rebuildSlotButtons();
+        return;
+    }
+
+    setUnsavedChanges(false);
+    m_currentSlot = -1;
+    m_currentPresetName.clear();
+    const int next = m_presetLibrary.nextOccupied(slot, 1);
+    if (next >= 0) {
+        loadSlot(next);
+    } else {
+        m_canvas->clearCanvas();
+        m_canvas->updateLayout();
+        setUnsavedChanges(false);
+        saveConfigSettings();
     }
 }
 
 void MainWindow::onDeletePreset() {
-    QString presetName = m_presetCombo->currentText();
-    if (presetName.isEmpty()) return;
-    
-    QMessageBox::StandardButton reply = QMessageBox::question(this, "Delete Preset",
-                                       "Are you sure you want to delete the preset \"" + presetName + "\"?\nThis cannot be undone.",
-                                       QMessageBox::Yes|QMessageBox::No);
-    if (reply == QMessageBox::Yes) {
-        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-        if (QFile::remove(fullPath)) {
-            setUnsavedChanges(false);
-            m_canvas->clearCanvas();
-            m_canvas->updateLayout();
-            refreshPresetList();
-            if (m_presetCombo->count() > 0) {
-                m_presetCombo->setCurrentIndex(0);
-                m_currentPresetIndex = 0;
-                onLoadPreset();
-            } else {
-                m_presetCombo->setCurrentText("");
-                m_currentPresetIndex = -1;
+    if (m_currentSlot >= 0) deletePresetInSlot(m_currentSlot);
+}
+
+bool MainWindow::loadSlot(int slot, bool remote) {
+    if (!m_presetLibrary.isOccupied(slot)) return false;
+    // Selecting the preset that is already loaded is not a preset change, so
+    // it must not ask about unsaved edits (use Reload to discard them).
+    if (slot == m_currentSlot && m_presetLibrary.nameAt(slot) == m_currentPresetName) {
+        setViewBank(m_presetLibrary.bankOf(slot));
+        return true;
+    }
+    QString discardedNote;
+    if (remote) {
+        // A modal prompt would stall a live switch; say what was dropped instead.
+        if (m_unsavedChanges) {
+            discardedNote = QString("Unsaved edits to %1 discarded. ")
+                .arg(m_currentSlot >= 0 ? m_presetLibrary.slotLabel(m_currentSlot) : QString("Untitled"));
+            m_unsavedChanges = false;
+        }
+    } else if (!promptUnsavedChanges()) {
+        return false;
+    }
+
+    const QString path = m_presetLibrary.pathAt(slot);
+    if (!QFile::exists(path)) {
+        refreshPresetList();
+        return false;
+    }
+    loadPresetFromFile(path);
+    m_currentSlot = slot;
+    m_currentPresetName = m_presetLibrary.nameAt(slot);
+    m_viewBank = m_presetLibrary.bankOf(slot);
+    setUnsavedChanges(false);
+    saveConfigSettings();
+    if (remote && m_statusLabel) {
+        m_statusLabel->setText(discardedNote + QString("MIDI: loaded %1 %2")
+            .arg(m_presetLibrary.slotLabel(slot), m_currentPresetName));
+    }
+    emit m_rig->slotChanged(slot);
+    return true;
+}
+
+void MainWindow::onPresetButtonClicked() {
+    if (m_presetLibrary.reconcileWithDisk()) m_presetLibrary.save();
+    PresetBrowser browser(m_presetLibrary, m_currentSlot, this);
+    connect(&browser, &PresetBrowser::slotActivated, this, [this](int slot) {
+        // Defer so the browser closes before a possible unsaved-changes prompt.
+        QTimer::singleShot(0, this, [this, slot]() { loadSlot(slot); });
+    });
+    connect(&browser, &PresetBrowser::slotsSwapped, this, [this](int from, int to) {
+        m_presetLibrary.swap(from, to);
+        m_presetLibrary.save();
+        if (!m_currentPresetName.isEmpty()) m_currentSlot = m_presetLibrary.slotOfName(m_currentPresetName);
+        setUnsavedChanges(m_unsavedChanges);
+        saveConfigSettings();
+    });
+    connect(&browser, &PresetBrowser::saveCurrentToSlotRequested, this, [this](int slot) {
+        QTimer::singleShot(0, this, [this, slot]() { savePresetToSlot(slot, m_currentPresetName); });
+    });
+    // Run dialog-based actions after the popup has closed, then reopen the grid.
+    auto thenReopen = [this](std::function<void()> action) {
+        QTimer::singleShot(0, this, [this, action]() {
+            action();
+            onPresetButtonClicked();
+        });
+    };
+    connect(&browser, &PresetBrowser::renameRequested, this, [this, thenReopen](int slot) {
+        thenReopen([this, slot]() { renamePresetInSlot(slot); });
+    });
+    connect(&browser, &PresetBrowser::duplicateRequested, this, [this, thenReopen](int slot) {
+        thenReopen([this, slot]() { duplicatePresetInSlot(slot); rebuildSlotButtons(); });
+    });
+    connect(&browser, &PresetBrowser::deleteRequested, this, [this, thenReopen](int slot) {
+        thenReopen([this, slot]() { deletePresetInSlot(slot); });
+    });
+    connect(&browser, &PresetBrowser::bankRenameRequested, this, [this, thenReopen](int bank) {
+        thenReopen([this, bank]() {
+            const int previous = m_viewBank;
+            m_viewBank = bank;
+            renameViewBank();
+            m_viewBank = previous;
+            rebuildSlotButtons();
+        });
+    });
+
+    QWidget* anchorWidget = m_bankLabel ? static_cast<QWidget*>(m_bankLabel) : this;
+    const QPoint anchor = anchorWidget->mapToGlobal(QPoint(0, anchorWidget->height() + 4));
+    browser.move(anchor);
+    browser.exec();
+    rebuildSlotButtons();
+}
+
+void MainWindow::setupRigController() {
+    m_rig = new RigController(this);
+    RigController::Backend backend;
+    backend.loadSlot = [this](int slot, bool remote) { return loadSlot(slot, remote); };
+    backend.currentSlot = [this]() { return m_currentSlot; };
+    backend.nextOccupiedSlot = [this](int from, int dir) { return m_presetLibrary.nextOccupied(from, dir); };
+    backend.viewBank = [this]() { return m_viewBank; };
+    backend.setViewBank = [this](int bank) { setViewBank(bank); };
+    backend.bankCount = [this]() { return m_presetLibrary.numBanks(); };
+    backend.slotOccupied = [this](int slot) { return m_presetLibrary.isOccupied(slot); };
+    backend.slotsPerBank = [this]() { return m_presetLibrary.slotsPerBank(); };
+    backend.stepWithinBank = [this]() { return m_midiConfig.stepWithinBank; };
+    backend.slotFor = [this](int bank, int idx) {
+        return (idx >= 0 && idx < m_presetLibrary.slotsPerBank()) ? m_presetLibrary.slotFor(bank, idx) : -1;
+    };
+    backend.selectScene = [this](int scene) { selectScene(scene); };
+    backend.activeScene = [this]() { return m_scenes.activeIndex(); };
+    backend.sceneCount = [this]() { return m_scenes.count(); };
+    backend.toggleBlock = [this](const std::string& nodeId) {
+        auto node = findNodeById(nodeId);
+        if (!node) return false;
+        node->setBypassed(!node->isBypassed());
+        if (m_canvas) m_canvas->viewport()->update();
+        onNodeBypassToggled(node);
+        return true;
+    };
+    backend.setBlockEnabled = [this](const std::string& nodeId, bool enabled) {
+        auto node = findNodeById(nodeId);
+        if (!node) return false;
+        if (node->isBypassed() == !enabled) return true;
+        node->setBypassed(!enabled);
+        if (m_canvas) m_canvas->viewport()->update();
+        onNodeBypassToggled(node);
+        return true;
+    };
+    backend.setParam = [this](const std::string& nodeId, uint32_t index, float normalized) {
+        auto node = findNodeById(nodeId);
+        if (!node) return false;
+        for (const auto& port : node->getControlPorts()) {
+            if (port.index != index || port.isOutput) continue;
+            float value = port.minVal + std::clamp(normalized, 0.0f, 1.0f) * (port.maxVal - port.minVal);
+            if (port.isInteger || port.isToggle) value = std::round(value);
+            // A performance control (expression pedal): the knob follows via
+            // syncParameterControls, but the preset is not marked edited.
+            node->setParameter(index, value);
+            return true;
+        }
+        return false;
+    };
+    m_rig->setBackend(std::move(backend));
+}
+
+void MainWindow::onPrevPreset() { m_rig->stepPreset(-1); }
+void MainWindow::onNextPreset() { m_rig->stepPreset(1); }
+void MainWindow::onPrevBank() { m_rig->stepBank(-1); }
+void MainWindow::onNextBank() { m_rig->stepBank(1); }
+
+
+QStringList MainWindow::previewCandidateUris() const {
+    // LV2 and CLAP can both be opened by the snapshot helper. Plugins the scan
+    // already found to have no window of their own are recorded as impossible,
+    // so a run never walks through them.
+    QStringList uris;
+    QStringList withoutGui;
+    for (const auto& plugin : m_availablePlugins) {
+        const QString uri = QString::fromStdString(plugin.uri);
+        const bool supported = plugin.isLV2 || uri.contains(".clap");
+        if (!supported) continue;
+        if (plugin.hasNativeGUI) uris << uri;
+        else withoutGui << uri;
+    }
+    PluginPreviewService::markImpossible(withoutGui, "no window of its own");
+    return uris;
+}
+
+int MainWindow::previewScopeMode() const {
+    const int index = m_previewScopeCombo ? m_previewScopeCombo->currentIndex() : 0;
+    return index;
+}
+
+void MainWindow::refreshPreviewControls() {
+    const auto env = PluginPreviewService::environment();
+    const bool usable = env.available && m_pluginPreviewsEnabled;
+    if (m_previewToggle && m_previewToggle->isChecked() != (m_pluginPreviewsEnabled && env.available)) {
+        const QSignalBlocker blocker(m_previewToggle);
+        m_previewToggle->setChecked(m_pluginPreviewsEnabled && env.available);
+    }
+    if (m_previewImportToggle) {
+        const QSignalBlocker blocker(m_previewImportToggle);
+        m_previewImportToggle->setChecked(m_pluginPreviewsOnImport && env.available);
+        m_previewImportToggle->setEnabled(usable);
+    }
+    if (m_previewScopeCombo) m_previewScopeCombo->setEnabled(usable);
+    if (!m_previewGenerateButton) return;
+
+    const bool running = m_previewService && m_previewService->running();
+    if (m_previewCancelButton) {
+        const bool cancelling = m_previewService && m_previewService->cancelling();
+        m_previewCancelButton->setText(cancelling ? "Cancelling…" : "Cancel");
+        m_previewCancelButton->setEnabled(running && !cancelling);
+    }
+    if (running) {
+        m_previewGenerateButton->setEnabled(false);  // its text shows progress
+        return;
+    }
+    const int todo = PluginPreviewService::countTodo(
+        previewCandidateUris(), static_cast<PluginPreviewService::Mode>(previewScopeMode()));
+    m_previewGenerateButton->setText(todo > 0 ? QString("Make %1 pictures").arg(todo)
+                                              : QString("Nothing to make"));
+    m_previewGenerateButton->setEnabled(usable && todo > 0);
+    updatePreviewStatus();
+}
+
+void MainWindow::updatePreviewStatus(const QString& text) {
+    if (!m_previewStatusLabel) return;
+    if (!text.isEmpty()) {
+        m_previewStatusLabel->setText(text);
+        return;
+    }
+    const QStringList uris = previewCandidateUris();
+    int supported = 0;
+    for (const auto& plugin : m_availablePlugins) {
+        if (plugin.isLV2 || QString::fromStdString(plugin.uri).contains(".clap")) ++supported;
+    }
+    int have = 0, failed = 0;
+    for (const QString& uri : uris) {
+        if (PluginPreviewService::hasPreview(uri)) ++have;
+        else if (PluginPreviewService::hasFailed(uri)) ++failed;
+    }
+    m_previewStatusLabel->setText(
+        QString("%1 pictures · %2 plugins to try · %3 would not open · %4 have no window of their own")
+            .arg(have)
+            .arg(uris.size() - have - failed)
+            .arg(failed)
+            .arg(supported - uris.size()));
+}
+
+void MainWindow::startPluginPreviews(int mode, bool quiet) {
+    if (!m_previewService) {
+        m_previewService = new PluginPreviewService(this);
+        connect(m_previewService, &PluginPreviewService::started, this, [this](const QString& uri) {
+            updatePreviewStatus(QString("Opening %1…").arg(uri.section('/', -1)));
+        });
+        connect(m_previewService, &PluginPreviewService::progress, this,
+                [this](int done, int total, const QString&) {
+                    updatePreviewStatus(QString("Made %1 of %2 pictures…").arg(done).arg(total));
+                    if (m_previewGenerateButton) {
+                        m_previewGenerateButton->setText(QString("Working… %1 of %2").arg(done).arg(total));
+                    }
+                });
+        connect(m_previewService, &PluginPreviewService::finished, this,
+                [this](int captured, int, const QString& note) {
+                    refreshPreviewControls();
+                    updatePreviewStatus(note);
+                    if (m_statusLabel) {
+                        m_statusLabel->setText(captured > 0
+                                                   ? QString("Plugin pictures: %1 new").arg(captured)
+                                                   : (note.isEmpty() ? QString("Plugin pictures: nothing to do")
+                                                                     : QString("Plugin pictures: %1").arg(note)));
+                    }
+                    if (note.isEmpty()) updatePreviewStatus();
+                });
+    }
+    if (m_previewService->running()) return;
+    const QStringList uris = previewCandidateUris();
+    const int todo = PluginPreviewService::countTodo(uris, static_cast<PluginPreviewService::Mode>(mode));
+    m_previewService->generate(uris, static_cast<PluginPreviewService::Mode>(mode));
+    if (m_previewService->running()) {
+        // Opening the hidden display takes a moment, so say so at once rather
+        // than leaving the page looking idle.
+        if (m_previewGenerateButton) m_previewGenerateButton->setText(QString("Working… 0 of %1").arg(todo));
+        updatePreviewStatus("Starting the hidden display…");
+        if (!quiet && m_statusLabel) m_statusLabel->setText("Making plugin pictures in the background…");
+    }
+    refreshPreviewControls();
+}
+
+SceneModel::BoardState MainWindow::captureBoardState() const {
+    SceneModel::BoardState state;
+    if (!m_canvas) return state;
+    for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
+        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+            auto node = m_canvas->getPluginAt(r, c);
+            if (!node || node->uniqueId.empty()) continue;
+            state.bypass[node->uniqueId] = node->isBypassed();
+            auto& params = state.params[node->uniqueId];
+            for (const auto& port : node->getControlPorts()) {
+                if (!port.isOutput) params[port.index] = port.value;
             }
-            saveConfigSettings();
-        } else {
-            QMessageBox::critical(this, "Error", "Failed to delete the preset file.");
         }
     }
+    return state;
 }
 
-void MainWindow::onPresetComboActivated(int index) {
-    if (index < 0 || index >= m_presetCombo->count()) return;
-    
-    if (m_currentPresetIndex == index) return; // No change
+std::shared_ptr<AudioNode> MainWindow::findNodeById(const std::string& id) const {
+    if (!m_canvas || id.empty()) return nullptr;
+    for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
+        for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+            auto node = m_canvas->getPluginAt(r, c);
+            if (node && node->uniqueId == id) return node;
+        }
+    }
+    return nullptr;
+}
 
-    // Temporarily restore index in combobox so prompt can revert if user cancels
-    m_presetCombo->setCurrentIndex(m_currentPresetIndex != -1 ? m_currentPresetIndex : index);
+void MainWindow::resetScenesFromBoard() {
+    m_scenes.reset(captureBoardState());
+    m_engine.setSceneOutputLevel(0.0f);
+    rebuildSceneBar();
+}
 
-    if (promptUnsavedChanges()) {
-        m_presetCombo->setCurrentIndex(index);
-        QString presetName = m_presetCombo->itemText(index);
-        QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-        loadPresetFromFile(fullPath);
-        m_currentPresetIndex = index;
-        setUnsavedChanges(false);
+void MainWindow::applySceneChanges(const SceneModel::Changes& changes) {
+    resetMidiPickup();
+    // Only atomics and control values change here; the graph is untouched, so
+    // there is no dropout and delay/reverb tails keep ringing.
+    for (const auto& [nodeId, bypassed] : changes.bypass) {
+        if (auto node = findNodeById(nodeId)) node->setBypassed(bypassed);
+    }
+    for (const auto& [nodeId, index, value] : changes.params) {
+        if (auto node = findNodeById(nodeId)) node->setParameter(index, value);
+    }
+    m_engine.setSceneOutputLevel(changes.levelDb);
+    if (m_canvas) m_canvas->viewport()->update();
+    syncParameterControls();
+}
+
+void MainWindow::selectScene(int index) {
+    if (index < 0 || index >= m_scenes.count()) return;
+    if (index == m_scenes.activeIndex()) return;
+    applySceneChanges(m_scenes.switchTo(index, captureBoardState()));
+    rebuildSceneBar();
+    emit m_rig->sceneChanged(index);
+    // Refresh the Inspector so the scene level knob follows the new scene.
+    if (m_parameterControlNode && m_parameterControlNode->getType() == NodeType::SystemOutput) {
+        showPluginControls(m_parameterControlNode);
+    }
+    setUnsavedChanges(m_unsavedChanges);
+    if (m_statusLabel) {
+        m_statusLabel->setText(QString("Scene %1: %2").arg(index + 1).arg(m_scenes.active().name));
+    }
+}
+
+void MainWindow::rebuildSceneBar() {
+    if (!m_sceneBarLayout) return;
+    while (QLayoutItem* item = m_sceneBarLayout->takeAt(0)) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+
+    for (int i = 0; i < m_scenes.count(); ++i) {
+        const auto& scene = m_scenes.scene(i);
+        auto* tile = new FootswitchTile(m_sceneBar);
+        tile->setKey(QString::number(i + 1));
+        tile->setName(scene.name);
+        tile->setAccent(QColor(scene.color.isEmpty() ? SceneModel::defaultColor(i) : scene.color));
+        tile->setState(i == m_scenes.activeIndex() ? FootswitchTile::State::Active : FootswitchTile::State::Normal);
+        tile->setFixedWidth(128);
+        tile->setToolTip(QString("Scene %1: %2 (Alt+%1)\nDouble-click to rename · right-click for more").arg(i + 1).arg(scene.name));
+        tile->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tile, &FootswitchTile::clicked, this, [this, i]() { m_rig->selectScene(i); });
+        connect(tile, &FootswitchTile::doubleClicked, this, [this, i, tile]() { startSceneRename(i, tile); });
+        connect(tile, &QWidget::customContextMenuRequested, this, [this, i, tile](const QPoint& pos) {
+            showSceneMenu(i, tile->mapToGlobal(pos));
+        });
+        m_sceneBarLayout->addWidget(tile);
+    }
+
+    if (m_scenes.count() < SceneModel::kMaxScenes) {
+        auto* addBtn = new QToolButton(m_sceneBar);
+        addBtn->setText("+");
+        addBtn->setToolTip("Add a scene (copies the current one)");
+        addBtn->setFixedSize(28, 44);
+        addBtn->setCursor(Qt::PointingHandCursor);
+        addBtn->setStyleSheet(
+            "QToolButton { background-color: #242528; color: #E0E0E0; font-size: 12px; border: 1px solid #333438; border-radius: 4px; }"
+            "QToolButton:hover { background-color: #303236; color: white; }");
+        connect(addBtn, &QToolButton::clicked, this, [this]() {
+            const int index = m_scenes.addScene(captureBoardState());
+            if (index < 0) return;
+            setUnsavedChanges(true);
+            selectScene(index);
+            rebuildSceneBar();
+        });
+        m_sceneBarLayout->addWidget(addBtn);
+    }
+    m_sceneBarLayout->addStretch();
+    refreshSceneMarkers();
+    updateCanvasInfo();
+}
+
+void MainWindow::showSceneMenu(int index, const QPoint& globalPos) {
+    if (index < 0 || index >= m_scenes.count()) return;
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
+        "QMenu::item:selected { background-color: #007ACC; color: white; }"
+        "QMenu::item:disabled { color: #555555; }");
+    QAction* renameAct = menu.addAction("Rename...");
+    // Colour submenu: named swatches from the curated palette, current one checked.
+    QMenu* colorMenu = menu.addMenu("Color");
+    const QString currentColor = m_scenes.scene(index).color.toUpper();
+    for (const auto& c : SceneModel::palette()) {
+        QPixmap swatch(14, 14);
+        swatch.fill(Qt::transparent);
+        {
+            QPainter painter(&swatch);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(QColor(255, 255, 255, 60));
+            painter.setBrush(QColor(c.hex));
+            painter.drawRoundedRect(QRectF(0.5, 0.5, 13, 13), 3, 3);
+        }
+        QAction* act = colorMenu->addAction(QIcon(swatch), c.name);
+        act->setCheckable(true);
+        act->setChecked(currentColor == QString(c.hex).toUpper());
+        act->setData(QString(c.hex));
+    }
+    menu.addSeparator();
+    QAction* dupAct = menu.addAction("Duplicate");
+    dupAct->setEnabled(m_scenes.count() < SceneModel::kMaxScenes);
+    QAction* overwriteAct = menu.addAction("Store current board here");
+    overwriteAct->setEnabled(index != m_scenes.activeIndex());
+    menu.addSeparator();
+    QAction* deleteAct = menu.addAction("Delete");
+    deleteAct->setEnabled(m_scenes.count() > 1);
+
+    QAction* chosen = menu.exec(globalPos);
+    if (!chosen) return;
+    if (chosen == renameAct) {
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, "Rename Scene", "Scene name:",
+            QLineEdit::Normal, m_scenes.scene(index).name, &ok);
+        if (!ok || name.trimmed().isEmpty()) return;
+        m_scenes.renameScene(index, name);
+    } else if (chosen->parent() == colorMenu) {
+        m_scenes.setSceneColor(index, chosen->data().toString());
+    } else if (chosen == dupAct) {
+        if (m_scenes.duplicateScene(index, captureBoardState()) < 0) return;
+    } else if (chosen == overwriteAct) {
+        m_scenes.overwriteScene(index, captureBoardState());
+    } else if (chosen == deleteAct) {
+        const int oldActive = m_scenes.activeIndex();
+        if (!m_scenes.removeScene(index)) return;
+        if (index == oldActive) {
+            // The board still shows the deleted scene; move it to the new active one.
+            applySceneChanges(m_scenes.changesTo(m_scenes.activeIndex(), captureBoardState()));
+        }
+    }
+    setUnsavedChanges(true);
+    rebuildSceneBar();
+}
+
+void MainWindow::toggleParamSceneControl(const std::shared_ptr<AudioNode>& node, uint32_t index) {
+    if (!node || node->uniqueId.empty()) return;
+    float value = 0.0f;
+    for (const auto& port : node->getControlPorts()) {
+        if (port.index == index) { value = port.value; break; }
+    }
+    m_scenes.setGlobal(node->uniqueId, index, !m_scenes.isGlobal(node->uniqueId, index), value);
+    setUnsavedChanges(true);
+    refreshSceneMarkers();
+    showPluginControls(node);
+}
+
+void MainWindow::setViewBank(int bank) {
+    const int count = std::max(1, m_presetLibrary.numBanks());
+    m_viewBank = ((bank % count) + count) % count;
+    rebuildSlotButtons();
+}
+
+void MainWindow::rebuildSlotButtons() {
+    if (!m_slotBarLayout || !m_bankLabel) return;
+    const int perBank = m_presetLibrary.slotsPerBank();
+    if (m_viewBank >= m_presetLibrary.numBanks()) m_viewBank = 0;
+
+    // Bank label: orange when showing a bank other than the loaded preset's.
+    const bool loadedHere = m_currentSlot >= 0 && m_presetLibrary.bankOf(m_currentSlot) == m_viewBank;
+    const bool showingOther = m_currentSlot >= 0 && !loadedHere;
+    const QString bankText = m_presetLibrary.bankName(m_viewBank).isEmpty()
+        ? m_presetLibrary.bankLabel(m_viewBank) + QString::fromUtf8("  ✎")
+        : m_presetLibrary.bankLabel(m_viewBank);
+    m_bankLabel->setText(QFontMetrics(m_bankLabel->font()).elidedText(bankText, Qt::ElideRight, 104));
+    m_bankLabel->setStyleSheet(QString(
+        "QLabel { background-color: #1C1C20; color: %1; font-weight: bold; font-size: 12px;"
+        " border: 1px solid %2; border-radius: 4px; padding: 3px 8px; }")
+        .arg(showingOther ? "#FFB74D" : "#E0E0E0", showingOther ? "#FF9800" : "#333438"));
+    QString bankTip = QString("Bank %1. Double-click to %2 it (e.g. a band, set or style); the number stays.")
+        .arg(m_viewBank + 1, 2, 10, QChar('0'))
+        .arg(m_presetLibrary.bankName(m_viewBank).isEmpty() ? "name" : "rename");
+    if (showingOther) {
+        bankTip.prepend(QString("Loaded: %1 %2\n")
+            .arg(m_presetLibrary.slotLabel(m_currentSlot), m_currentPresetName));
+    }
+    m_bankLabel->setToolTip(bankTip);
+
+    // Recreate the tiles only when the count changes; otherwise update them.
+    if (static_cast<int>(m_slotButtons.size()) != perBank) {
+        for (FootswitchTile* tile : m_slotButtons) tile->deleteLater();
+        m_slotButtons.clear();
+        QWidget* parent = m_bankLabel->parentWidget()->parentWidget();
+        for (int i = 0; i < perBank; ++i) {
+            auto* tile = new FootswitchTile(parent);
+            tile->setFixedWidth(140);
+            tile->setContextMenuPolicy(Qt::CustomContextMenu);
+            connect(tile, &FootswitchTile::clicked, this, [this, i]() { onSlotButtonClicked(i); });
+            connect(tile, &FootswitchTile::doubleClicked, this, [this, i, tile]() {
+                const int slot = m_presetLibrary.slotFor(m_viewBank, i);
+                if (m_presetLibrary.isOccupied(slot)) startSlotRename(slot, tile);
+            });
+            connect(tile, &QWidget::customContextMenuRequested, this, [this, i, tile](const QPoint& pos) {
+                showSlotTileMenu(m_presetLibrary.slotFor(m_viewBank, i), tile, tile->mapToGlobal(pos));
+            });
+            m_slotBarLayout->addWidget(tile);
+            m_slotButtons.push_back(tile);
+        }
+    }
+
+    for (int i = 0; i < perBank; ++i) {
+        FootswitchTile* tile = m_slotButtons[i];
+        const int slot = m_presetLibrary.slotFor(m_viewBank, i);
+        const QString name = m_presetLibrary.nameAt(slot);
+        const bool isCurrent = slot == m_currentSlot && !name.isEmpty();
+        tile->setKey(QString(QChar('A' + i)));
+        tile->setName(name.isEmpty() ? QString::fromUtf8("—") : name);
+        tile->setState(name.isEmpty() ? FootswitchTile::State::Empty
+                       : !isCurrent ? FootswitchTile::State::Normal
+                       : m_unsavedChanges ? FootswitchTile::State::Unsaved
+                       : FootswitchTile::State::Active);
+
+        QString tip = m_presetLibrary.slotLabel(slot) + "  " + (name.isEmpty() ? QString("(empty)") : name);
+        if (!name.isEmpty()) {
+            const QStringList scenes = m_presetLibrary.sceneNamesAt(slot);
+            if (!scenes.isEmpty()) {
+                QStringList numbered;
+                for (int k = 0; k < scenes.size(); ++k) numbered << QString("%1 %2").arg(k + 1).arg(scenes[k]);
+                tip += "\nScenes: " + numbered.join(QString::fromUtf8(" · "));
+            }
+            tip += isCurrent ? "\nLoaded" : "\nClick to load";
+        } else {
+            tip += "\nClick to save the current board here";
+        }
+        tile->setToolTip(tip);
+    }
+
+    updateCanvasInfo();
+}
+
+void MainWindow::onSlotButtonClicked(int indexInBank) {
+    const int slot = m_presetLibrary.slotFor(m_viewBank, indexInBank);
+    if (m_presetLibrary.isOccupied(slot)) {
+        m_rig->selectInBank(indexInBank);
+    } else {
+        savePresetToSlot(slot, m_currentPresetName);
+    }
+}
+
+void MainWindow::renameViewBank() {
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Name Bank",
+        QString("Name for bank %1 (leave empty to clear):").arg(m_viewBank + 1, 2, 10, QChar('0')),
+        QLineEdit::Normal, m_presetLibrary.bankName(m_viewBank), &ok);
+    if (!ok) return;
+    m_presetLibrary.setBankName(m_viewBank, name);
+    m_presetLibrary.save();
+    rebuildSlotButtons();
+}
+
+void MainWindow::refreshSceneMarkers() {
+    if (!m_canvas) return;
+    const auto ids = m_scenes.sceneControlledBlocks(captureBoardState());
+    m_canvas->setSceneMarkedNodes(std::unordered_set<std::string>(ids.begin(), ids.end()));
+    const auto midiIds = m_presetMidi.nodeIds();
+    m_canvas->setMidiMarkedNodes(std::unordered_set<std::string>(midiIds.begin(), midiIds.end()));
+}
+
+void MainWindow::updateCanvasInfo() {
+    if (!m_canvas) return;
+    const QString name = m_currentPresetName.isEmpty() ? QString("Untitled") : m_currentPresetName;
+    const QString slot = m_currentSlot >= 0 ? m_presetLibrary.slotLabel(m_currentSlot) : QString("—");
+    const auto& scene = m_scenes.active();
+    const QString sceneColor = scene.color.isEmpty() ? SceneModel::defaultColor(m_scenes.activeIndex()) : scene.color;
+    const QString dot = m_unsavedChanges ? QString::fromUtf8("&nbsp;<span style='color:#FF9800;'>●</span>") : QString();
+    m_canvas->setInfoOverlayText(QString(
+        "<div style='font-size:11px; font-weight:bold; letter-spacing:1px;'>"
+        "<span style='color:#00B0FF;'>%1</span>"
+        "<span style='color:#55555D;'>&nbsp;&nbsp;·&nbsp;&nbsp;</span>"
+        "<span style='color:%2;'>%3&nbsp;&nbsp;%4</span></div>"
+        "<div style='font-size:20px; font-weight:bold; color:#F2F2F5;'>%5%6</div>")
+        .arg(slot, sceneColor)
+        .arg(m_scenes.activeIndex() + 1)
+        .arg(scene.name.toHtmlEscaped(), name.toHtmlEscaped(), dot));
+    m_presetNameLabel->setToolTip(name + (m_unsavedChanges ? "\nUnsaved changes" : "")
+        + "\nClick to show its bank · double-click to rename");
+}
+
+void MainWindow::showSlotTileMenu(int slot, QWidget* tile, const QPoint& globalPos) {
+    if (!m_presetLibrary.isValidSlot(slot)) return;
+    QMenu menu(this);
+    menu.setStyleSheet(m_presetMenu->styleSheet());
+    const QString label = m_presetLibrary.slotLabel(slot);
+    if (m_presetLibrary.isOccupied(slot)) {
+        const bool loaded = slot == m_currentSlot;
+        QAction* loadAct = menu.addAction(loaded ? QString("Reload %1").arg(label) : QString("Load %1").arg(label));
+        QAction* storeAct = menu.addAction(QString("Save Current Board to %1").arg(label));
+        storeAct->setEnabled(!loaded || m_unsavedChanges);
+        menu.addSeparator();
+        QAction* renameAct = menu.addAction("Rename...");
+        QAction* dupAct = menu.addAction("Duplicate to Next Free Slot");
+        QAction* deleteAct = menu.addAction("Delete...");
+        menu.addSeparator();
+        QAction* gridAct = menu.addAction("All Banks...");
+        QAction* chosen = menu.exec(globalPos);
+        if (!chosen) return;
+        if (chosen == loadAct) {
+            if (loaded && m_unsavedChanges) {
+                if (QMessageBox::question(this, "Reload Preset", "Discard unsaved changes and reload?") != QMessageBox::Yes) return;
+                m_unsavedChanges = false;
+                m_currentSlot = -1; // force reload
+            }
+            loadSlot(slot);
+        } else if (chosen == storeAct) {
+            if (loaded) {
+                onSavePreset();
+            } else if (QMessageBox::question(this, "Replace Preset",
+                           QString("Replace \"%1\" in %2 with the current board?").arg(m_presetLibrary.nameAt(slot), label))
+                       == QMessageBox::Yes) {
+                const QString name = m_presetLibrary.nameAt(slot);
+                savePresetToFile(m_presetLibrary.pathAt(slot));
+                m_currentSlot = slot;
+                m_currentPresetName = name;
+                setUnsavedChanges(false);
+                triggerSaveFeedback();
+                saveConfigSettings();
+            }
+        } else if (chosen == renameAct) {
+            startSlotRename(slot, tile);
+        } else if (chosen == dupAct) {
+            duplicatePresetInSlot(slot);
+            rebuildSlotButtons();
+        } else if (chosen == deleteAct) {
+            deletePresetInSlot(slot);
+        } else if (chosen == gridAct) {
+            onPresetButtonClicked();
+        }
+    } else {
+        QAction* saveAct = menu.addAction(QString("Save Current Board to %1...").arg(label));
+        if (menu.exec(globalPos) == saveAct) savePresetToSlot(slot, m_currentPresetName);
+    }
+}
+
+void MainWindow::startSlotRename(int slot, QWidget* tile) {
+    if (!tile || !m_presetLibrary.isOccupied(slot)) return;
+    auto* editor = new QLineEdit(tile); // child of the tile: always drawn on top of it
+    editor->setText(m_presetLibrary.nameAt(slot));
+    editor->setGeometry(tile->rect().adjusted(4, tile->height() / 2 - 2, -4, -3));
+    editor->setStyleSheet("QLineEdit { background-color: #1E1E22; color: white; border: 1px solid #00B0FF; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; }");
+    editor->selectAll();
+    editor->show();
+    editor->setFocus();
+    auto done = std::make_shared<bool>(false);
+    auto finish = [this, editor, slot, done](bool accept) {
+        if (*done) return;
+        *done = true;
+        const QString name = editor->text();
+        editor->deleteLater();
+        if (accept) QTimer::singleShot(0, this, [this, slot, name]() { renamePresetInSlot(slot, name); });
+    };
+    connect(editor, &QLineEdit::editingFinished, this, [finish]() { finish(true); });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), editor, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, this, [finish]() { finish(false); });
+}
+
+void MainWindow::startPresetRename() {
+    if (!m_presetNameLabel) return;
+    if (m_currentSlot < 0) {
+        // Nothing to rename yet: naming an unsaved board means saving it.
+        onSavePresetAs();
+        return;
+    }
+    const int slot = m_currentSlot;
+    // The editor is a child of the label so nothing (e.g. the label being
+    // raised on a refresh) can cover it while typing.
+    QLabel* label = m_presetNameLabel;
+    label->setMinimumWidth(std::max(label->width(), 280));
+    label->adjustSize();
+    auto* editor = new QLineEdit(label);
+    editor->setText(m_currentPresetName);
+    editor->setGeometry(6, label->height() - 36, label->width() - 12, 30);
+    editor->setStyleSheet("QLineEdit { background-color: #1E1E22; color: white; border: 1px solid #00B0FF; border-radius: 4px; padding: 1px 6px; font-size: 16px; font-weight: bold; }");
+    editor->selectAll();
+    editor->show();
+    editor->setFocus();
+    auto done = std::make_shared<bool>(false);
+    auto finish = [this, editor, slot, done](bool accept) {
+        if (*done) return;
+        *done = true;
+        const QString name = editor->text();
+        editor->deleteLater();
+        if (m_presetNameLabel) m_presetNameLabel->setMinimumWidth(0);
+        // Defer: renaming refreshes the panel, and a failure opens a dialog.
+        QTimer::singleShot(0, this, [this, slot, name, accept]() {
+            if (accept) renamePresetInSlot(slot, name);
+            updateCanvasInfo();
+        });
+    };
+    connect(editor, &QLineEdit::editingFinished, this, [finish]() { finish(true); });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), editor, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, this, [finish]() { finish(false); });
+}
+
+void MainWindow::startSceneRename(int index, QWidget* tile) {
+    if (!tile || index < 0 || index >= m_scenes.count()) return;
+    auto* editor = new QLineEdit(tile); // child of the tile: always drawn on top of it
+    editor->setText(m_scenes.scene(index).name);
+    // Cover the name line of the tile; the number stays visible above it.
+    editor->setGeometry(tile->rect().adjusted(4, tile->height() / 2 - 2, -4, -3));
+    editor->setStyleSheet("QLineEdit { background-color: #1E1E22; color: white; border: 1px solid #00B0FF; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; }");
+    editor->selectAll();
+    editor->show();
+    editor->setFocus();
+    auto committed = std::make_shared<bool>(false);
+    auto finish = [this, editor, index, committed](bool accept) {
+        if (*committed) return;
+        *committed = true;
+        const QString name = editor->text().trimmed();
+        editor->deleteLater();
+        if (accept && !name.isEmpty() && index < m_scenes.count() && name != m_scenes.scene(index).name) {
+            m_scenes.renameScene(index, name);
+            setUnsavedChanges(true);
+        }
+        // Rebuild after this event finishes; the editor's button is recreated.
+        QTimer::singleShot(0, this, [this]() { rebuildSceneBar(); });
+    };
+    connect(editor, &QLineEdit::returnPressed, this, [finish]() { finish(true); });
+    connect(editor, &QLineEdit::editingFinished, this, [finish]() { finish(true); });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), editor, nullptr, nullptr, Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, this, [finish]() { finish(false); });
+}
+
+void MainWindow::openSettings(int tabIndex) {
+    if (m_apiKeyEdit) {
+        m_apiKeyEdit->setText(CredentialStore::tone3000ApiKey());
+        if (m_updateKeyStatusFunc) m_updateKeyStatusFunc();
+    }
+    if (m_settingsTabs && tabIndex >= 0) m_settingsTabs->setCurrentIndex(tabIndex);
+    m_settingsDialog->exec();
+    if (m_midi) m_midi->cancelLearn();
+}
+
+void MainWindow::setupMidi() {
+    m_midi = new MidiRouter(m_engine, this);
+    m_midi->setConfig(&m_midiConfig);
+    m_midi->setPresetMap(&m_presetMidi);
+    m_midi->setActionHandler([this](const MidiAction& action) { applyMidiAction(action); });
+    // Always drain: the input may also be wired by hand (qjackctl, Helvum).
+    m_midi->setActive(true);
+
+    m_midiIndicatorTimer = new QTimer(this);
+    m_midiIndicatorTimer->setSingleShot(true);
+    m_midiIndicatorTimer->setInterval(160);
+    const QString idleStyle = m_midiIndicator ? m_midiIndicator->styleSheet() : QString();
+    connect(m_midiIndicatorTimer, &QTimer::timeout, this, [this, idleStyle]() {
+        if (m_midiIndicator) m_midiIndicator->setStyleSheet(idleStyle);
+    });
+    connect(m_midi, &MidiRouter::activity, this, [this](const MidiMessage& msg) {
+        const QString text = msg.describe();
+        if (m_midiIndicator) {
+            if (!m_midiIndicatorTimer->isActive()) {
+                m_midiIndicator->setStyleSheet(
+                    "QToolButton { background-color: #263238; color: #CE93D8; font-size: 11px; border-radius: 4px; padding: 2px 8px; border: none; }"
+                    "QToolButton:hover { background-color: #37474F; }");
+            }
+            m_midiIndicator->setToolTip("Last MIDI: " + text + "\nClick for MIDI settings.");
+        }
+        m_midiIndicatorTimer->start();
+        if (m_midiLastMessageSink) m_midiLastMessageSink(text);
+    });
+}
+
+void MainWindow::setMidiInput(const QString& port) {
+    m_midiConfig.inputPort = port.toStdString();
+    m_engine.setMidiInputPort(m_midiConfig.inputPort);
+    saveConfigSettings();
+}
+
+void MainWindow::applyMidiAction(const MidiAction& action) {
+    auto status = [this](const QString& text) { if (m_statusLabel) m_statusLabel->setText("MIDI: " + text); };
+    switch (action.kind) {
+    case MidiAction::Kind::SelectSlot:
+        if (!m_presetLibrary.isOccupied(action.value)) {
+            status(m_presetLibrary.isValidSlot(action.value)
+                ? QString("slot %1 is empty").arg(m_presetLibrary.slotLabel(action.value))
+                : QString("no slot for program %1").arg(action.value));
+            return;
+        }
+        m_rig->selectSlot(action.value, true);
+        break;
+    case MidiAction::Kind::StepPreset:
+        m_rig->stepPreset(action.value, true);
+        break;
+    case MidiAction::Kind::StepBank:
+        m_rig->stepBank(action.value);
+        break;
+    case MidiAction::Kind::SelectInBank: {
+        if (action.value >= m_presetLibrary.slotsPerBank()) return;
+        const int slot = m_presetLibrary.slotFor(m_viewBank, action.value);
+        if (!m_presetLibrary.isOccupied(slot)) {
+            status(QString("slot %1 is empty").arg(m_presetLibrary.slotLabel(slot)));
+            return;
+        }
+        m_rig->selectInBank(action.value, true);
+        break;
+    }
+    case MidiAction::Kind::SelectScene:
+        if (action.value < m_scenes.count()) m_rig->selectScene(action.value);
+        else status(QString("preset has no scene %1").arg(action.value + 1));
+        break;
+    case MidiAction::Kind::StepScene:
+        m_rig->stepScene(action.value);
+        break;
+    case MidiAction::Kind::ToggleBlock:
+        m_rig->toggleBlock(action.nodeId);
+        break;
+    case MidiAction::Kind::SetBlockEnabled:
+        m_rig->setBlockEnabled(action.nodeId, action.enabled);
+        break;
+    case MidiAction::Kind::SetParam:
+        applyMidiParam(action.nodeId, action.paramIndex, action.normalized);
+        break;
+    }
+}
+
+void MainWindow::applyMidiParam(const std::string& nodeId, uint32_t index, float normalized) {
+    const MidiAssignment* assignment = m_presetMidi.find(nodeId, MidiAssignment::Target::Param, index);
+    if (assignment && assignment->takeover == MidiAssignment::Takeover::Jump) {
+        m_rig->setParam(nodeId, index, normalized);
+        return;
+    }
+
+    // Pickup: the value only starts following once the controller reaches it,
+    // so a scene change never makes a pedal jump the sound somewhere else.
+    float current = normalized;
+    if (auto node = findNodeById(nodeId)) {
+        for (const auto& port : node->getControlPorts()) {
+            if (port.index != index || port.isOutput) continue;
+            const float span = port.maxVal - port.minVal;
+            current = span > 0.0f ? (port.value - port.minVal) / span : 0.0f;
+            break;
+        }
+    }
+
+    constexpr float kCatchTolerance = 1.5f / 127.0f;  // within one controller step
+    auto& state = m_midiPickup[{nodeId, index}];
+    bool& engaged = state.first;
+    float& lastSeen = state.second;
+    const bool firstMessage = !engaged && lastSeen < 0.0f;
+    if (!engaged) {
+        const bool close = std::abs(normalized - current) <= kCatchTolerance;
+        // Crossed the value since the last message: that counts as catching it.
+        const bool crossed = !firstMessage && ((lastSeen - current) * (normalized - current) <= 0.0f);
+        engaged = close || crossed;
+    }
+    lastSeen = normalized;
+    if (!engaged) {
+        if (m_statusLabel) {
+            m_statusLabel->setText(QString("CC %1 is at %2%, the value is at %3% — move past it to take over")
+                                       .arg(assignment ? assignment->cc : 0)
+                                       .arg(qRound(normalized * 100))
+                                       .arg(qRound(current * 100)));
+        }
+        return;
+    }
+    m_rig->setParam(nodeId, index, normalized);
+}
+
+bool MainWindow::rejectGlobalMidiConflict(int cc) {
+    QString reason;
+    if (m_midiConfig.bankSelect && (cc == 0 || cc == 32)) {
+        reason = QString("CC %1 is Bank Select, used with Program Change.").arg(cc);
+    } else if (const auto command = m_midiConfig.commandForCC(cc)) {
+        reason = QString("CC %1 is used for \"%2\" in Settings > MIDI.").arg(cc).arg(midiCommandName(*command));
+    }
+    if (reason.isEmpty()) return false;
+    QMessageBox::warning(this, "MIDI Learn",
+        reason + "\nUse another control, or change the global mapping in Settings > MIDI.");
+    return true;
+}
+
+void MainWindow::startMidiLearn(const QString& what, std::function<void(const MidiMessage&)> onMessage) {
+    if (!m_midi) return;
+    if (m_midiLearnBubble) m_midiLearnBubble->deleteLater();
+
+    // Small non-modal hint at the top of the canvas; the router hands the next
+    // CC/PC to us instead of acting on it.
+    auto* bubble = new QFrame(centralWidget());
+    m_midiLearnBubble = bubble;
+    bubble->setObjectName("midiLearnBubble");
+    bubble->setStyleSheet(
+        "QFrame#midiLearnBubble { background-color: #2A1F33; border: 1px solid #CE93D8; border-radius: 8px; }"
+        "QLabel { color: #F3E5F5; font-size: 12px; background: transparent; border: none; }"
+        "QPushButton { background-color: #3A2A45; color: #E0E0E0; border: 1px solid #6A4A7A; border-radius: 4px; padding: 3px 10px; }"
+        "QPushButton:hover { background-color: #4A3558; }");
+    auto* layout = new QHBoxLayout(bubble);
+    layout->setContentsMargins(12, 8, 8, 8);
+    auto* label = new QLabel(QString("<b>MIDI Learn</b> &nbsp;%1: move a pedal or press a switch on your controller… (Esc to cancel)")
+                             .arg(what.toHtmlEscaped()), bubble);
+    layout->addWidget(label);
+    auto* cancel = new QPushButton("Cancel", bubble);
+    layout->addWidget(cancel);
+    bubble->adjustSize();
+    const QPoint anchor = m_canvas ? m_canvas->mapTo(centralWidget(), QPoint(m_canvas->width() / 2, 12)) : QPoint(width() / 2, 120);
+    bubble->move(anchor.x() - bubble->width() / 2, anchor.y());
+    bubble->show();
+    bubble->raise();
+
+    QPointer<QFrame> guard(bubble);
+    auto close = [this, guard]() {
+        if (guard) guard->deleteLater();
+        if (m_midiLearnBubble == guard) m_midiLearnBubble = nullptr;
+    };
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), bubble);
+    escape->setContext(Qt::WindowShortcut);
+    connect(escape, &QShortcut::activated, this, [this]() { m_midi->cancelLearn(); });
+    connect(cancel, &QPushButton::clicked, this, [this]() { m_midi->cancelLearn(); });
+    connect(m_midi, &MidiRouter::learnCancelled, bubble, [close]() { close(); });
+    // Give up after a while so a forgotten learn doesn't swallow a later message.
+    QTimer::singleShot(30000, bubble, [this]() { m_midi->cancelLearn(); });
+
+    m_midi->startLearn([close, onMessage](const MidiMessage& msg) {
+        close();
+        onMessage(msg);
+    });
+}
+
+void MainWindow::learnBlockMidi(const std::shared_ptr<AudioNode>& node) {
+    if (!node) return;
+    const std::string nodeId = node->uniqueId;
+    const QString name = QString::fromStdString(node->getName());
+    startMidiLearn(name + " on/off", [this, nodeId, name](const MidiMessage& msg) {
+        if (!msg.isCC()) {
+            QMessageBox::information(this, "MIDI Learn",
+                QString("Received %1. Blocks are switched with a CC (a footswitch in CC mode).").arg(msg.describe()));
+            return;
+        }
+        if (rejectGlobalMidiConflict(msg.data1)) return;
+        MidiAssignment assignment;
+        if (const auto* existing = m_presetMidi.find(nodeId, MidiAssignment::Target::Bypass)) assignment = *existing;
+        assignment.cc = msg.data1;
+        assignment.nodeId = nodeId;
+        assignment.target = MidiAssignment::Target::Bypass;
+        m_presetMidi.set(assignment);
+        setUnsavedChanges(true);
+        refreshSceneMarkers();
+        if (m_statusLabel) {
+            m_statusLabel->setText(QString("MIDI: CC %1 switches %2 (%3). Change the mode in Preset > MIDI Assignments.")
+                .arg(msg.data1).arg(name, assignment.mode == MidiAssignment::Mode::Toggle ? "toggle on press" : "follow value"));
+        }
+    });
+}
+
+void MainWindow::learnParamMidi(const std::shared_ptr<AudioNode>& node, uint32_t paramIndex) {
+    if (!node) return;
+    QString paramName = QString::number(paramIndex);
+    for (const auto& port : node->getControlPorts()) {
+        if (port.index == paramIndex) { paramName = QString::fromStdString(port.name); break; }
+    }
+    const std::string nodeId = node->uniqueId;
+    const QString what = QString::fromStdString(node->getName()) + " / " + paramName;
+    startMidiLearn(what, [this, node, nodeId, paramIndex, what](const MidiMessage& msg) {
+        if (!msg.isCC()) {
+            QMessageBox::information(this, "MIDI Learn",
+                QString("Received %1. Parameters follow a CC (expression pedal or knob).").arg(msg.describe()));
+            return;
+        }
+        if (rejectGlobalMidiConflict(msg.data1)) return;
+        MidiAssignment assignment;
+        if (const auto* existing = m_presetMidi.find(nodeId, MidiAssignment::Target::Param, paramIndex)) assignment = *existing;
+        assignment.cc = msg.data1;
+        assignment.nodeId = nodeId;
+        assignment.target = MidiAssignment::Target::Param;
+        assignment.paramIndex = paramIndex;
+        m_presetMidi.set(assignment);
+        // A controller has its own position, which a scene change cannot move.
+        // Keeping the parameter the same in every scene stops the two from
+        // disagreeing; right-click the knob to store it per scene instead.
+        bool madeGlobal = false;
+        if (!m_scenes.isGlobal(nodeId, paramIndex)) {
+            float value = 0.0f;
+            for (const auto& port : node->getControlPorts()) {
+                if (port.index == paramIndex) { value = port.value; break; }
+            }
+            m_scenes.setGlobal(nodeId, paramIndex, true, value);
+            madeGlobal = true;
+        }
+        resetMidiPickup();
+        setUnsavedChanges(true);
+        refreshSceneMarkers();
+        if (m_parameterControlNode == node) showPluginControls(node);
+        if (m_statusLabel) {
+            m_statusLabel->setText(madeGlobal
+                ? QString("MIDI: CC %1 controls %2, now the same in all scenes").arg(msg.data1).arg(what)
+                : QString("MIDI: CC %1 controls %2").arg(msg.data1).arg(what));
+        }
+    });
+}
+
+void MainWindow::showMidiAssignmentsDialog() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("MIDI Assignments");
+    dialog.setMinimumSize(720, 360);
+    dialog.setStyleSheet(styleSheet());
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* intro = new QLabel(
+        "Controls learned for this preset. Add more by right-clicking a block (on/off) or a knob in the Inspector "
+        "and choosing MIDI Learn. <b>Toggle on press</b> suits momentary footswitches; <b>Follow value</b> suits "
+        "switches that send 127 for on and 0 for off. Range limits how far a pedal moves a parameter, and the last "
+        "choice decides what happens when the controller and the value disagree after a scene change.", &dialog);
+    intro->setWordWrap(true);
+    intro->setStyleSheet("color: #AAB3C0; font-size: 11px;");
+    layout->addWidget(intro);
+
+    PresetMidiMap edited = m_presetMidi;
+    auto* table = new QTableWidget(&dialog);
+    table->setColumnCount(5);
+    table->setHorizontalHeaderLabels({"CC", "Block", "Controls", "Behaviour", ""});
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    layout->addWidget(table, 1);
+
+    std::function<void()> rebuild;
+    rebuild = [this, table, &edited, &rebuild]() {
+        auto& list = edited.assignments();
+        table->setRowCount(static_cast<int>(list.size()));
+        for (int row = 0; row < static_cast<int>(list.size()); ++row) {
+            MidiAssignment& a = list[row];
+            auto node = findNodeById(a.nodeId);
+            auto* ccSpin = new QSpinBox(table);
+            ccSpin->setRange(0, 127);
+            ccSpin->setValue(a.cc);
+            ccSpin->setPrefix("CC ");
+            QObject::connect(ccSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.cc = v; });
+            table->setCellWidget(row, 0, ccSpin);
+            table->setItem(row, 1, new QTableWidgetItem(node ? QString::fromStdString(node->getName()) : QString("(missing block)")));
+
+            QString target = "On / Off";
+            if (a.target == MidiAssignment::Target::Param) {
+                target = QString("Parameter %1").arg(a.paramIndex);
+                if (node) {
+                    for (const auto& port : node->getControlPorts()) {
+                        if (port.index == a.paramIndex) { target = QString::fromStdString(port.name); break; }
+                    }
+                }
+            }
+            table->setItem(row, 2, new QTableWidgetItem(target));
+
+            auto* behaviour = new QWidget(table);
+            auto* bl = new QHBoxLayout(behaviour);
+            bl->setContentsMargins(4, 0, 4, 0);
+            if (a.target == MidiAssignment::Target::Bypass) {
+                auto* mode = new QComboBox(behaviour);
+                mode->addItems({"Toggle on press", "Follow value (127 on / 0 off)"});
+                mode->setCurrentIndex(a.mode == MidiAssignment::Mode::Toggle ? 0 : 1);
+                QObject::connect(mode, &QComboBox::currentIndexChanged, table, [&a](int i) {
+                    a.mode = i == 0 ? MidiAssignment::Mode::Toggle : MidiAssignment::Mode::Follow;
+                });
+                bl->addWidget(mode);
+            } else {
+                auto makePercent = [behaviour](float v) {
+                    auto* spin = new QSpinBox(behaviour);
+                    spin->setRange(0, 100);
+                    spin->setSuffix(" %");
+                    spin->setValue(qRound(v * 100.0f));
+                    return spin;
+                };
+                auto* minSpin = makePercent(a.min);
+                auto* maxSpin = makePercent(a.max);
+                auto* invert = new QCheckBox("Invert", behaviour);
+                invert->setChecked(a.invert);
+                QObject::connect(minSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.min = v / 100.0f; });
+                QObject::connect(maxSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.max = v / 100.0f; });
+                QObject::connect(invert, &QCheckBox::toggled, table, [&a](bool on) { a.invert = on; });
+                auto* takeover = new QComboBox(behaviour);
+                takeover->addItem("Wait for the controller", static_cast<int>(MidiAssignment::Takeover::Pickup));
+                takeover->addItem("Take over at once", static_cast<int>(MidiAssignment::Takeover::Jump));
+                takeover->setCurrentIndex(a.takeover == MidiAssignment::Takeover::Jump ? 1 : 0);
+                takeover->setToolTip(
+                    "After a scene or preset change the controller sits where you left it, which may "
+                    "be far from the stored value.\n\n"
+                    "Wait for the controller: nothing moves until the controller passes the value. "
+                    "Best for knobs and faders.\n"
+                    "Take over at once: the value jumps to the controller as soon as it moves. "
+                    "Best for a wah or volume pedal, where the pedal's position is what counts.");
+                QObject::connect(takeover, &QComboBox::currentIndexChanged, table, [&a, takeover](int) {
+                    a.takeover = static_cast<MidiAssignment::Takeover>(takeover->currentData().toInt());
+                });
+                bl->addWidget(new QLabel("From", behaviour));
+                bl->addWidget(minSpin);
+                bl->addWidget(new QLabel("to", behaviour));
+                bl->addWidget(maxSpin);
+                bl->addWidget(invert);
+                bl->addWidget(takeover);
+            }
+            table->setCellWidget(row, 3, behaviour);
+
+            auto* remove = new QPushButton("Remove", table);
+            QObject::connect(remove, &QPushButton::clicked, table, [row, &edited, &rebuild]() {
+                auto& items = edited.assignments();
+                if (row < static_cast<int>(items.size())) items.erase(items.begin() + row);
+                // Rebuild after this click handler; it deletes the button.
+                QTimer::singleShot(0, [&rebuild]() { rebuild(); });
+            });
+            table->setCellWidget(row, 4, remove);
+        }
+        table->resizeRowsToContents();
+    };
+    rebuild();
+
+    auto* empty = new QLabel("No MIDI assignments in this preset yet.", &dialog);
+    empty->setStyleSheet("color: #777777; font-style: italic;");
+    empty->setVisible(edited.assignments().empty());
+    layout->addWidget(empty);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    if (dialog.exec() != QDialog::Accepted) return;
+    for (const auto& a : edited.assignments()) {
+        if (m_midiConfig.commandForCC(a.cc)) {
+            rejectGlobalMidiConflict(a.cc);
+            return;
+        }
+    }
+    const QJsonObject before = m_presetMidi.toJson();
+    m_presetMidi = edited;
+    if (m_presetMidi.toJson() != before) setUnsavedChanges(true);
+    refreshSceneMarkers();
+    if (m_parameterControlNode) showPluginControls(m_parameterControlNode);
+}
+
+QWidget* MainWindow::buildMidiSettingsTab() {
+    auto* tab = new QWidget();
+    auto* tabLayout = new QVBoxLayout(tab);
+    tabLayout->setContentsMargins(10, 10, 10, 10);
+    const QString groupStyle = QString(SettingsUi::kGroupStyle)
+        + "QGroupBox QLabel, QGroupBox QCheckBox { background: transparent; }";
+
+    // Device and channel
+    auto* deviceBox = new SettingsUi::Group("MIDI Input", tab,
+        "The port RigRoom listens to, and the channel it accepts. Omni takes every channel, which is "
+        "right unless something else on the same port sends its own messages.<br><br>"
+        "<b>Last message</b> shows what arrived, which is the quickest way to see what a switch or "
+        "pedal actually sends.");
+    deviceBox->setStyleSheet(groupStyle);
+    auto* deviceForm = SettingsUi::form(deviceBox);
+    auto* deviceRow = new QHBoxLayout();
+    auto* deviceCombo = new QComboBox(deviceBox);
+    deviceCombo->setMinimumWidth(220);
+    deviceCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* refreshBtn = new QPushButton("Refresh", deviceBox);
+    deviceRow->addWidget(deviceCombo, 1);
+    deviceRow->addWidget(refreshBtn);
+    auto populateDevices = [this, deviceCombo]() {
+        const QSignalBlocker blocker(deviceCombo);
+        deviceCombo->clear();
+        deviceCombo->addItem("None", QString());
+        const QString current = QString::fromStdString(m_midiConfig.inputPort);
+        bool found = current.isEmpty();
+        for (const auto& port : m_engine.getMidiSources()) {
+            const QString name = QString::fromStdString(port);
+            deviceCombo->addItem(name, name);
+            if (name == current) found = true;
+        }
+        if (!found) deviceCombo->addItem(current + "  (not connected)", current);
+        deviceCombo->setCurrentIndex(std::max(0, deviceCombo->findData(current)));
+    };
+    populateDevices();
+    connect(refreshBtn, &QPushButton::clicked, this, populateDevices);
+    connect(deviceCombo, &QComboBox::currentIndexChanged, this, [this, deviceCombo](int) {
+        setMidiInput(deviceCombo->currentData().toString());
+    });
+    deviceForm->addRow("Device:", deviceRow);
+
+    auto* channelCombo = new QComboBox(deviceBox);
+    channelCombo->addItem("Omni (all channels)", 0);
+    for (int ch = 1; ch <= 16; ++ch) channelCombo->addItem(QString("Channel %1").arg(ch), ch);
+    channelCombo->setCurrentIndex(std::max(0, channelCombo->findData(m_midiConfig.channel)));
+    connect(channelCombo, &QComboBox::currentIndexChanged, this, [this, channelCombo](int) {
+        m_midiConfig.channel = channelCombo->currentData().toInt();
         saveConfigSettings();
+    });
+    deviceForm->addRow("Channel:", channelCombo);
+
+    auto* lastLabel = new QLabel("—", deviceBox);
+    lastLabel->setStyleSheet("color: #CE93D8; font-size: 12px; font-weight: bold;");
+    m_midiLastMessageSink = [lastLabel](const QString& text) { lastLabel->setText(text); };
+    deviceForm->addRow("Last message:", lastLabel);
+    tabLayout->addWidget(deviceBox);
+
+    // Program Change
+    auto* pcBox = new SettingsUi::Group("Program Change", tab,
+        "<b>Presets:</b> PC 0 loads 01A, PC 1 loads 01B, and so on. Changing preset rebuilds the "
+        "signal chain, so there is a short gap.<br><br>"
+        "<b>Scenes of the loaded preset:</b> PC 0 picks scene 1 … PC 7 picks scene 8. For footswitches "
+        "that can only send Program Change; no gap, because nothing is reloaded.<br><br>"
+        "<b>Bank Select</b> (CC 0) reaches preset slots past the first 128. Tick <b>counts programs "
+        "from 1</b> if your controller's PC 1 should mean the first preset or scene.");
+    pcBox->setStyleSheet(groupStyle);
+    auto* pcLayout = new QVBoxLayout(pcBox);
+    pcLayout->setSpacing(SettingsUi::kGroupSpacing);
+    auto* pcForm = SettingsUi::form(nullptr);
+    pcForm->setContentsMargins(0, 0, 0, 0);
+    auto* pcModeCombo = new QComboBox(pcBox);
+    pcModeCombo->addItem("Presets  (PC 0 = 01A, PC 1 = 01B, …)",
+                         static_cast<int>(GlobalMidiConfig::PcMode::Presets));
+    pcModeCombo->addItem("Scenes of the loaded preset  (PC 0 = scene 1 … PC 7 = scene 8)",
+                         static_cast<int>(GlobalMidiConfig::PcMode::Scenes));
+    pcModeCombo->addItem("Nothing  (ignore Program Change)", static_cast<int>(GlobalMidiConfig::PcMode::Off));
+    pcModeCombo->setCurrentIndex(std::max(0, pcModeCombo->findData(static_cast<int>(m_midiConfig.pcMode))));
+    pcForm->addRow("Selects:", pcModeCombo);
+    pcLayout->addLayout(pcForm);
+    auto* bankSelect = new QCheckBox("Bank Select (CC 0) reaches preset slots beyond 128", pcBox);
+    bankSelect->setChecked(m_midiConfig.bankSelect);
+    auto* pcOffset = new QCheckBox("My controller counts programs from 1 (its PC 1 = the first preset or scene)", pcBox);
+    pcOffset->setChecked(m_midiConfig.pcOffset == 1);
+    auto updatePcOptions = [bankSelect, pcModeCombo]() {
+        const auto mode = static_cast<GlobalMidiConfig::PcMode>(pcModeCombo->currentData().toInt());
+        bankSelect->setEnabled(mode == GlobalMidiConfig::PcMode::Presets);
+    };
+    updatePcOptions();
+    connect(pcModeCombo, &QComboBox::currentIndexChanged, this, [this, pcModeCombo, updatePcOptions](int) {
+        m_midiConfig.pcMode = static_cast<GlobalMidiConfig::PcMode>(pcModeCombo->currentData().toInt());
+        updatePcOptions();
+        saveConfigSettings();
+    });
+    connect(bankSelect, &QCheckBox::toggled, this, [this](bool on) { m_midiConfig.bankSelect = on; saveConfigSettings(); });
+    connect(pcOffset, &QCheckBox::toggled, this, [this](bool on) { m_midiConfig.pcOffset = on ? 1 : 0; saveConfigSettings(); });
+    pcLayout->addWidget(bankSelect);
+    pcLayout->addWidget(pcOffset);
+    tabLayout->addWidget(pcBox);
+
+    // How far previous/next reaches. With bank up/down on the controller,
+    // staying in the bank keeps a footswitch from wandering off mid-set.
+    auto* stepBox = new SettingsUi::Group("Previous / Next Preset", tab,
+        "How far the previous/next commands reach.<br><br>"
+        "<b>Across banks</b> steps through every preset in the library, which is the only workable "
+        "choice on a controller with just two switches.<br><br>"
+        "<b>Within the shown bank</b> keeps to the four presets of the bank you are on, wrapping from "
+        "D back to A. Best when your controller also has bank up/down, because the bank then changes "
+        "only when you say so.<br><br>"
+        "Either way the setting applies to the Previous/Next buttons and Alt+Left / Alt+Right too.");
+    stepBox->setStyleSheet(groupStyle);
+    auto* stepLayout = new QVBoxLayout(stepBox);
+    stepLayout->setSpacing(SettingsUi::kGroupSpacing);
+    auto* stepAll = new QRadioButton("Step through every preset, across banks", stepBox);
+    auto* stepBank = new QRadioButton("Step only within the shown bank (A-D, wrapping around)", stepBox);
+    stepAll->setChecked(!m_midiConfig.stepWithinBank);
+    stepBank->setChecked(m_midiConfig.stepWithinBank);
+
+    stepLayout->addWidget(stepAll);
+    stepLayout->addWidget(stepBank);
+    connect(stepBank, &QRadioButton::toggled, this, [this](bool on) {
+        m_midiConfig.stepWithinBank = on;
+        saveConfigSettings();
+    });
+    tabLayout->addWidget(stepBox);
+
+    // Performance commands, in two columns: presets & banks | scenes.
+    auto* cmdBox = new SettingsUi::Group("Performance Commands (CC)", tab,
+        "Global switches that work in every preset. A switch fires when pressed (value 64 or more); "
+        "set a command to Off to free its CC.<br><br>"
+        "<b>Presets &amp; banks:</b> bank up/down only change the shown bank, like the ◀ ▶ buttons; "
+        "Preset A–D then load from it.<br><br>"
+        "<b>Scenes</b> — use whichever your controller can send:<br>"
+        "• <b>Scene select</b>: one CC whose value picks the scene (0 = scene 1, 1 = scene 2…)<br>"
+        "• <b>Scene 1–8</b>: one CC per switch, fires on press<br>"
+        "• <b>Program Change</b>: choose Scenes above<br>"
+        "• <b>Previous / Next</b>: step through scenes<br><br>"
+        "Block on/off and pedal controls are learned per preset instead: right-click a block or knob → MIDI Learn.");
+    cmdBox->setStyleSheet(groupStyle);
+    auto* cmdLayout = new QVBoxLayout(cmdBox);
+    cmdLayout->setSpacing(SettingsUi::kGroupSpacing);
+
+    // Both halves live in one grid, so the CC fields and Learn buttons line up
+    // across the whole box instead of drifting with the headings above them.
+    auto* commandGrid = new QGridLayout();
+    commandGrid->setHorizontalSpacing(10);
+    commandGrid->setVerticalSpacing(4);
+    commandGrid->setColumnMinimumWidth(3, 24);
+    commandGrid->setColumnStretch(0, 1);
+    commandGrid->setColumnStretch(4, 1);
+    commandGrid->addWidget(SettingsUi::subheading("Presets & banks", cmdBox), 0, 0, 1, 3);
+    commandGrid->addWidget(SettingsUi::subheading("Scenes", cmdBox), 0, 4, 1, 3);
+    QGridLayout* presetGrid = commandGrid;
+    QGridLayout* sceneGrid = commandGrid;
+    cmdLayout->addLayout(commandGrid);
+
+    auto* cmdMessage = new QLabel(cmdBox);
+    cmdMessage->setStyleSheet(SettingsUi::kWarningCss);
+
+    auto spinsShared = std::make_shared<std::vector<QSpinBox*>>(kMidiCommandCount, nullptr);
+    int presetRow = 1;
+    int sceneRow = 1;
+    const MidiCommand order[] = {
+        MidiCommand::PresetPrev, MidiCommand::PresetNext, MidiCommand::BankDown, MidiCommand::BankUp,
+        MidiCommand::SelectA, MidiCommand::SelectB, MidiCommand::SelectC, MidiCommand::SelectD,
+        MidiCommand::SceneSelect,
+        MidiCommand::Scene1, MidiCommand::Scene2, MidiCommand::Scene3, MidiCommand::Scene4,
+        MidiCommand::Scene5, MidiCommand::Scene6, MidiCommand::Scene7, MidiCommand::Scene8,
+        MidiCommand::ScenePrev, MidiCommand::SceneNext,
+    };
+    for (MidiCommand command : order) {
+        const int i = static_cast<int>(command);
+        const bool isScene = command == MidiCommand::SceneSelect || command == MidiCommand::ScenePrev
+                             || command == MidiCommand::SceneNext
+                             || (command >= MidiCommand::Scene1 && command <= MidiCommand::Scene8);
+        QGridLayout* grid = isScene ? sceneGrid : presetGrid;
+        const int row = isScene ? sceneRow++ : presetRow++;
+
+        const int column = isScene ? 4 : 0;
+        auto* name = new QLabel(midiCommandName(command), cmdBox);
+        name->setStyleSheet(SettingsUi::kValueCss);
+        auto* spin = new QSpinBox(cmdBox);
+        spin->setRange(-1, 127);
+        spin->setSpecialValueText("Off");
+        spin->setPrefix("CC ");
+        spin->setValue(m_midiConfig.commandCC[i]);
+        spin->setFixedWidth(92);
+        auto* learn = new QPushButton("Learn", cmdBox);
+        learn->setFixedWidth(76);
+        grid->addWidget(name, row, column);
+        grid->addWidget(spin, row, column + 1);
+        grid->addWidget(learn, row, column + 2);
+        (*spinsShared)[i] = spin;
+
+        connect(spin, &QSpinBox::valueChanged, this, [this, i, spinsShared, cmdMessage](int value) {
+            // One CC drives one command: take it away from any other command.
+            if (value >= 0) {
+                for (int other = 0; other < kMidiCommandCount; ++other) {
+                    if (other == i || m_midiConfig.commandCC[other] != value) continue;
+                    m_midiConfig.commandCC[other] = -1;
+                    const QSignalBlocker blocker((*spinsShared)[other]);
+                    (*spinsShared)[other]->setValue(-1);
+                    cmdMessage->setText(QString("CC %1 moved from \"%2\".").arg(value)
+                        .arg(midiCommandName(static_cast<MidiCommand>(other))));
+                }
+            }
+            m_midiConfig.commandCC[i] = value;
+            saveConfigSettings();
+        });
+        connect(learn, &QPushButton::clicked, this, [this, spin, learn]() {
+            if (m_midi->isLearning()) {
+                m_midi->cancelLearn();
+                return;
+            }
+            learn->setText("Listening");
+            QPointer<QPushButton> guard(learn);
+            auto restore = [guard]() { if (guard) guard->setText("Learn"); };
+            connect(m_midi, &MidiRouter::learnCancelled, learn, restore, Qt::SingleShotConnection);
+            m_midi->startLearn([spin, restore](const MidiMessage& msg) {
+                restore();
+                if (msg.isCC()) spin->setValue(msg.data1);
+            });
+        });
     }
-}
+    sceneGrid->setRowStretch(sceneRow, 1);
+    presetGrid->setRowStretch(presetRow, 1);
 
-void MainWindow::onLoadPreset() {
-    QString presetName = m_presetCombo->currentText();
-    if (presetName.isEmpty()) return;
-    
-    QString fullPath = QDir::homePath() + "/.config/RigRoom/presets/" + presetName + ".json";
-    loadPresetFromFile(fullPath);
-    m_currentPresetIndex = m_presetCombo->currentIndex();
-    setUnsavedChanges(false);
-}
 
-void MainWindow::onPrevPreset() {
-    if (!m_presetCombo || m_presetCombo->count() == 0) return;
-    int curr = m_presetCombo->currentIndex();
-    if (curr > 0) {
-        if (!promptUnsavedChanges()) return;
-        m_presetCombo->setCurrentIndex(curr - 1);
-        onPresetComboActivated(curr - 1);
-    }
-}
+    auto* bottomRow = new QHBoxLayout();
+    bottomRow->addWidget(cmdMessage, 1);
+    auto* resetBtn = new QPushButton("Reset to Defaults", cmdBox);
+    connect(resetBtn, &QPushButton::clicked, this, [this, spinsShared, cmdMessage]() {
+        for (int i = 0; i < kMidiCommandCount; ++i) {
+            m_midiConfig.commandCC[i] = GlobalMidiConfig::defaultCC(static_cast<MidiCommand>(i));
+            const QSignalBlocker blocker((*spinsShared)[i]);
+            (*spinsShared)[i]->setValue(m_midiConfig.commandCC[i]);
+        }
+        cmdMessage->setText("Default CCs restored.");
+        saveConfigSettings();
+    });
+    bottomRow->addWidget(resetBtn);
+    cmdLayout->addLayout(bottomRow);
+    tabLayout->addWidget(cmdBox);
+    tabLayout->addStretch();
 
-void MainWindow::onNextPreset() {
-    if (!m_presetCombo || m_presetCombo->count() == 0) return;
-    int curr = m_presetCombo->currentIndex();
-    if (curr < m_presetCombo->count() - 1) {
-        if (!promptUnsavedChanges()) return;
-        m_presetCombo->setCurrentIndex(curr + 1);
-        onPresetComboActivated(curr + 1);
-    }
-}
-
-void MainWindow::updatePresetNavigationButtons() {
-    if (!m_presetCombo || !m_prevPresetBtn || !m_nextPresetBtn) return;
-    int curr = m_presetCombo->currentIndex();
-    int count = m_presetCombo->count();
-    m_prevPresetBtn->setEnabled(curr > 0);
-    m_nextPresetBtn->setEnabled(curr >= 0 && curr < count - 1);
+    auto* scroll = new QScrollArea();
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(tab);
+    return scroll;
 }
 
 void MainWindow::triggerSaveFeedback() {
@@ -2679,8 +4061,8 @@ void MainWindow::triggerSaveFeedback() {
     m_saveFeedbackTimer->start(1500);
 
     if (m_statusLabel) {
-        QString currentPreset = m_presetCombo->currentText();
-        m_statusLabel->setText(QString("Preset '%1' saved successfully!").arg(currentPreset));
+        m_statusLabel->setText(QString("Preset '%1' saved to %2")
+            .arg(m_currentPresetName, m_presetLibrary.slotLabel(m_currentSlot)));
     }
 }
 
@@ -2847,6 +4229,8 @@ void MainWindow::saveConfigSettings() {
     configObj["outputGain"] = m_engine.getOutputGainDB();
     configObj["audioConfigured"] = m_audioConfigured;
     configObj["defaultTrackSlots"] = m_globalDefaultSlots;
+    configObj["pluginPreviews"] = m_pluginPreviewsEnabled;
+    configObj["pluginPreviewsOnImport"] = m_pluginPreviewsOnImport;
 
     QJsonArray lv2Arr, vst3Arr, clapArr;
     for (const auto& p : m_customLV2Paths) lv2Arr.append(p);
@@ -2856,11 +4240,9 @@ void MainWindow::saveConfigSettings() {
     configObj["customVST3Paths"] = vst3Arr;
     configObj["customCLAPPaths"] = clapArr;
 
-    if (m_currentPresetIndex >= 0 && m_presetCombo && m_presetCombo->currentIndex() >= 0) {
-        configObj["lastPreset"] = m_presetCombo->currentText();
-    } else {
-        configObj["lastPreset"] = "";
-    }
+    configObj["midi"] = m_midiConfig.toJson();
+    configObj["lastPreset"] = m_currentPresetName;
+    configObj["lastSlot"] = m_currentSlot;
     
     QFile configFileWrite(QDir::homePath() + "/.config/RigRoom/config.json");
     if (configFileWrite.open(QFile::WriteOnly)) {
@@ -3053,9 +4435,22 @@ void MainWindow::onOutputGainChanged(int value) {
 }
 
 void MainWindow::savePresetToFile(const QString& path) {
+    // Remember any edits made in the active scene before writing.
+    const SceneModel::BoardState live = captureBoardState();
+    m_scenes.captureActive(live);
+    m_scenes.prune(live);
+
     QJsonObject presetObj;
-    presetObj["formatVersion"] = 6;
+    presetObj["formatVersion"] = 8;
     presetObj["outputLevelDb"] = m_engine.getPresetOutputLevelDB();
+    // Top-level node state mirrors the active scene, so older builds open it as-is.
+    presetObj["scenes"] = m_scenes.toJson();
+    {
+        std::set<std::string> liveIds;
+        for (const auto& [id, bypassed] : live.bypass) liveIds.insert(id);
+        m_presetMidi.prune(liveIds);
+        presetObj["midi"] = m_presetMidi.toJson();
+    }
     
     QJsonArray nodesArray;
     for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r) {
@@ -3166,6 +4561,7 @@ void MainWindow::loadPresetFromFile(const QString& path) {
     QJsonObject presetObj = doc.object();
     // Older presets did not have a final output stage, so their neutral value is 0 dB.
     m_engine.setPresetOutputLevel(static_cast<float>(presetObj["outputLevelDb"].toDouble(0.0)));
+    m_engine.setSceneOutputLevel(0.0f);
     
     m_canvas->beginRoutingUpdate();
     m_canvas->clearCanvas();
@@ -3191,7 +4587,10 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         
         std::shared_ptr<AudioNode> node;
         
-        if (typeStr == "LV2Plugin") {
+        if (uri == "builtin:bypass") {
+            // BypassNode reports itself as LV2Plugin, so it is saved with that type.
+            node = std::make_shared<BypassNode>();
+        } else if (typeStr == "LV2Plugin") {
             if (m_lilvWorld) {
                 const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
                 if (plugins) {
@@ -3395,14 +4794,28 @@ void MainWindow::loadPresetFromFile(const QString& path) {
         m_canvas->setSplitSectionPresent(3, m_canvas->isBranchEnabled(3));
     }
     m_canvas->endRoutingUpdate();
+
+    // Presets before format 7 have no scenes; they load as a single scene.
+    m_scenes.fromJson(presetObj["scenes"].toObject(), captureBoardState());
+    m_presetMidi = PresetMidiMap::fromJson(presetObj["midi"].toObject());
+    m_engine.setSceneOutputLevel(m_scenes.active().levelDb);
+    rebuildSceneBar();
     
     // Layout and selection notifications posted while nodes are restored can arrive
     // after this function returns. Keep them from being treated as user edits.
     QTimer::singleShot(0, this, [this]() {
         m_isLoadingPreset = false;
         setUnsavedChanges(false);
-        m_canvas->fitToCanvas();
+        // Only reframe on load when the user asked for automatic fitting.
+        if (m_canvas->autoFit()) m_canvas->fitToCanvas();
     });
+}
+
+void MainWindow::onNodeBypassToggled(std::shared_ptr<AudioNode> node) {
+    if (!node || m_isLoadingPreset) return;
+    setUnsavedChanges(true);
+    refreshSceneMarkers();
+    emit m_rig->blockToggled(QString::fromStdString(node->uniqueId), node->isBypassed());
 }
 
 void MainWindow::onNodeSelected(std::shared_ptr<AudioNode> node) {
@@ -4368,41 +5781,60 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         description->setStyleSheet("color:#AAB3C0; font-size:11px; border:none;");
         outputLayout->addWidget(description);
 
-        auto* cell = new QWidget(outputCard);
-        cell->setStyleSheet("background:transparent; border:none;");
-        auto* cellLayout = new QVBoxLayout(cell);
-        cellLayout->setContentsMargins(4, 3, 4, 3);
-        cellLayout->setSpacing(3);
-        auto* title = new QLabel("Preset Level", cell);
-        title->setAlignment(Qt::AlignCenter);
-        title->setStyleSheet("color:#C9D0DA; font-size:10px; border:none;");
-        auto* knob = new InspectorKnob(cell);
-        knob->setRange(-240, 120);
-        knob->setDefaultValue(0);
-        knob->setValue(qRound(m_engine.getPresetOutputLevelDB() * 10.0f));
-        knob->setAccessibleName("Preset Level");
-        knob->setToolTip("Drag to adjust. Double-click to reset.");
-        auto* valueLabel = new InspectorValueLabel(cell);
-        valueLabel->setAlignment(Qt::AlignCenter);
-        valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold; border:none;");
-        auto updateValue = [knob, valueLabel](int value) {
-            const QString text = QString::number(value / 10.0, 'f', 1) + " dB";
-            valueLabel->setText(text);
-            knob->setAccessibleValueText(text);
+        auto makeLevelCell = [this, outputCard](const QString& name, float db, const QString& tooltip,
+                                                 std::function<void(float)> apply) {
+            auto* cell = new QWidget(outputCard);
+            cell->setStyleSheet("background:transparent; border:none;");
+            auto* cellLayout = new QVBoxLayout(cell);
+            cellLayout->setContentsMargins(4, 3, 4, 3);
+            cellLayout->setSpacing(3);
+            auto* title = new QLabel(name, cell);
+            title->setAlignment(Qt::AlignCenter);
+            title->setStyleSheet("color:#C9D0DA; font-size:10px; border:none;");
+            title->setToolTip(tooltip);
+            auto* knob = new InspectorKnob(cell);
+            knob->setRange(-240, 120);
+            knob->setDefaultValue(0);
+            knob->setValue(qRound(db * 10.0f));
+            knob->setAccessibleName(name);
+            knob->setToolTip(tooltip + "\nDrag to adjust. Double-click to reset.");
+            auto* valueLabel = new InspectorValueLabel(cell);
+            valueLabel->setAlignment(Qt::AlignCenter);
+            valueLabel->setStyleSheet("color:#7DD3FC; font-size:11px; font-weight:bold; border:none;");
+            auto updateValue = [knob, valueLabel](int value) {
+                const QString text = QString::number(value / 10.0, 'f', 1) + " dB";
+                valueLabel->setText(text);
+                knob->setAccessibleValueText(text);
+            };
+            updateValue(knob->value());
+            valueLabel->setEditor("Set " + name, -24.0, 12.0, 1,
+                [knob] { return knob->value() / 10.0; },
+                [knob](double value) { knob->setValue(qRound(value * 10.0)); });
+            cellLayout->addWidget(title);
+            cellLayout->addWidget(knob, 0, Qt::AlignHCenter);
+            cellLayout->addWidget(valueLabel);
+            connect(knob, &QDial::valueChanged, this, [this, updateValue, apply](int value) {
+                apply(value / 10.0f);
+                updateValue(value);
+                setUnsavedChanges(true);
+            });
+            return cell;
         };
-        updateValue(knob->value());
-        valueLabel->setEditor("Set Preset Level", -24.0, 12.0, 1,
-            [knob] { return knob->value() / 10.0; },
-            [knob](double value) { knob->setValue(qRound(value * 10.0)); });
-        cellLayout->addWidget(title);
-        cellLayout->addWidget(knob, 0, Qt::AlignHCenter);
-        cellLayout->addWidget(valueLabel);
-        outputLayout->addWidget(cell, 0, Qt::AlignHCenter);
-        connect(knob, &QDial::valueChanged, this, [this, updateValue](int value) {
-            m_engine.setPresetOutputLevel(value / 10.0f);
-            updateValue(value);
-            setUnsavedChanges(true);
-        });
+
+        auto* levelRow = new QHBoxLayout();
+        levelRow->setSpacing(18);
+        levelRow->addStretch();
+        levelRow->addWidget(makeLevelCell("Preset Level", m_engine.getPresetOutputLevelDB(),
+            "Level of the whole preset", [this](float db) { m_engine.setPresetOutputLevel(db); }));
+        const auto& scene = m_scenes.active();
+        levelRow->addWidget(makeLevelCell(QString("Scene Level (%1)").arg(scene.name), scene.levelDb,
+            "Trim for the active scene, added to the preset level",
+            [this](float db) {
+                m_scenes.setActiveLevel(db);
+                m_engine.setSceneOutputLevel(db);
+            }));
+        levelRow->addStretch();
+        outputLayout->addLayout(levelRow);
         m_paramLayout->addWidget(outputCard);
         return;
     }
@@ -4772,6 +6204,79 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         rowLayout->addWidget(label);
         
         uint32_t idx = param.index;
+
+        // Two marks can sit in front of a parameter name: "=" when it keeps one
+        // value in every scene, and the CC number when a controller drives it.
+        const bool globalParam = m_scenes.isGlobal(node->uniqueId, idx);
+        const MidiAssignment* paramMidi = m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
+        if (globalParam || paramMidi) {
+            QStringList badges;
+            QStringList tips;
+            if (globalParam) {
+                badges << "<span style='color:#8FA6DA;'>=</span>";
+                tips << "Same in all scenes";
+            }
+            if (paramMidi) {
+                badges << QString("<span style='color:#7EC77E;'>CC&nbsp;%1</span>").arg(paramMidi->cc);
+                tips << QString("MIDI CC %1, %2")
+                            .arg(paramMidi->cc)
+                            .arg(paramMidi->takeover == MidiAssignment::Takeover::Jump
+                                     ? "takes over as soon as the controller moves"
+                                     : "takes over once the controller reaches the value");
+            }
+            label->setTextFormat(Qt::RichText);
+            label->setText(badges.join("&nbsp;") + "&nbsp; " + label->text().toHtmlEscaped());
+            label->setToolTip(label->toolTip() + "\n" + tips.join("\n"));
+        }
+        rowWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+        const int paramMidiCC = paramMidi ? paramMidi->cc : -1;
+        connect(rowWidget, &QWidget::customContextMenuRequested, this, [this, node, idx, globalParam, rowWidget, paramMidiCC](const QPoint& pos) {
+            QMenu menu(this);
+            menu.setStyleSheet(
+                "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
+                "QMenu::item:selected { background-color: #007ACC; color: white; }");
+            QAction* act = menu.addAction(globalParam ? "Store per scene" : "Keep same in all scenes");
+            menu.addSeparator();
+            QAction* learnAct = menu.addAction(paramMidiCC >= 0 ? QString("MIDI: CC %1 - Learn Again...").arg(paramMidiCC)
+                                                               : QString("MIDI Learn..."));
+            QAction* takeoverAct = nullptr;
+            if (paramMidiCC >= 0) {
+                const MidiAssignment* current =
+                    m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
+                const bool jumps = current && current->takeover == MidiAssignment::Takeover::Jump;
+                takeoverAct = menu.addAction(jumps ? "Wait for the controller (pickup)"
+                                                   : "Take over at once (pedal)");
+            }
+            QAction* removeMidiAct = paramMidiCC >= 0 ? menu.addAction(QString("Remove MIDI (CC %1)").arg(paramMidiCC)) : nullptr;
+            QAction* chosen = menu.exec(rowWidget->mapToGlobal(pos));
+            // Rebuilding the Inspector deletes rowWidget; defer past this handler.
+            if (chosen == act) {
+                QTimer::singleShot(0, this, [this, node, idx]() { toggleParamSceneControl(node, idx); });
+            } else if (chosen == learnAct) {
+                QTimer::singleShot(0, this, [this, node, idx]() { learnParamMidi(node, idx); });
+            } else if (takeoverAct && chosen == takeoverAct) {
+                QTimer::singleShot(0, this, [this, node, idx]() {
+                    const MidiAssignment* found =
+                        m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
+                    if (!found) return;
+                    MidiAssignment updated = *found;
+                    updated.takeover = updated.takeover == MidiAssignment::Takeover::Jump
+                                           ? MidiAssignment::Takeover::Pickup
+                                           : MidiAssignment::Takeover::Jump;
+                    m_presetMidi.set(updated);
+                    resetMidiPickup();
+                    setUnsavedChanges(true);
+                    showPluginControls(node);
+                });
+            } else if (removeMidiAct && chosen == removeMidiAct) {
+                QTimer::singleShot(0, this, [this, node, idx]() {
+                    m_presetMidi.removeFor(node->uniqueId, MidiAssignment::Target::Param, idx);
+                    setUnsavedChanges(true);
+                    refreshSceneMarkers();
+                    showPluginControls(node);
+                });
+            }
+        });
         float min = param.minVal;
         float max = param.maxVal;
         auto makeResettable = [this, idx, defaultValue = param.defaultVal](QWidget* control) {
@@ -5061,9 +6566,36 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             "QPushButton:hover { background-color: #009688; }"
         );
         btnLayout->addWidget(loadBtn);
-        btnLayout->addStretch();
 
         std::string uri = fp.uri;
+
+        // Impulse-response slots (cab/IR loaders) can pull IRs straight from TONE3000.
+        const QString lowerUri = QString::fromStdString(uri).toLower();
+        const bool isIrSlot = lowerUri.contains("impulse") || lowerUri.endsWith("#irfile")
+            || lowerUri.contains("#ir") || lowerUri.contains("cabir") || lowerUri.contains("cab-ir");
+        if (isIrSlot) {
+            QPushButton* irBrowseBtn = new QPushButton("Browse TONE3000 IRs", fpFrame);
+            irBrowseBtn->setToolTip("Search impulse responses on TONE3000 and preview them live in this slot");
+            irBrowseBtn->setStyleSheet(
+                "QPushButton { background-color: #1D5B79; color: white; font-weight: bold; border-radius: 4px; padding: 6px 10px; font-size: 11px; border: none; }"
+                "QPushButton:hover { background-color: #23739A; }");
+            btnLayout->addWidget(irBrowseBtn);
+            connect(irBrowseBtn, &QPushButton::clicked, this, [this, node, uri]() {
+                Tone3000Dialog dialog(node.get(), &m_engine, this, Tone3000Dialog::Mode::Ir, uri);
+                if (dialog.exec() != QDialog::Accepted) return;
+                const std::string filePath = dialog.getDownloadedModelPath();
+                if (filePath.empty()) return;
+                m_engine.suspendProcessing();
+                node->setFileProperty(uri, filePath);
+                m_engine.resumeProcessing();
+                setUnsavedChanges(true);
+                if (m_statusLabel) {
+                    m_statusLabel->setText(QString("Loaded IR \"%1\"").arg(dialog.getDownloadedToneName()));
+                }
+                QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+            });
+        }
+        btnLayout->addStretch();
 
         fpLayout->addLayout(btnLayout);
 
@@ -5603,7 +7135,7 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     });
 }
 
-void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect) {
+void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect, const QString& redirectUrl) {
     if (variantIdx < 0 || variantIdx >= (int)node->getModelVariants().size()) return;
 
     if (m_currentDownloadReply) {
@@ -5612,10 +7144,12 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
         m_currentDownloadReply = nullptr;
     }
 
-    auto& vars = node->getModelVariants();
-    auto& var = const_cast<AudioNode::ModelVariant&>(vars[variantIdx]);
+    // Copies, not references: the node's variant list may change while downloading.
+    const AudioNode::ModelVariant var = node->getModelVariants()[variantIdx];
+    const std::string variantName = var.name;
+    const std::string variantUrl = var.url;
 
-    QString urlStr = QString::fromStdString(var.url);
+    QString urlStr = redirectUrl.isEmpty() ? QString::fromStdString(var.url) : redirectUrl;
     if (urlStr.isEmpty()) return;
 
     QString safeName = QString::fromStdString(var.name);
@@ -5624,7 +7158,15 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
         safeName += ".nam";
     }
 
+    // Same per-tone folder as the TONE3000 browser, so variants of different
+    // tones with the same name never overwrite each other.
     QString cacheDir = QDir::homePath() + "/.cache/RigRoom/tone3000";
+    const AudioNode::ModelMetadata toneMeta = node->getModelMetadata();
+    if (!toneMeta.toneId.empty()) {
+        QString slug = QString::fromStdString(toneMeta.toneSlug);
+        slug.replace(QRegularExpression("[^a-zA-Z0-9_\\-]"), "_");
+        cacheDir += QString("/tone_%1_%2").arg(QString::fromStdString(toneMeta.toneId), slug.isEmpty() ? "profile" : slug);
+    }
     QDir().mkpath(cacheDir);
     QString localFilePath = cacheDir + "/" + safeName;
 
@@ -5659,7 +7201,7 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
         }
     });
 
-    connect(m_currentDownloadReply, &QNetworkReply::finished, this, [=, this, &var]() {
+    connect(m_currentDownloadReply, &QNetworkReply::finished, this, [=, this]() {
         if (!m_currentDownloadReply) return;
 
         // Check for redirection manually to strip auth headers on redirect target
@@ -5672,8 +7214,7 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
             m_currentDownloadReply->deleteLater();
             m_currentDownloadReply = nullptr;
             
-            var.url = nextUrl.toString().toStdString();
-            downloadVariant(node, variantIdx, combo, fileLabel, true);
+            downloadVariant(node, variantIdx, combo, fileLabel, true, nextUrl.toString());
             return;
         }
 
@@ -5697,22 +7238,27 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
             file.write(data);
             file.close();
 
-            var.localPath = localFilePath.toStdString();
+            // Only record the path if the variant is still the one we fetched.
+            const auto& current = node->getModelVariants();
+            if (variantIdx < static_cast<int>(current.size()) && current[variantIdx].name == variantName
+                && current[variantIdx].url == variantUrl) {
+                node->setModelVariantLocalPath(variantIdx, localFilePath.toStdString());
+            }
 
             m_engine.suspendProcessing();
-            node->loadModelFile(var.localPath);
+            node->loadModelFile(localFilePath.toStdString());
             m_engine.resumeProcessing();
 
             AudioNode::ModelMetadata meta = node->getModelMetadata();
             parseNamFileMetadata(localFilePath, meta);
-            if (!var.name.empty()) meta.toneTitle = var.name;
+            if (!variantName.empty()) meta.toneTitle = variantName;
             node->setModelMetadata(meta);
 
-            node->setModelDisplayName(var.name.empty() ? safeName.toStdString() : var.name);
+            node->setModelDisplayName(variantName.empty() ? safeName.toStdString() : variantName);
             setUnsavedChanges(true);
             saveConfigSettings();
 
-            if (!combo.isNull()) combo->setItemText(variantIdx, QString::fromStdString(var.name) + " (Cached)");
+            if (!combo.isNull()) combo->setItemText(variantIdx, QString::fromStdString(variantName) + " (Cached)");
             showPluginControls(node);
         } else {
             if (!fileLabel.isNull()) fileLabel->setText("Failed to save model file!");
