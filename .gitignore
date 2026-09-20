@@ -1,6 +1,7 @@
 build/
 build-*/
 stage/
+dist/
 crash_debug.txt
 *.AppImage
 *.sha256

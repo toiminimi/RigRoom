@@ -35,6 +35,6 @@ jobs:
         with:
           name: RigRoom-AppImage
           path: |
-            RigRoom-*.AppImage
-            RigRoom-*.AppImage.sha256
+            dist/RigRoom-*.AppImage
+            dist/RigRoom-*.AppImage.sha256
           if-no-files-found: error

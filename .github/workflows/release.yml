@@ -21,5 +21,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            RigRoom-*.AppImage
-            RigRoom-*.AppImage.sha256
+            dist/RigRoom-*.AppImage
+            dist/RigRoom-*.AppImage.sha256

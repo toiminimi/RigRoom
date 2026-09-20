@@ -194,7 +194,9 @@ if [ -z "${APP_VERSION}" ]; then
     echo "ERROR: Could not determine RigRoom version from generated Version.h." >&2
     exit 1
 fi
-OUTPUT_APPIMAGE="${ROOT_DIR}/RigRoom-${APP_VERSION}-x86_64.AppImage"
+DIST_DIR="${ROOT_DIR}/dist"
+mkdir -p "${DIST_DIR}"
+OUTPUT_APPIMAGE="${DIST_DIR}/RigRoom-${APP_VERSION}-x86_64.AppImage"
 echo "--> Generating ${OUTPUT_APPIMAGE}..."
 export APPIMAGE_EXTRACT_AND_RUN=1
 export NO_APPSTREAM=1
@@ -228,11 +230,11 @@ EOF
 
 cat "${RAW_APPIMAGE}" >> "${OUTPUT_APPIMAGE}"
 chmod +x "${OUTPUT_APPIMAGE}"
-(cd "${ROOT_DIR}" && sha256sum "$(basename "${OUTPUT_APPIMAGE}")") > "${OUTPUT_APPIMAGE}.sha256"
+(cd "${DIST_DIR}" && sha256sum "$(basename "${OUTPUT_APPIMAGE}")") > "${OUTPUT_APPIMAGE}.sha256"
 
 echo "=========================================="
 echo " ✅ Universal AppImage Created Successfully!"
 echo " Output: ${OUTPUT_APPIMAGE}"
-echo " Run with: ./RigRoom-${APP_VERSION}-x86_64.AppImage"
+echo " Run with: ./dist/RigRoom-${APP_VERSION}-x86_64.AppImage"
 echo " Checksum: ${OUTPUT_APPIMAGE}.sha256"
 echo "=========================================="
