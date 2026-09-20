@@ -70,6 +70,12 @@ add_executable(RigRoom
     src/ui/ModelDetailsDialog.cpp
     src/ui/ModelDetailsDialog.h
     src/ui/GtkUIHelper.cpp
+    src/ui/PluginSnapshot.cpp
+    src/ui/PluginSnapshot.h
+    src/ui/PluginPreviewService.cpp
+    src/ui/SettingsUi.cpp
+    src/ui/SettingsUi.h
+    src/ui/PluginPreviewService.h
     src/ui/GtkUIHelper.h
     src/ui/RoutingHandleItem.cpp
     src/ui/RoutingHandleItem.h
@@ -160,6 +166,8 @@ if(BUILD_TESTING)
         tests/MidiTests.cpp
         src/control/MidiMap.cpp
         src/control/MidiMap.h
+        src/control/RigController.cpp
+        src/control/RigController.h
     )
     target_include_directories(RigRoomMidiTests PRIVATE src)
     target_compile_options(RigRoomMidiTests PRIVATE -UNDEBUG)

@@ -109,6 +109,7 @@ QJsonObject GlobalMidiConfig::toJson() const {
         {"pcMode", pcMode == PcMode::Scenes ? "scenes" : pcMode == PcMode::Off ? "off" : "presets"},
         {"bankSelect", bankSelect},
         {"pcOffset", pcOffset},
+        {"stepWithinBank", stepWithinBank},
         {"commands", commands},
     };
 }
@@ -124,6 +125,7 @@ GlobalMidiConfig GlobalMidiConfig::fromJson(const QJsonObject& obj) {
     else config.pcMode = PcMode::Presets;
     config.bankSelect = obj["bankSelect"].toBool(true);
     config.pcOffset = std::clamp(obj["pcOffset"].toInt(0), 0, 1);
+    config.stepWithinBank = obj["stepWithinBank"].toBool(false);
     const QJsonObject commands = obj["commands"].toObject();
     for (int i = 0; i < kMidiCommandCount; ++i) {
         const QString key = commandKey(static_cast<MidiCommand>(i));
@@ -196,6 +198,7 @@ QJsonObject PresetMidiMap::toJson() const {
             obj["min"] = a.min;
             obj["max"] = a.max;
             obj["invert"] = a.invert;
+            obj["takeover"] = a.takeover == MidiAssignment::Takeover::Jump ? "jump" : "pickup";
         }
         list.append(obj);
     }
@@ -216,6 +219,8 @@ PresetMidiMap PresetMidiMap::fromJson(const QJsonObject& obj) {
             assignment.min = std::clamp(static_cast<float>(a["min"].toDouble(0.0)), 0.0f, 1.0f);
             assignment.max = std::clamp(static_cast<float>(a["max"].toDouble(1.0)), 0.0f, 1.0f);
             assignment.invert = a["invert"].toBool(false);
+            assignment.takeover = a["takeover"].toString() == "jump" ? MidiAssignment::Takeover::Jump
+                                                                    : MidiAssignment::Takeover::Pickup;
         } else {
             assignment.target = MidiAssignment::Target::Bypass;
             assignment.mode = a["mode"].toString() == "follow" ? MidiAssignment::Mode::Follow

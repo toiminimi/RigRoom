@@ -10,9 +10,34 @@ bool RigController::selectBankSlot(int bank, int indexInBank, bool remote) {
 }
 
 bool RigController::stepPreset(int dir, bool remote) {
-    if (!m_backend.nextOccupiedSlot || !m_backend.currentSlot) return false;
+    if (!m_backend.currentSlot) return false;
     const int current = m_backend.currentSlot();
-    const int slot = m_backend.nextOccupiedSlot(current, dir);
+    const int step = dir < 0 ? -1 : 1;
+
+    // Staying in the bank keeps a footswitch from wandering off mid-set: the
+    // bank only changes when bank up/down says so, and the ends wrap around.
+    if (m_backend.stepWithinBank && m_backend.stepWithinBank() && m_backend.viewBank
+        && m_backend.slotFor && m_backend.slotOccupied && m_backend.slotsPerBank) {
+        const int bank = m_backend.viewBank();
+        const int perBank = m_backend.slotsPerBank();
+        if (perBank < 1) return false;
+        const int first = m_backend.slotFor(bank, 0);
+        // Start from the loaded preset when it is in this bank, otherwise from
+        // the edge, so the first press lands on the bank's first or last preset.
+        const bool inBank = current >= first && current < first + perBank;
+        int index = inBank ? current - first : (step > 0 ? -1 : perBank);
+        for (int i = 0; i < perBank; ++i) {
+            index = ((index + step) % perBank + perBank) % perBank;
+            const int slot = m_backend.slotFor(bank, index);
+            if (slot >= 0 && m_backend.slotOccupied(slot) && slot != current) {
+                return selectSlot(slot, remote);
+            }
+        }
+        return false;
+    }
+
+    if (!m_backend.nextOccupiedSlot) return false;
+    const int slot = m_backend.nextOccupiedSlot(current, step);
     return slot >= 0 && slot != current && selectSlot(slot, remote);
 }
 

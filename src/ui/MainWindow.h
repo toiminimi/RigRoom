@@ -161,6 +161,13 @@ private:
 
     // MIDI
     GlobalMidiConfig m_midiConfig = GlobalMidiConfig::defaults();
+    // Pickup state per controlled parameter: whether the controller has caught
+    // up with the value, and where it was last seen.
+    std::map<std::pair<std::string, uint32_t>, std::pair<bool, float>> m_midiPickup;
+    // Called whenever values change under the controller's feet.
+    void resetMidiPickup() { m_midiPickup.clear(); }
+    // Applies an incoming controller value, honouring the assignment's takeover.
+    void applyMidiParam(const std::string& nodeId, uint32_t index, float normalized);
     PresetMidiMap m_presetMidi;
     MidiRouter* m_midi = nullptr;
     QToolButton* m_midiIndicator = nullptr;
@@ -276,6 +283,22 @@ public:
         std::string license;
     };
     std::vector<PluginInfo> m_availablePlugins;
+    // Plugin GUI previews (experimental, off by default).
+    class PluginPreviewService* m_previewService = nullptr;
+    bool m_pluginPreviewsEnabled = false;
+    bool m_pluginPreviewsOnImport = false;   // only then are new plugins done automatically
+    class QLabel* m_previewStatusLabel = nullptr;
+    class QPushButton* m_previewGenerateButton = nullptr;
+    class QPushButton* m_previewCancelButton = nullptr;
+    class QCheckBox* m_previewToggle = nullptr;
+    class QCheckBox* m_previewImportToggle = nullptr;
+    class QComboBox* m_previewScopeCombo = nullptr;
+    QStringList previewCandidateUris() const;
+    void updatePreviewStatus(const QString& text = QString());
+    void startPluginPreviews(int mode, bool quiet);
+    // Keeps the boxes, the button text and the counts in step with the settings.
+    void refreshPreviewControls();
+    int previewScopeMode() const;
     QSet<QString> m_favoritePluginUris;
     QList<ExternalPluginUIWindow*> m_externalUiWindows;
 };

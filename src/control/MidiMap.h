@@ -50,6 +50,9 @@ struct GlobalMidiConfig {
     PcMode pcMode = PcMode::Presets;
     bool bankSelect = true;       // CC0 (MSB) picks a block of 128 slots (Presets mode)
     int pcOffset = 0;             // 1 when the device's PC 1 should mean slot 01A
+    // Previous/next preset: through the whole library, or only the four presets
+    // of the shown bank (for controllers that also have bank up/down).
+    bool stepWithinBank = false;
     std::array<int, kMidiCommandCount> commandCC{}; // -1 = unassigned
 
     static GlobalMidiConfig defaults();
@@ -63,6 +66,10 @@ struct GlobalMidiConfig {
 struct MidiAssignment {
     enum class Target { Bypass, Param };
     enum class Mode { Toggle, Follow }; // Bypass: toggle on press, or follow the value
+    // Param: what happens when the controller sits somewhere else than the
+    // value does, which is normal after a scene or preset change.
+    // Pickup waits until the controller passes the value; Jump takes over at once.
+    enum class Takeover { Pickup, Jump };
 
     int cc = 0;
     std::string nodeId;
@@ -72,6 +79,7 @@ struct MidiAssignment {
     float min = 0.0f;   // Param: normalized range the CC sweeps over
     float max = 1.0f;
     bool invert = false;
+    Takeover takeover = Takeover::Pickup;
 
     bool sameTarget(const MidiAssignment& other) const {
         return nodeId == other.nodeId && target == other.target &&

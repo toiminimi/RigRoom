@@ -9,6 +9,7 @@ extern "C" int XInitThreads(void);
 #include "ui/MainWindow.h"
 #include "ui/GtkUIHelper.h"
 #include <suil/suil.h>
+#include "ui/PluginSnapshot.h"
 #include <csignal>
 #include <fstream>
 #include <iostream>
@@ -42,6 +43,12 @@ int main(int argc, char* argv[]) {
     }
     if (argc > 1 && std::string(argv[1]) == "--x11-ui-helper") {
         return runX11UIHelper(argc, argv);
+    }
+    if (argc > 1 && std::string(argv[1]) == "--plugin-snapshot") {
+        return runPluginSnapshot(argc, argv);
+    }
+    if (argc > 1 && std::string(argv[1]) == "--plugin-snapshot-batch") {
+        return runPluginSnapshotBatch(argc, argv);
     }
     std::signal(SIGSEGV, crash_handler);
     std::signal(SIGABRT, crash_handler);

@@ -250,15 +250,10 @@ public:
         if (selected) p->fillRect(r, QColor("#0B4F6C"));
         else if (hovered) p->fillRect(r, QColor("#202026"));
 
-        // Icon: real image when loaded, generated art meanwhile.
+        // The list stays readable at a glance: every row shows its category
+        // card (AMP, RVB, ...), never a screenshot. Those live in the info panel.
         const QRect iconRect(r.left() + 8, r.top() + (r.height() - kIconSize) / 2, kIconSize, kIconSize);
-        QPixmap icon;
-        const QString path = PluginArt::imagePathFor(e);
-        if (!path.isEmpty()) {
-            icon = ImageLoader::instance().get(path, QSize(kIconSize * 2, kIconSize * 2),
-                                               [cb = m_iconReady, pluginIndex]() { if (cb) cb(pluginIndex); });
-        }
-        if (icon.isNull()) icon = PluginArt::generated(e, QSize(kIconSize, kIconSize));
+        const QPixmap icon = PluginArt::generated(e, QSize(kIconSize, kIconSize));
         QPainterPath clip;
         clip.addRoundedRect(iconRect, 6, 6);
         p->setClipPath(clip);
@@ -440,7 +435,13 @@ PluginBrowserDialog::PluginBrowserDialog(const std::vector<PluginEntry>& plugins
     m_preview->setFixedSize(320, 190);
     m_preview->setAlignment(Qt::AlignCenter);
     m_preview->setStyleSheet("background: #1B1B20; border-radius: 10px;");
+    m_preview->installEventFilter(this);
     infoLayout->addWidget(m_preview);
+    m_previewHint = new QLabel(info);
+    m_previewHint->setStyleSheet("color: #6E6E7A; font-size: 10px;");
+    m_previewHint->setAlignment(Qt::AlignCenter);
+    m_previewHint->hide();
+    infoLayout->addWidget(m_previewHint);
     m_name = new QLabel(info);
     m_name->setWordWrap(true);
     m_name->setStyleSheet("font-size: 17px; font-weight: bold; color: #F2F2F5;");
@@ -588,6 +589,8 @@ void PluginBrowserDialog::showDetails(int pluginIndex) {
     m_addButton->setEnabled(valid);
     m_favoriteButton->setEnabled(valid);
     if (!valid) {
+        m_previewPath.clear();
+        m_previewHint->hide();
         m_preview->setPixmap(QPixmap());
         m_preview->setText("No plugin selected");
         for (QLabel* l : {m_name, m_byline, m_chips, m_description, m_facts, m_tags, m_technical}) l->clear();
@@ -602,14 +605,21 @@ void PluginBrowserDialog::showDetails(int pluginIndex) {
 
     const QSize previewSize = m_preview->size();
     QPixmap image;
-    const QString path = PluginArt::imagePathFor(e);
-    if (!path.isEmpty()) {
-        image = ImageLoader::instance().get(path, previewSize, [this, pluginIndex]() {
+    m_previewPath = PluginArt::imagePathFor(e);
+    if (!m_previewPath.isEmpty()) {
+        image = ImageLoader::instance().get(m_previewPath, previewSize, [this, pluginIndex]() {
             if (m_detailsIndex == pluginIndex) showDetails(pluginIndex);
         });
     }
-    if (image.isNull()) image = PluginArt::generated(e, previewSize);
+    if (image.isNull()) {
+        image = PluginArt::generated(e, previewSize);
+        if (!m_previewPath.isEmpty()) image = PluginArt::generated(e, previewSize); // still loading
+    }
     m_preview->setPixmap(image);
+    const bool clickable = !m_previewPath.isEmpty();
+    m_preview->setCursor(clickable ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    m_previewHint->setVisible(clickable);
+    m_previewHint->setText(clickable ? "Click the picture for a closer look" : QString());
 
     m_name->setText(e.name);
     QStringList by;
@@ -679,7 +689,77 @@ void PluginBrowserDialog::accept() {
     QDialog::accept();
 }
 
+void PluginBrowserDialog::showFullPreview() {
+    if (m_previewPath.isEmpty()) return;
+    QPixmap full(m_previewPath);
+    if (full.isNull()) return;
+    if (!m_fullPreview) {
+        m_fullPreview = new QWidget(this);
+        m_fullPreview->setStyleSheet("background: rgba(8, 8, 10, 235);");
+        auto* layout = new QVBoxLayout(m_fullPreview);
+        layout->setContentsMargins(24, 20, 24, 20);
+        layout->setSpacing(10);
+        auto* title = new QLabel(m_fullPreview);
+        title->setObjectName("fullPreviewTitle");
+        title->setAlignment(Qt::AlignCenter);
+        title->setStyleSheet("color: #EDEDF2; font-size: 14px; font-weight: bold; background: transparent;");
+        layout->addWidget(title);
+        m_fullPreviewImage = new QLabel(m_fullPreview);
+        m_fullPreviewImage->setAlignment(Qt::AlignCenter);
+        m_fullPreviewImage->setStyleSheet("background: transparent;");
+        layout->addWidget(m_fullPreviewImage, 1);
+        auto* hint = new QLabel("The plugin's own window. Click anywhere to close.", m_fullPreview);
+        hint->setAlignment(Qt::AlignCenter);
+        hint->setStyleSheet("color: #8A8A96; font-size: 11px; background: transparent;");
+        layout->addWidget(hint);
+        m_fullPreview->setFocusPolicy(Qt::StrongFocus);
+        m_fullPreview->installEventFilter(this);
+    }
+    if (auto* title = m_fullPreview->findChild<QLabel*>("fullPreviewTitle")) {
+        const bool valid = m_detailsIndex >= 0 && m_detailsIndex < static_cast<int>(m_plugins.size());
+        title->setText(valid ? m_plugins[m_detailsIndex].name : QString());
+    }
+    m_fullPreview->setGeometry(rect());
+    const QSize area = size() - QSize(60, 90);
+    m_fullPreviewImage->setPixmap(full.width() > area.width() || full.height() > area.height()
+                                      ? full.scaled(area, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                                      : full);
+    m_fullPreview->show();
+    m_fullPreview->raise();
+    m_fullPreview->setFocus();
+}
+
+void PluginBrowserDialog::resizeEvent(QResizeEvent* event) {
+    QDialog::resizeEvent(event);
+    if (m_fullPreview && m_fullPreview->isVisible()) showFullPreview();
+}
+
+void PluginBrowserDialog::keyPressEvent(QKeyEvent* event) {
+    // Escape closes the enlarged preview first, the browser second.
+    if (event->key() == Qt::Key_Escape && m_fullPreview && m_fullPreview->isVisible()) {
+        hideFullPreview();
+        return;
+    }
+    QDialog::keyPressEvent(event);
+}
+
+void PluginBrowserDialog::hideFullPreview() {
+    if (m_fullPreview) m_fullPreview->hide();
+}
+
 bool PluginBrowserDialog::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_preview && event->type() == QEvent::MouseButtonRelease) {
+        showFullPreview();
+        return true;
+    }
+    if (m_fullPreview && watched == m_fullPreview) {
+        if (event->type() == QEvent::MouseButtonRelease
+            || (event->type() == QEvent::KeyPress
+                && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape)) {
+            hideFullPreview();
+            return true;
+        }
+    }
     // Arrow keys move through results while the search box keeps focus.
     if (watched == m_search && event->type() == QEvent::KeyPress) {
         auto* key = static_cast<QKeyEvent*>(event);

@@ -43,11 +43,16 @@ signals:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void resizeEvent(class QResizeEvent* event) override;
+    void keyPressEvent(class QKeyEvent* event) override;
 
 private:
     void refresh();
     void rebuildSidebar();
     void showDetails(int pluginIndex);
+    // The preview opens full size over the browser, not in a window of its own.
+    void showFullPreview();
+    void hideFullPreview();
     void toggleFavorite(int pluginIndex);
     void accept() override;
     int currentPluginIndex() const;
@@ -69,6 +74,10 @@ private:
 
     // Info panel
     QLabel* m_preview = nullptr;
+    QLabel* m_previewHint = nullptr;
+    QWidget* m_fullPreview = nullptr;
+    QLabel* m_fullPreviewImage = nullptr;
+    QString m_previewPath;      // the screenshot behind the panel image, if any
     QLabel* m_name = nullptr;
     QLabel* m_byline = nullptr;
     QLabel* m_chips = nullptr;

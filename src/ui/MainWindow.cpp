@@ -47,6 +47,8 @@
 #include <QSlider>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QRadioButton>
+#include "SettingsUi.h"
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QSignalBlocker>
@@ -284,6 +286,7 @@ namespace {
 }
 
 #include <QSettings>
+#include "PluginPreviewService.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("RigRoom - Guitar Multieffects host");
@@ -396,6 +399,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // Scan plugins
     scanPlugins();
+    // New plugins get their picture on their own, well after startup so the
+    // scan, the audio engine and the first preset are all settled.
+    QTimer::singleShot(20000, this, [this]() {
+        if (m_pluginPreviewsEnabled && m_pluginPreviewsOnImport) {
+            startPluginPreviews(static_cast<int>(PluginPreviewService::Mode::Missing), true);
+        }
+    });
     
     // Setup UI
     setupUI();
@@ -481,6 +491,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         QJsonDocument doc = QJsonDocument::fromJson(configFileCheck.readAll());
         if (doc.isObject()) {
             QJsonObject obj = doc.object();
+            // The settings page is built before this runs, so the boxes are
+            // brought up to date once the saved values are known.
+            m_pluginPreviewsEnabled = obj["pluginPreviews"].toBool(false);
+            m_pluginPreviewsOnImport = obj["pluginPreviewsOnImport"].toBool(false);
+            refreshPreviewControls();
             if (obj.contains("defaultTrackSlots")) {
                 m_globalDefaultSlots = std::clamp(obj["defaultTrackSlots"].toInt(6), 4, 12);
             }
@@ -538,6 +553,11 @@ void MainWindow::setupUI() {
             color: #E0E0E0;
             font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 13px;
+        }
+        /* Text sits on whatever is behind it; without this every label paints
+           its own dark slab over panels and group boxes. */
+        QLabel, QCheckBox, QRadioButton, QToolButton {
+            background: transparent;
         }
         QTreeWidget, QListWidget, QLineEdit, QComboBox {
             background-color: #1E1E1E;
@@ -776,13 +796,13 @@ void MainWindow::setupUI() {
     QVBoxLayout* audioTabLayout = new QVBoxLayout(audioTab);
     audioTabLayout->setContentsMargins(10, 10, 10, 10);
     
-    QGroupBox* ioBox = new QGroupBox("Audio & Hardware Configuration", audioTab);
-    ioBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 15px; background: #1a1a1f; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-    );
-    QFormLayout* formLayout = new QFormLayout(ioBox);
-    formLayout->setSpacing(10);
+    auto* ioBox = new SettingsUi::Group("Audio & Hardware Configuration", audioTab,
+        "The JACK ports RigRoom plays through, and the block size it asks for.<br><br>"
+        "A smaller block size means less delay but more work for the processor; if you hear clicks or "
+        "the xrun count climbs, choose a larger one.<br><br>"
+        "Mono input takes the left port only, which suits a single guitar.");
+    ioBox->setStyleSheet(SettingsUi::kGroupStyle);
+    QFormLayout* formLayout = SettingsUi::form(ioBox);
     
     m_hwInputModeCombo = new QComboBox(m_settingsDialog);
     m_hwInputModeCombo->addItems({"Mono", "Stereo"});
@@ -858,7 +878,8 @@ void MainWindow::setupUI() {
     int audioTabIdx = mainSettingsTab->addTab(audioTab, "Audio");
     m_settingsTabs = mainSettingsTab;
     m_midiTabIndex = mainSettingsTab->addTab(buildMidiSettingsTab(), "MIDI");
-    mainSettingsTab->setTabIcon(audioTabIdx, style()->standardIcon(QStyle::SP_MediaVolume));
+    mainSettingsTab->setTabIcon(m_midiTabIndex, SettingsUi::tabIcon(SettingsUi::TabIcon::Midi));
+    mainSettingsTab->setTabIcon(audioTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Audio));
 
     // TAB 2: Plugins & Formats
     QWidget* pluginsTab = new QWidget();
@@ -866,13 +887,13 @@ void MainWindow::setupUI() {
     pluginsLayout->setContentsMargins(10, 10, 10, 10);
     pluginsLayout->setSpacing(12);
 
-    QGroupBox* pathsBox = new QGroupBox("Custom Plugin Search Directories", pluginsTab);
-    pathsBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 12px; background: #1a1a1f; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-    );
+    auto* pathsBox = new SettingsUi::Group("Custom Plugin Search Directories", pluginsTab,
+        "Folders to search besides the standard ones for each format. Add the folder that holds the "
+        "bundles, not a single plugin.<br><br>"
+        "Changes take effect on the next scan: use <b>Rescan Plugins Now</b> below.");
+    pathsBox->setStyleSheet(SettingsUi::kGroupStyle);
     QVBoxLayout* pathsLayout = new QVBoxLayout(pathsBox);
-    pathsLayout->setSpacing(8);
+    pathsLayout->setSpacing(SettingsUi::kGroupSpacing);
 
     QTabWidget* formatPathsTab = new QTabWidget(pathsBox);
     formatPathsTab->setStyleSheet(
@@ -887,6 +908,8 @@ void MainWindow::setupUI() {
         pageLayout->setContentsMargins(8, 8, 8, 8);
         
         QListWidget* listWidget = new QListWidget(page);
+        listWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        listWidget->setMinimumHeight(110);
         listWidget->setStyleSheet("QListWidget { background: #1c1c22; border: 1px solid #2d2d38; border-radius: 4px; color: #ECECF0; font-size: 11px; }");
         for (const auto& path : pathList) {
             listWidget->addItem(path);
@@ -897,11 +920,15 @@ void MainWindow::setupUI() {
 
         QPushButton* addBtn = new QPushButton("Add Folder", page);
         addBtn->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
-        addBtn->setStyleSheet("QPushButton { background: #282834; color: #00B0FF; font-weight: bold; border: 1px solid #00B0FF; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #00B0FF; color: white; }");
+        addBtn->setStyleSheet("QPushButton { background: transparent; color: #6FBEEA; border: 1px solid #2F3A46;"
+                              " border-radius: 4px; padding: 6px 12px; font-size: 11px; }"
+                              "QPushButton:hover { background: #1D2733; border-color: #6FBEEA; }");
         
         QPushButton* removeBtn = new QPushButton("Remove", page);
         removeBtn->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
-        removeBtn->setStyleSheet("QPushButton { background: #352528; color: #FF6B6B; font-weight: bold; border: 1px solid #4a3034; border-radius: 4px; padding: 6px 12px; font-size: 11px; } QPushButton:hover { background: #4a2d32; color: #FF8787; border-color: #FF5252; }");
+        removeBtn->setStyleSheet("QPushButton { background: transparent; color: #D8888E; border: 1px solid #3A2A2E;"
+                                 " border-radius: 4px; padding: 6px 12px; font-size: 11px; }"
+                                 "QPushButton:hover { background: #2E1F22; border-color: #D8888E; }");
 
         btnCol->addWidget(addBtn);
         btnCol->addWidget(removeBtn);
@@ -937,7 +964,74 @@ void MainWindow::setupUI() {
     formatPathsTab->addTab(createPathPage(m_customCLAPPaths), "CLAP Search Paths");
 
     pathsLayout->addWidget(formatPathsTab);
+    pathsBox->setMaximumHeight(240);
     pluginsLayout->addWidget(pathsBox);
+
+    // Plugin GUI previews: opens each plugin's own window on a hidden display
+    // and keeps a picture of it for the browser. Experimental and optional.
+    auto* previewBox = new SettingsUi::Group("Plugin Pictures (experimental)", pluginsTab,
+                                             PluginPreviewService::requirementsText());
+    previewBox->setStyleSheet(SettingsUi::kGroupStyle);
+    QVBoxLayout* previewLayout = new QVBoxLayout(previewBox);
+    previewLayout->setSpacing(SettingsUi::kGroupSpacing);
+    const auto previewEnv = PluginPreviewService::environment();
+
+    m_previewToggle = new QCheckBox("Show each plugin's own GUI in the browser", previewBox);
+    m_previewToggle->setEnabled(previewEnv.available);
+    previewLayout->addWidget(m_previewToggle);
+    m_previewImportToggle = new QCheckBox("Make pictures for new plugins after a scan", previewBox);
+    previewLayout->addWidget(m_previewImportToggle);
+
+    auto* previewEnvLabel = SettingsUi::hint(
+        previewEnv.available ? QString("This computer: ready (%1).").arg(previewEnv.tool)
+                             : QString("This computer: no hidden display found, so pictures cannot be made."),
+        previewBox);
+    if (!previewEnv.available) previewEnvLabel->setStyleSheet(SettingsUi::kWarningCss);
+    previewLayout->addWidget(previewEnvLabel);
+
+    // One button, and a choice that says exactly what it will work through.
+    auto* previewRunRow = new QHBoxLayout();
+    previewRunRow->addWidget(new QLabel("Make pictures for:", previewBox));
+    m_previewScopeCombo = new QComboBox(previewBox);
+    m_previewScopeCombo->addItem("Plugins never tried");
+    m_previewScopeCombo->addItem("Those, plus the ones that failed before");
+    m_previewScopeCombo->addItem("Every plugin again, replacing the pictures");
+    previewRunRow->addWidget(m_previewScopeCombo, 1);
+    m_previewGenerateButton = new QPushButton(previewBox);
+    previewRunRow->addWidget(m_previewGenerateButton);
+    m_previewCancelButton = new QPushButton("Cancel", previewBox);
+    m_previewCancelButton->setEnabled(false);
+    previewRunRow->addWidget(m_previewCancelButton);
+    previewLayout->addLayout(previewRunRow);
+
+    m_previewStatusLabel = new QLabel(previewBox);
+    m_previewStatusLabel->setWordWrap(true);
+    m_previewStatusLabel->setStyleSheet(SettingsUi::kHintCss);
+    previewLayout->addWidget(m_previewStatusLabel);
+    pluginsLayout->addWidget(previewBox);
+
+    connect(m_previewToggle, &QCheckBox::toggled, this, [this](bool on) {
+        m_pluginPreviewsEnabled = on;
+        saveConfigSettings();
+        refreshPreviewControls();
+    });
+    connect(m_previewImportToggle, &QCheckBox::toggled, this, [this](bool on) {
+        m_pluginPreviewsOnImport = on;
+        saveConfigSettings();
+    });
+    connect(m_previewScopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this]() { refreshPreviewControls(); });
+    connect(m_previewGenerateButton, &QPushButton::clicked, this, [this]() {
+        startPluginPreviews(previewScopeMode(), false);
+    });
+    connect(m_previewCancelButton, &QPushButton::clicked, this, [this]() {
+        if (!m_previewService || !m_previewService->running()) return;
+        m_previewService->cancel();
+        m_previewCancelButton->setEnabled(false);
+        m_previewCancelButton->setText("Cancelling…");
+        updatePreviewStatus("Stopping after the plugin being opened now…");
+    });
+    refreshPreviewControls();
 
     QHBoxLayout* rescanLayout = new QHBoxLayout();
     QPushButton* rescanBtn = new QPushButton("Rescan Plugins Now", pluginsTab);
@@ -957,7 +1051,7 @@ void MainWindow::setupUI() {
             previousUris.insert(QString::fromStdString(plugin.uri));
         }
 
-        rescanBtn->setText("⏳ Scanning...");
+        rescanBtn->setText("Scanning…");
         rescanBtn->setEnabled(false);
         qApp->processEvents();
         
@@ -1000,23 +1094,27 @@ void MainWindow::setupUI() {
             scanSummary->setInformativeText(formatCounts.join("  ·  "));
         }
         scanSummary->show();
+        if (m_pluginPreviewsEnabled && m_pluginPreviewsOnImport) {
+            startPluginPreviews(static_cast<int>(PluginPreviewService::Mode::Missing), true);
+        }
     });
 
     int pluginsTabIdx = mainSettingsTab->addTab(pluginsTab, "Plugins & Formats");
-    mainSettingsTab->setTabIcon(pluginsTabIdx, style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+    mainSettingsTab->setTabIcon(pluginsTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Plugins));
 
     // TAB 3: TONE3000 Integration
     QWidget* toneTab = new QWidget();
     QVBoxLayout* toneTabLayout = new QVBoxLayout(toneTab);
     toneTabLayout->setContentsMargins(10, 10, 10, 10);
     
-    QGroupBox* toneBox = new QGroupBox("TONE3000 Integration", toneTab);
-    toneBox->setStyleSheet(
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 15px; background: #1a1a1f; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-    );
+    auto* toneBox = new SettingsUi::Group("TONE3000 Integration", toneTab,
+        "An API key lets RigRoom search tone3000.com and download NAM captures and IRs straight into "
+        "a block.<br><br>"
+        "Make a key on your TONE3000 account page, paste it here and save. It is kept in RigRoom's "
+        "own settings and sent only to tone3000.com.");
+    toneBox->setStyleSheet(SettingsUi::kGroupStyle);
     QVBoxLayout* toneLayout = new QVBoxLayout(toneBox);
-    toneLayout->setSpacing(10);
+    toneLayout->setSpacing(SettingsUi::kGroupSpacing);
 
     QLabel* toneStatusLabel = new QLabel(toneBox);
     toneStatusLabel->setStyleSheet("font-size: 11px; font-weight: bold; border: none; background: transparent;");
@@ -1066,11 +1164,11 @@ void MainWindow::setupUI() {
         QString text = apiKeyEdit->text().trimmed();
         if (text.isEmpty()) {
             toneStatusLabel->setText("Secret Key Required: Enter your Secret Key (t3k_cs_...) to enable online searches");
-            toneStatusLabel->setStyleSheet("color: #FFB74D; font-size: 11px; font-weight: bold; border: none;");
+            toneStatusLabel->setStyleSheet(QString(SettingsUi::kWarningCss) + "font-weight: bold; border: none;");
             clearKeyBtn->setEnabled(false);
         } else {
             toneStatusLabel->setText("Mode: Secret Key Configured — Full TONE3000 API Access");
-            toneStatusLabel->setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold; border: none;");
+            toneStatusLabel->setStyleSheet(QString(SettingsUi::kOkCss) + "font-weight: bold; border: none;");
             clearKeyBtn->setEnabled(true);
         }
     };
@@ -1110,10 +1208,11 @@ void MainWindow::setupUI() {
     toneTabLayout->addWidget(toneBox);
     toneTabLayout->addStretch();
     int toneTabIdx = mainSettingsTab->addTab(toneTab, "TONE3000");
-    mainSettingsTab->setTabIcon(toneTabIdx, style()->standardIcon(QStyle::SP_DriveNetIcon));
+    mainSettingsTab->setTabIcon(toneTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Cloud));
 
     AboutWidget* aboutWidget = new AboutWidget(m_settingsDialog);
-    mainSettingsTab->addTab(aboutWidget, "ℹ️ About");
+    const int aboutTabIdx = mainSettingsTab->addTab(aboutWidget, "About");
+    mainSettingsTab->setTabIcon(aboutTabIdx, SettingsUi::tabIcon(SettingsUi::TabIcon::Info));
 
     dialogLayout->addWidget(mainSettingsTab);
     
@@ -2655,6 +2754,9 @@ void MainWindow::setupRigController() {
     backend.viewBank = [this]() { return m_viewBank; };
     backend.setViewBank = [this](int bank) { setViewBank(bank); };
     backend.bankCount = [this]() { return m_presetLibrary.numBanks(); };
+    backend.slotOccupied = [this](int slot) { return m_presetLibrary.isOccupied(slot); };
+    backend.slotsPerBank = [this]() { return m_presetLibrary.slotsPerBank(); };
+    backend.stepWithinBank = [this]() { return m_midiConfig.stepWithinBank; };
     backend.slotFor = [this](int bank, int idx) {
         return (idx >= 0 && idx < m_presetLibrary.slotsPerBank()) ? m_presetLibrary.slotFor(bank, idx) : -1;
     };
@@ -2701,6 +2803,125 @@ void MainWindow::onPrevBank() { m_rig->stepBank(-1); }
 void MainWindow::onNextBank() { m_rig->stepBank(1); }
 
 
+QStringList MainWindow::previewCandidateUris() const {
+    // LV2 and CLAP can both be opened by the snapshot helper. Plugins the scan
+    // already found to have no window of their own are recorded as impossible,
+    // so a run never walks through them.
+    QStringList uris;
+    QStringList withoutGui;
+    for (const auto& plugin : m_availablePlugins) {
+        const QString uri = QString::fromStdString(plugin.uri);
+        const bool supported = plugin.isLV2 || uri.contains(".clap");
+        if (!supported) continue;
+        if (plugin.hasNativeGUI) uris << uri;
+        else withoutGui << uri;
+    }
+    PluginPreviewService::markImpossible(withoutGui, "no window of its own");
+    return uris;
+}
+
+int MainWindow::previewScopeMode() const {
+    const int index = m_previewScopeCombo ? m_previewScopeCombo->currentIndex() : 0;
+    return index;
+}
+
+void MainWindow::refreshPreviewControls() {
+    const auto env = PluginPreviewService::environment();
+    const bool usable = env.available && m_pluginPreviewsEnabled;
+    if (m_previewToggle && m_previewToggle->isChecked() != (m_pluginPreviewsEnabled && env.available)) {
+        const QSignalBlocker blocker(m_previewToggle);
+        m_previewToggle->setChecked(m_pluginPreviewsEnabled && env.available);
+    }
+    if (m_previewImportToggle) {
+        const QSignalBlocker blocker(m_previewImportToggle);
+        m_previewImportToggle->setChecked(m_pluginPreviewsOnImport && env.available);
+        m_previewImportToggle->setEnabled(usable);
+    }
+    if (m_previewScopeCombo) m_previewScopeCombo->setEnabled(usable);
+    if (!m_previewGenerateButton) return;
+
+    const bool running = m_previewService && m_previewService->running();
+    if (m_previewCancelButton) {
+        const bool cancelling = m_previewService && m_previewService->cancelling();
+        m_previewCancelButton->setText(cancelling ? "Cancelling…" : "Cancel");
+        m_previewCancelButton->setEnabled(running && !cancelling);
+    }
+    if (running) {
+        m_previewGenerateButton->setEnabled(false);  // its text shows progress
+        return;
+    }
+    const int todo = PluginPreviewService::countTodo(
+        previewCandidateUris(), static_cast<PluginPreviewService::Mode>(previewScopeMode()));
+    m_previewGenerateButton->setText(todo > 0 ? QString("Make %1 pictures").arg(todo)
+                                              : QString("Nothing to make"));
+    m_previewGenerateButton->setEnabled(usable && todo > 0);
+    updatePreviewStatus();
+}
+
+void MainWindow::updatePreviewStatus(const QString& text) {
+    if (!m_previewStatusLabel) return;
+    if (!text.isEmpty()) {
+        m_previewStatusLabel->setText(text);
+        return;
+    }
+    const QStringList uris = previewCandidateUris();
+    int supported = 0;
+    for (const auto& plugin : m_availablePlugins) {
+        if (plugin.isLV2 || QString::fromStdString(plugin.uri).contains(".clap")) ++supported;
+    }
+    int have = 0, failed = 0;
+    for (const QString& uri : uris) {
+        if (PluginPreviewService::hasPreview(uri)) ++have;
+        else if (PluginPreviewService::hasFailed(uri)) ++failed;
+    }
+    m_previewStatusLabel->setText(
+        QString("%1 pictures · %2 plugins to try · %3 would not open · %4 have no window of their own")
+            .arg(have)
+            .arg(uris.size() - have - failed)
+            .arg(failed)
+            .arg(supported - uris.size()));
+}
+
+void MainWindow::startPluginPreviews(int mode, bool quiet) {
+    if (!m_previewService) {
+        m_previewService = new PluginPreviewService(this);
+        connect(m_previewService, &PluginPreviewService::started, this, [this](const QString& uri) {
+            updatePreviewStatus(QString("Opening %1…").arg(uri.section('/', -1)));
+        });
+        connect(m_previewService, &PluginPreviewService::progress, this,
+                [this](int done, int total, const QString&) {
+                    updatePreviewStatus(QString("Made %1 of %2 pictures…").arg(done).arg(total));
+                    if (m_previewGenerateButton) {
+                        m_previewGenerateButton->setText(QString("Working… %1 of %2").arg(done).arg(total));
+                    }
+                });
+        connect(m_previewService, &PluginPreviewService::finished, this,
+                [this](int captured, int, const QString& note) {
+                    refreshPreviewControls();
+                    updatePreviewStatus(note);
+                    if (m_statusLabel) {
+                        m_statusLabel->setText(captured > 0
+                                                   ? QString("Plugin pictures: %1 new").arg(captured)
+                                                   : (note.isEmpty() ? QString("Plugin pictures: nothing to do")
+                                                                     : QString("Plugin pictures: %1").arg(note)));
+                    }
+                    if (note.isEmpty()) updatePreviewStatus();
+                });
+    }
+    if (m_previewService->running()) return;
+    const QStringList uris = previewCandidateUris();
+    const int todo = PluginPreviewService::countTodo(uris, static_cast<PluginPreviewService::Mode>(mode));
+    m_previewService->generate(uris, static_cast<PluginPreviewService::Mode>(mode));
+    if (m_previewService->running()) {
+        // Opening the hidden display takes a moment, so say so at once rather
+        // than leaving the page looking idle.
+        if (m_previewGenerateButton) m_previewGenerateButton->setText(QString("Working… 0 of %1").arg(todo));
+        updatePreviewStatus("Starting the hidden display…");
+        if (!quiet && m_statusLabel) m_statusLabel->setText("Making plugin pictures in the background…");
+    }
+    refreshPreviewControls();
+}
+
 SceneModel::BoardState MainWindow::captureBoardState() const {
     SceneModel::BoardState state;
     if (!m_canvas) return state;
@@ -2736,6 +2957,7 @@ void MainWindow::resetScenesFromBoard() {
 }
 
 void MainWindow::applySceneChanges(const SceneModel::Changes& changes) {
+    resetMidiPickup();
     // Only atomics and control values change here; the graph is untouched, so
     // there is no dropout and delay/reverb tails keep ringing.
     for (const auto& [nodeId, bypassed] : changes.bypass) {
@@ -3249,9 +3471,52 @@ void MainWindow::applyMidiAction(const MidiAction& action) {
         m_rig->setBlockEnabled(action.nodeId, action.enabled);
         break;
     case MidiAction::Kind::SetParam:
-        m_rig->setParam(action.nodeId, action.paramIndex, action.normalized);
+        applyMidiParam(action.nodeId, action.paramIndex, action.normalized);
         break;
     }
+}
+
+void MainWindow::applyMidiParam(const std::string& nodeId, uint32_t index, float normalized) {
+    const MidiAssignment* assignment = m_presetMidi.find(nodeId, MidiAssignment::Target::Param, index);
+    if (assignment && assignment->takeover == MidiAssignment::Takeover::Jump) {
+        m_rig->setParam(nodeId, index, normalized);
+        return;
+    }
+
+    // Pickup: the value only starts following once the controller reaches it,
+    // so a scene change never makes a pedal jump the sound somewhere else.
+    float current = normalized;
+    if (auto node = findNodeById(nodeId)) {
+        for (const auto& port : node->getControlPorts()) {
+            if (port.index != index || port.isOutput) continue;
+            const float span = port.maxVal - port.minVal;
+            current = span > 0.0f ? (port.value - port.minVal) / span : 0.0f;
+            break;
+        }
+    }
+
+    constexpr float kCatchTolerance = 1.5f / 127.0f;  // within one controller step
+    auto& state = m_midiPickup[{nodeId, index}];
+    bool& engaged = state.first;
+    float& lastSeen = state.second;
+    const bool firstMessage = !engaged && lastSeen < 0.0f;
+    if (!engaged) {
+        const bool close = std::abs(normalized - current) <= kCatchTolerance;
+        // Crossed the value since the last message: that counts as catching it.
+        const bool crossed = !firstMessage && ((lastSeen - current) * (normalized - current) <= 0.0f);
+        engaged = close || crossed;
+    }
+    lastSeen = normalized;
+    if (!engaged) {
+        if (m_statusLabel) {
+            m_statusLabel->setText(QString("CC %1 is at %2%, the value is at %3% — move past it to take over")
+                                       .arg(assignment ? assignment->cc : 0)
+                                       .arg(qRound(normalized * 100))
+                                       .arg(qRound(current * 100)));
+        }
+        return;
+    }
+    m_rig->setParam(nodeId, index, normalized);
 }
 
 bool MainWindow::rejectGlobalMidiConflict(int cc) {
@@ -3361,10 +3626,27 @@ void MainWindow::learnParamMidi(const std::shared_ptr<AudioNode>& node, uint32_t
         assignment.target = MidiAssignment::Target::Param;
         assignment.paramIndex = paramIndex;
         m_presetMidi.set(assignment);
+        // A controller has its own position, which a scene change cannot move.
+        // Keeping the parameter the same in every scene stops the two from
+        // disagreeing; right-click the knob to store it per scene instead.
+        bool madeGlobal = false;
+        if (!m_scenes.isGlobal(nodeId, paramIndex)) {
+            float value = 0.0f;
+            for (const auto& port : node->getControlPorts()) {
+                if (port.index == paramIndex) { value = port.value; break; }
+            }
+            m_scenes.setGlobal(nodeId, paramIndex, true, value);
+            madeGlobal = true;
+        }
+        resetMidiPickup();
         setUnsavedChanges(true);
         refreshSceneMarkers();
         if (m_parameterControlNode == node) showPluginControls(node);
-        if (m_statusLabel) m_statusLabel->setText(QString("MIDI: CC %1 controls %2").arg(msg.data1).arg(what));
+        if (m_statusLabel) {
+            m_statusLabel->setText(madeGlobal
+                ? QString("MIDI: CC %1 controls %2, now the same in all scenes").arg(msg.data1).arg(what)
+                : QString("MIDI: CC %1 controls %2").arg(msg.data1).arg(what));
+        }
     });
 }
 
@@ -3377,7 +3659,8 @@ void MainWindow::showMidiAssignmentsDialog() {
     auto* intro = new QLabel(
         "Controls learned for this preset. Add more by right-clicking a block (on/off) or a knob in the Inspector "
         "and choosing MIDI Learn. <b>Toggle on press</b> suits momentary footswitches; <b>Follow value</b> suits "
-        "switches that send 127 for on and 0 for off. Range limits how far a pedal moves a parameter.", &dialog);
+        "switches that send 127 for on and 0 for off. Range limits how far a pedal moves a parameter, and the last "
+        "choice decides what happens when the controller and the value disagree after a scene change.", &dialog);
     intro->setWordWrap(true);
     intro->setStyleSheet("color: #AAB3C0; font-size: 11px;");
     layout->addWidget(intro);
@@ -3445,11 +3728,26 @@ void MainWindow::showMidiAssignmentsDialog() {
                 QObject::connect(minSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.min = v / 100.0f; });
                 QObject::connect(maxSpin, &QSpinBox::valueChanged, table, [&a](int v) { a.max = v / 100.0f; });
                 QObject::connect(invert, &QCheckBox::toggled, table, [&a](bool on) { a.invert = on; });
+                auto* takeover = new QComboBox(behaviour);
+                takeover->addItem("Wait for the controller", static_cast<int>(MidiAssignment::Takeover::Pickup));
+                takeover->addItem("Take over at once", static_cast<int>(MidiAssignment::Takeover::Jump));
+                takeover->setCurrentIndex(a.takeover == MidiAssignment::Takeover::Jump ? 1 : 0);
+                takeover->setToolTip(
+                    "After a scene or preset change the controller sits where you left it, which may "
+                    "be far from the stored value.\n\n"
+                    "Wait for the controller: nothing moves until the controller passes the value. "
+                    "Best for knobs and faders.\n"
+                    "Take over at once: the value jumps to the controller as soon as it moves. "
+                    "Best for a wah or volume pedal, where the pedal's position is what counts.");
+                QObject::connect(takeover, &QComboBox::currentIndexChanged, table, [&a, takeover](int) {
+                    a.takeover = static_cast<MidiAssignment::Takeover>(takeover->currentData().toInt());
+                });
                 bl->addWidget(new QLabel("From", behaviour));
                 bl->addWidget(minSpin);
                 bl->addWidget(new QLabel("to", behaviour));
                 bl->addWidget(maxSpin);
                 bl->addWidget(invert);
+                bl->addWidget(takeover);
             }
             table->setCellWidget(row, 3, behaviour);
 
@@ -3494,15 +3792,17 @@ QWidget* MainWindow::buildMidiSettingsTab() {
     auto* tab = new QWidget();
     auto* tabLayout = new QVBoxLayout(tab);
     tabLayout->setContentsMargins(10, 10, 10, 10);
-    const QString groupStyle =
-        "QGroupBox { font-weight: bold; color: #00B0FF; border: 1px solid #333338; border-radius: 6px; margin-top: 10px; padding: 12px; background: #1a1a1f; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
-        "QGroupBox QLabel, QGroupBox QCheckBox { background: transparent; }";
+    const QString groupStyle = QString(SettingsUi::kGroupStyle)
+        + "QGroupBox QLabel, QGroupBox QCheckBox { background: transparent; }";
 
     // Device and channel
-    auto* deviceBox = new QGroupBox("MIDI Input", tab);
+    auto* deviceBox = new SettingsUi::Group("MIDI Input", tab,
+        "The port RigRoom listens to, and the channel it accepts. Omni takes every channel, which is "
+        "right unless something else on the same port sends its own messages.<br><br>"
+        "<b>Last message</b> shows what arrived, which is the quickest way to see what a switch or "
+        "pedal actually sends.");
     deviceBox->setStyleSheet(groupStyle);
-    auto* deviceForm = new QFormLayout(deviceBox);
+    auto* deviceForm = SettingsUi::form(deviceBox);
     auto* deviceRow = new QHBoxLayout();
     auto* deviceCombo = new QComboBox(deviceBox);
     deviceCombo->setMinimumWidth(220);
@@ -3542,29 +3842,33 @@ QWidget* MainWindow::buildMidiSettingsTab() {
     deviceForm->addRow("Channel:", channelCombo);
 
     auto* lastLabel = new QLabel("—", deviceBox);
-    lastLabel->setStyleSheet("color: #CE93D8; font-weight: bold;");
+    lastLabel->setStyleSheet("color: #CE93D8; font-size: 12px; font-weight: bold;");
     m_midiLastMessageSink = [lastLabel](const QString& text) { lastLabel->setText(text); };
     deviceForm->addRow("Last message:", lastLabel);
     tabLayout->addWidget(deviceBox);
 
     // Program Change
-    auto* pcBox = new QGroupBox("Program Change", tab);
+    auto* pcBox = new SettingsUi::Group("Program Change", tab,
+        "<b>Presets:</b> PC 0 loads 01A, PC 1 loads 01B, and so on. Changing preset rebuilds the "
+        "signal chain, so there is a short gap.<br><br>"
+        "<b>Scenes of the loaded preset:</b> PC 0 picks scene 1 … PC 7 picks scene 8. For footswitches "
+        "that can only send Program Change; no gap, because nothing is reloaded.<br><br>"
+        "<b>Bank Select</b> (CC 0) reaches preset slots past the first 128. Tick <b>counts programs "
+        "from 1</b> if your controller's PC 1 should mean the first preset or scene.");
     pcBox->setStyleSheet(groupStyle);
     auto* pcLayout = new QVBoxLayout(pcBox);
-    auto* pcRow = new QHBoxLayout();
-    auto* pcLabel = new QLabel("Program Change selects:", pcBox);
+    pcLayout->setSpacing(SettingsUi::kGroupSpacing);
+    auto* pcForm = SettingsUi::form(nullptr);
+    pcForm->setContentsMargins(0, 0, 0, 0);
     auto* pcModeCombo = new QComboBox(pcBox);
-    pcModeCombo->addItem("Presets  (PC 0 = 01A, PC 1 = 01B, …; changing preset has a short gap)",
+    pcModeCombo->addItem("Presets  (PC 0 = 01A, PC 1 = 01B, …)",
                          static_cast<int>(GlobalMidiConfig::PcMode::Presets));
-    pcModeCombo->addItem("Scenes of the loaded preset  (PC 0 = scene 1 … PC 7 = scene 8; no gap)",
+    pcModeCombo->addItem("Scenes of the loaded preset  (PC 0 = scene 1 … PC 7 = scene 8)",
                          static_cast<int>(GlobalMidiConfig::PcMode::Scenes));
     pcModeCombo->addItem("Nothing  (ignore Program Change)", static_cast<int>(GlobalMidiConfig::PcMode::Off));
     pcModeCombo->setCurrentIndex(std::max(0, pcModeCombo->findData(static_cast<int>(m_midiConfig.pcMode))));
-    pcModeCombo->setToolTip("Scenes mode is for footswitches that can only send Program Change: "
-                            "each switch then picks a scene without reloading the preset.");
-    pcRow->addWidget(pcLabel);
-    pcRow->addWidget(pcModeCombo, 1);
-    pcLayout->addLayout(pcRow);
+    pcForm->addRow("Selects:", pcModeCombo);
+    pcLayout->addLayout(pcForm);
     auto* bankSelect = new QCheckBox("Bank Select (CC 0) reaches preset slots beyond 128", pcBox);
     bankSelect->setChecked(m_midiConfig.bankSelect);
     auto* pcOffset = new QCheckBox("My controller counts programs from 1 (its PC 1 = the first preset or scene)", pcBox);
@@ -3585,56 +3889,68 @@ QWidget* MainWindow::buildMidiSettingsTab() {
     pcLayout->addWidget(pcOffset);
     tabLayout->addWidget(pcBox);
 
+    // How far previous/next reaches. With bank up/down on the controller,
+    // staying in the bank keeps a footswitch from wandering off mid-set.
+    auto* stepBox = new SettingsUi::Group("Previous / Next Preset", tab,
+        "How far the previous/next commands reach.<br><br>"
+        "<b>Across banks</b> steps through every preset in the library, which is the only workable "
+        "choice on a controller with just two switches.<br><br>"
+        "<b>Within the shown bank</b> keeps to the four presets of the bank you are on, wrapping from "
+        "D back to A. Best when your controller also has bank up/down, because the bank then changes "
+        "only when you say so.<br><br>"
+        "Either way the setting applies to the Previous/Next buttons and Alt+Left / Alt+Right too.");
+    stepBox->setStyleSheet(groupStyle);
+    auto* stepLayout = new QVBoxLayout(stepBox);
+    stepLayout->setSpacing(SettingsUi::kGroupSpacing);
+    auto* stepAll = new QRadioButton("Step through every preset, across banks", stepBox);
+    auto* stepBank = new QRadioButton("Step only within the shown bank (A-D, wrapping around)", stepBox);
+    stepAll->setChecked(!m_midiConfig.stepWithinBank);
+    stepBank->setChecked(m_midiConfig.stepWithinBank);
+
+    stepLayout->addWidget(stepAll);
+    stepLayout->addWidget(stepBank);
+    connect(stepBank, &QRadioButton::toggled, this, [this](bool on) {
+        m_midiConfig.stepWithinBank = on;
+        saveConfigSettings();
+    });
+    tabLayout->addWidget(stepBox);
+
     // Performance commands, in two columns: presets & banks | scenes.
-    auto* cmdBox = new QGroupBox("Performance Commands (CC)", tab);
+    auto* cmdBox = new SettingsUi::Group("Performance Commands (CC)", tab,
+        "Global switches that work in every preset. A switch fires when pressed (value 64 or more); "
+        "set a command to Off to free its CC.<br><br>"
+        "<b>Presets &amp; banks:</b> bank up/down only change the shown bank, like the ◀ ▶ buttons; "
+        "Preset A–D then load from it.<br><br>"
+        "<b>Scenes</b> — use whichever your controller can send:<br>"
+        "• <b>Scene select</b>: one CC whose value picks the scene (0 = scene 1, 1 = scene 2…)<br>"
+        "• <b>Scene 1–8</b>: one CC per switch, fires on press<br>"
+        "• <b>Program Change</b>: choose Scenes above<br>"
+        "• <b>Previous / Next</b>: step through scenes<br><br>"
+        "Block on/off and pedal controls are learned per preset instead: right-click a block or knob → MIDI Learn.");
     cmdBox->setStyleSheet(groupStyle);
     auto* cmdLayout = new QVBoxLayout(cmdBox);
-    auto* cmdHint = new QLabel(
-        "Global switches that work in every preset. Switches fire when pressed (value 64 or more); "
-        "set a command to Off to free its CC. Block on/off and pedal controls are learned per preset instead: "
-        "right-click a block or knob → MIDI Learn.", cmdBox);
-    cmdHint->setWordWrap(true);
-    cmdHint->setStyleSheet("color: #AAB3C0; font-size: 11px; font-weight: normal;");
-    cmdLayout->addWidget(cmdHint);
+    cmdLayout->setSpacing(SettingsUi::kGroupSpacing);
 
-    auto* columns = new QHBoxLayout();
-    columns->setSpacing(24);
-    auto makeColumn = [cmdBox](const QString& title) {
-        auto* grid = new QGridLayout();
-        grid->setHorizontalSpacing(8);
-        grid->setVerticalSpacing(4);
-        auto* caption = new QLabel(title, cmdBox);
-        caption->setStyleSheet("color: #7A7A86; font-weight: bold; font-size: 10px; letter-spacing: 1px;");
-        grid->addWidget(caption, 0, 0, 1, 3);
-        return grid;
-    };
-    QGridLayout* presetGrid = makeColumn("PRESETS & BANKS");
-    QGridLayout* sceneGrid = makeColumn("SCENES  (no audio gap)");
-    auto* presetGuide = new QLabel(
-        "Bank up/down only change the shown bank, like the ◀ ▶ buttons; Preset A-D then load from it.", cmdBox);
-    auto* sceneGuide = new QLabel(
-        "Use whichever your controller can send:<br>"
-        "• <b>Scene select</b>: one CC, value picks the scene (0 = scene 1, 1 = scene 2…)<br>"
-        "• <b>Scene 1-8</b>: one CC per switch, fires on press (Off until you set them)<br>"
-        "• <b>Program Change</b>: choose Scenes above<br>"
-        "• <b>Previous / Next</b>: step through scenes", cmdBox);
-    for (QLabel* guide : {presetGuide, sceneGuide}) {
-        guide->setWordWrap(true);
-        guide->setTextFormat(Qt::RichText);
-        guide->setStyleSheet("color: #8A93A0; font-size: 11px; font-weight: normal;");
-    }
-    presetGrid->addWidget(presetGuide, 1, 0, 1, 3);
-    sceneGrid->addWidget(sceneGuide, 1, 0, 1, 3);
-    columns->addLayout(presetGrid, 1);
-    columns->addLayout(sceneGrid, 1);
-    cmdLayout->addLayout(columns);
+    // Both halves live in one grid, so the CC fields and Learn buttons line up
+    // across the whole box instead of drifting with the headings above them.
+    auto* commandGrid = new QGridLayout();
+    commandGrid->setHorizontalSpacing(10);
+    commandGrid->setVerticalSpacing(4);
+    commandGrid->setColumnMinimumWidth(3, 24);
+    commandGrid->setColumnStretch(0, 1);
+    commandGrid->setColumnStretch(4, 1);
+    commandGrid->addWidget(SettingsUi::subheading("Presets & banks", cmdBox), 0, 0, 1, 3);
+    commandGrid->addWidget(SettingsUi::subheading("Scenes", cmdBox), 0, 4, 1, 3);
+    QGridLayout* presetGrid = commandGrid;
+    QGridLayout* sceneGrid = commandGrid;
+    cmdLayout->addLayout(commandGrid);
 
     auto* cmdMessage = new QLabel(cmdBox);
-    cmdMessage->setStyleSheet("color: #FFB74D; font-size: 11px; font-weight: normal;");
+    cmdMessage->setStyleSheet(SettingsUi::kWarningCss);
 
     auto spinsShared = std::make_shared<std::vector<QSpinBox*>>(kMidiCommandCount, nullptr);
-    int presetRow = 2;
-    int sceneRow = 2;
+    int presetRow = 1;
+    int sceneRow = 1;
     const MidiCommand order[] = {
         MidiCommand::PresetPrev, MidiCommand::PresetNext, MidiCommand::BankDown, MidiCommand::BankUp,
         MidiCommand::SelectA, MidiCommand::SelectB, MidiCommand::SelectC, MidiCommand::SelectD,
@@ -3651,8 +3967,9 @@ QWidget* MainWindow::buildMidiSettingsTab() {
         QGridLayout* grid = isScene ? sceneGrid : presetGrid;
         const int row = isScene ? sceneRow++ : presetRow++;
 
+        const int column = isScene ? 4 : 0;
         auto* name = new QLabel(midiCommandName(command), cmdBox);
-        name->setStyleSheet("color: #D0D0D8; font-weight: normal;");
+        name->setStyleSheet(SettingsUi::kValueCss);
         auto* spin = new QSpinBox(cmdBox);
         spin->setRange(-1, 127);
         spin->setSpecialValueText("Off");
@@ -3661,9 +3978,9 @@ QWidget* MainWindow::buildMidiSettingsTab() {
         spin->setFixedWidth(92);
         auto* learn = new QPushButton("Learn", cmdBox);
         learn->setFixedWidth(76);
-        grid->addWidget(name, row, 0);
-        grid->addWidget(spin, row, 1);
-        grid->addWidget(learn, row, 2);
+        grid->addWidget(name, row, column);
+        grid->addWidget(spin, row, column + 1);
+        grid->addWidget(learn, row, column + 2);
         (*spinsShared)[i] = spin;
 
         connect(spin, &QSpinBox::valueChanged, this, [this, i, spinsShared, cmdMessage](int value) {
@@ -3912,6 +4229,8 @@ void MainWindow::saveConfigSettings() {
     configObj["outputGain"] = m_engine.getOutputGainDB();
     configObj["audioConfigured"] = m_audioConfigured;
     configObj["defaultTrackSlots"] = m_globalDefaultSlots;
+    configObj["pluginPreviews"] = m_pluginPreviewsEnabled;
+    configObj["pluginPreviewsOnImport"] = m_pluginPreviewsOnImport;
 
     QJsonArray lv2Arr, vst3Arr, clapArr;
     for (const auto& p : m_customLV2Paths) lv2Arr.append(p);
@@ -5886,17 +6205,28 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         
         uint32_t idx = param.index;
 
-        // Every parameter is stored per scene; right-click to keep one the same in all scenes.
+        // Two marks can sit in front of a parameter name: "=" when it keeps one
+        // value in every scene, and the CC number when a controller drives it.
         const bool globalParam = m_scenes.isGlobal(node->uniqueId, idx);
-        if (globalParam) {
-            label->setText(QString::fromUtf8("= ") + label->text());
-            label->setStyleSheet("color: #8FA6DA; font-size: 10px; border: none;");
-            label->setToolTip(label->toolTip() + "\nSame in all scenes");
-        }
         const MidiAssignment* paramMidi = m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
-        if (paramMidi) {
-            label->setText(QString("M ") + label->text());
-            label->setToolTip(label->toolTip() + QString("\nMIDI: CC %1").arg(paramMidi->cc));
+        if (globalParam || paramMidi) {
+            QStringList badges;
+            QStringList tips;
+            if (globalParam) {
+                badges << "<span style='color:#8FA6DA;'>=</span>";
+                tips << "Same in all scenes";
+            }
+            if (paramMidi) {
+                badges << QString("<span style='color:#7EC77E;'>CC&nbsp;%1</span>").arg(paramMidi->cc);
+                tips << QString("MIDI CC %1, %2")
+                            .arg(paramMidi->cc)
+                            .arg(paramMidi->takeover == MidiAssignment::Takeover::Jump
+                                     ? "takes over as soon as the controller moves"
+                                     : "takes over once the controller reaches the value");
+            }
+            label->setTextFormat(Qt::RichText);
+            label->setText(badges.join("&nbsp;") + "&nbsp; " + label->text().toHtmlEscaped());
+            label->setToolTip(label->toolTip() + "\n" + tips.join("\n"));
         }
         rowWidget->setContextMenuPolicy(Qt::CustomContextMenu);
         const int paramMidiCC = paramMidi ? paramMidi->cc : -1;
@@ -5909,6 +6239,14 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             menu.addSeparator();
             QAction* learnAct = menu.addAction(paramMidiCC >= 0 ? QString("MIDI: CC %1 - Learn Again...").arg(paramMidiCC)
                                                                : QString("MIDI Learn..."));
+            QAction* takeoverAct = nullptr;
+            if (paramMidiCC >= 0) {
+                const MidiAssignment* current =
+                    m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
+                const bool jumps = current && current->takeover == MidiAssignment::Takeover::Jump;
+                takeoverAct = menu.addAction(jumps ? "Wait for the controller (pickup)"
+                                                   : "Take over at once (pedal)");
+            }
             QAction* removeMidiAct = paramMidiCC >= 0 ? menu.addAction(QString("Remove MIDI (CC %1)").arg(paramMidiCC)) : nullptr;
             QAction* chosen = menu.exec(rowWidget->mapToGlobal(pos));
             // Rebuilding the Inspector deletes rowWidget; defer past this handler.
@@ -5916,6 +6254,20 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
                 QTimer::singleShot(0, this, [this, node, idx]() { toggleParamSceneControl(node, idx); });
             } else if (chosen == learnAct) {
                 QTimer::singleShot(0, this, [this, node, idx]() { learnParamMidi(node, idx); });
+            } else if (takeoverAct && chosen == takeoverAct) {
+                QTimer::singleShot(0, this, [this, node, idx]() {
+                    const MidiAssignment* found =
+                        m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
+                    if (!found) return;
+                    MidiAssignment updated = *found;
+                    updated.takeover = updated.takeover == MidiAssignment::Takeover::Jump
+                                           ? MidiAssignment::Takeover::Pickup
+                                           : MidiAssignment::Takeover::Jump;
+                    m_presetMidi.set(updated);
+                    resetMidiPickup();
+                    setUnsavedChanges(true);
+                    showPluginControls(node);
+                });
             } else if (removeMidiAct && chosen == removeMidiAct) {
                 QTimer::singleShot(0, this, [this, node, idx]() {
                     m_presetMidi.removeFor(node->uniqueId, MidiAssignment::Target::Param, idx);

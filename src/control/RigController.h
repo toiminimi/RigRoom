@@ -21,6 +21,10 @@ public:
         std::function<void(int bank)> setViewBank;
         std::function<int()> bankCount;
         std::function<int(int bank, int indexInBank)> slotFor;
+        std::function<bool(int slot)> slotOccupied;
+        std::function<int()> slotsPerBank;
+        // True when previous/next preset should stay inside the shown bank.
+        std::function<bool()> stepWithinBank;
         std::function<void(int scene)> selectScene;
         std::function<int()> activeScene;
         std::function<int()> sceneCount;

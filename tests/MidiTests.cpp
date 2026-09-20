@@ -1,8 +1,10 @@
 #include "control/MidiMap.h"
+#include "control/RigController.h"
 #include <QCoreApplication>
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <set>
 
 namespace {
 
@@ -244,6 +246,119 @@ void testPresetJsonAndPrune() {
 
 } // namespace
 
+// A library of 3 banks x 4 slots. Occupied: 01A, 01C, 02B and 03D (slot 11).
+RigController::Backend testBackend(int* currentSlot, int* viewBank, bool* withinBank) {
+    static const std::set<int> occupied{0, 2, 5, 11};
+    RigController::Backend backend;
+    backend.currentSlot = [currentSlot]() { return *currentSlot; };
+    backend.loadSlot = [currentSlot](int slot, bool) { *currentSlot = slot; return true; };
+    backend.slotFor = [](int bank, int index) { return bank * 4 + index; };
+    backend.slotOccupied = [](int slot) { return occupied.count(slot) > 0; };
+    backend.slotsPerBank = []() { return 4; };
+    backend.viewBank = [viewBank]() { return *viewBank; };
+    backend.stepWithinBank = [withinBank]() { return *withinBank; };
+    backend.nextOccupiedSlot = [](int from, int dir) {
+        // Across the whole library, wrapping at the ends.
+        for (int i = 1; i <= 12; ++i) {
+            const int slot = ((from + dir * i) % 12 + 12) % 12;
+            if (occupied.count(slot)) return slot;
+        }
+        return -1;
+    };
+    return backend;
+}
+
+// The pickup rule, as MainWindow applies it: the value only starts following
+// once the controller has reached or passed it.
+struct Pickup {
+    bool engaged = false;
+    float lastSeen = -1.0f;
+    bool accepts(float incoming, float current) {
+        constexpr float tolerance = 1.5f / 127.0f;
+        if (!engaged) {
+            const bool first = lastSeen < 0.0f;
+            const bool close = std::abs(incoming - current) <= tolerance;
+            const bool crossed = !first && ((lastSeen - current) * (incoming - current) <= 0.0f);
+            engaged = close || crossed;
+        }
+        lastSeen = incoming;
+        return engaged;
+    }
+};
+
+void testParameterTakeover() {
+    // The scene left the value at 0.8; the pedal is still down at 0.1.
+    Pickup pickup;
+    assert(!pickup.accepts(0.10f, 0.8f));   // moving does nothing yet
+    assert(!pickup.accepts(0.40f, 0.8f));
+    assert(!pickup.accepts(0.75f, 0.8f));   // still short of it
+    assert(pickup.accepts(0.81f, 0.8f));    // passed it: takes over
+    assert(pickup.accepts(0.20f, 0.81f));   // and follows from then on
+
+    // Landing on the value, or within one controller step of it, counts.
+    Pickup exact;
+    assert(exact.accepts(0.5f, 0.5f));
+    Pickup oneStep;
+    assert(oneStep.accepts(0.79f, 0.8f));
+
+    // Coming from above works the same way.
+    Pickup above;
+    assert(!above.accepts(0.9f, 0.3f));
+    assert(above.accepts(0.2f, 0.3f));
+
+    // Jump assignments do not use any of this; they always apply. The choice
+    // survives a save and load.
+    MidiAssignment assignment;
+    assignment.cc = 11;
+    assignment.nodeId = "drive";
+    assignment.target = MidiAssignment::Target::Param;
+    assignment.paramIndex = 3;
+    assert(assignment.takeover == MidiAssignment::Takeover::Pickup);  // the default
+    assignment.takeover = MidiAssignment::Takeover::Jump;
+    PresetMidiMap map;
+    map.set(assignment);
+    const PresetMidiMap loaded = PresetMidiMap::fromJson(map.toJson());
+    const MidiAssignment* back = loaded.find("drive", MidiAssignment::Target::Param, 3);
+    assert(back && back->takeover == MidiAssignment::Takeover::Jump);
+}
+
+void testPresetStepping() {
+    int current = 0;      // 01A
+    int viewBank = 0;
+    bool withinBank = false;
+    RigController rig;
+    rig.setBackend(testBackend(&current, &viewBank, &withinBank));
+
+    // Across banks: 01A -> 01C -> 02B -> 03D and back.
+    assert(rig.stepPreset(1) && current == 2);
+    assert(rig.stepPreset(1) && current == 5);
+    assert(rig.stepPreset(-1) && current == 2);
+
+    // Within the shown bank: only 01A and 01C, wrapping between them.
+    withinBank = true;
+    current = 0;
+    assert(rig.stepPreset(1) && current == 2);
+    assert(rig.stepPreset(1) && current == 0);   // wraps back, never leaves bank 1
+    assert(rig.stepPreset(-1) && current == 2);
+
+    // Bank 2 holds one preset (02B): stepping into it lands there, and stays.
+    viewBank = 1;
+    assert(rig.stepPreset(1) && current == 5);
+    assert(!rig.stepPreset(1) && current == 5);  // nothing else in this bank
+
+    // Bank 3 holds 03D only; coming from another bank, forward lands on it.
+    viewBank = 2;
+    assert(rig.stepPreset(1) && current == 11);
+
+    // An empty bank changes nothing.
+    viewBank = 1;
+    current = 5;
+    RigController::Backend empty = testBackend(&current, &viewBank, &withinBank);
+    empty.slotOccupied = [](int) { return false; };
+    rig.setBackend(empty);
+    assert(!rig.stepPreset(1) && current == 5);
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testDefaultsAndJson();
@@ -253,6 +368,8 @@ int main(int argc, char** argv) {
     testCommands();
     testPresetAssignments();
     testPresetJsonAndPrune();
+    testPresetStepping();
+    testParameterTakeover();
     std::cout << "MIDI tests passed" << std::endl;
     return 0;
 }
