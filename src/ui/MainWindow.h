@@ -61,7 +61,7 @@ private slots:
     void updateCPUStatus();
     void showPluginControls(std::shared_ptr<AudioNode> node);
     void onPluginDoubleClicked(std::shared_ptr<AudioNode> node);
-    void onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol);
+    void onPlusButtonClicked(int row, int col, QPoint screenPos, int insert);
     void onInputHardwareChanged(int index);
     void onOutputHardwareChanged(int index);
     void onInputModeChanged(int index);
@@ -124,6 +124,17 @@ private:
     bool loadPluginPreset(const std::shared_ptr<AudioNode>& node, const QString& name);
     bool isValidPluginPresetName(const QString& name) const;
     void loadFavoritePlugins();
+    std::vector<struct PluginEntry> buildPluginEntries() const;
+    // Opens the plugin browser; returns the chosen URI or an empty string.
+    QString choosePlugin();
+    std::shared_ptr<AudioNode> createPluginNode(const std::string& uri);
+    // Creates the plugin and places it (insert = open a column there).
+    bool addPluginAt(const QString& uri, int row, int col, int insert);
+    // Adds after the last block of the main lane.
+    bool appendPluginToChain(const QString& uri);
+    void togglePluginLibrary();
+    QPointer<class PluginBrowserDialog> m_pluginLibrary;
+    QStringList m_recentPluginUris;
     void saveFavoritePlugins() const;
     
     AudioEngine m_engine;
@@ -175,6 +186,7 @@ private:
     QToolButton* m_slotPlusBtn = nullptr;
     QLabel* m_slotCountLabel = nullptr;
     QTimer* m_saveFeedbackTimer = nullptr;
+    QTimer* m_sceneMarkerTimer = nullptr; // debounces marker refresh after edits
     void updateSlotControls();
     void triggerSaveFeedback();
     int m_globalDefaultSlots = 6;
@@ -241,7 +253,8 @@ private:
     QNetworkAccessManager* m_networkManager = nullptr;
     Tone3000ImageLoader* m_toneImageLoader = nullptr;
     QNetworkReply* m_currentDownloadReply = nullptr;
-    void downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect = false);
+    // redirectUrl: follow-up request after a redirect (the stored variant URL is not changed).
+    void downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect = false, const QString& redirectUrl = QString());
     
 public:
     struct PluginInfo {
@@ -259,6 +272,8 @@ public:
         std::vector<std::string> features;
         std::string path;
         bool hasNativeGUI = false;
+        std::string author;
+        std::string license;
     };
     std::vector<PluginInfo> m_availablePlugins;
     QSet<QString> m_favoritePluginUris;

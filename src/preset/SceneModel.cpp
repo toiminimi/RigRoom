@@ -28,7 +28,7 @@ QString SceneModel::defaultColor(int index) {
 
 void SceneModel::reset(const BoardState& live) {
     m_scenes.clear();
-    m_assigned.clear();
+    m_global.clear();
     Scene scene;
     scene.name = "Scene 1";
     scene.color = defaultColor(0);
@@ -41,12 +41,9 @@ void SceneModel::captureInto(Scene& scene, const BoardState& live) const {
     for (const auto& [nodeId, bypassed] : live.bypass) {
         scene.bypass[nodeId] = bypassed;
     }
-    for (const auto& [nodeId, indices] : m_assigned) {
-        auto liveNode = live.params.find(nodeId);
-        if (liveNode == live.params.end()) continue;
-        for (uint32_t index : indices) {
-            auto value = liveNode->second.find(index);
-            if (value != liveNode->second.end()) scene.params[nodeId][index] = value->second;
+    for (const auto& [nodeId, values] : live.params) {
+        for (const auto& [index, value] : values) {
+            if (!isGlobal(nodeId, index)) scene.params[nodeId][index] = value;
         }
     }
 }
@@ -71,7 +68,7 @@ SceneModel::Changes SceneModel::changesTo(int index, const BoardState& live) con
         auto liveNode = live.params.find(nodeId);
         if (liveNode == live.params.end()) continue;
         for (const auto& [paramIndex, value] : values) {
-            if (!isAssigned(nodeId, paramIndex)) continue;
+            if (isGlobal(nodeId, paramIndex)) continue;
             auto liveValue = liveNode->second.find(paramIndex);
             if (liveValue != liveNode->second.end() && std::abs(liveValue->second - value) > kParamEpsilon) {
                 changes.params.emplace_back(nodeId, paramIndex, value);
@@ -127,47 +124,53 @@ void SceneModel::overwriteScene(int index, const BoardState& live) {
     if (index >= 0 && index < count()) captureInto(m_scenes[index], live);
 }
 
-bool SceneModel::isAssigned(const std::string& nodeId, uint32_t index) const {
-    auto it = m_assigned.find(nodeId);
-    return it != m_assigned.end() && it->second.count(index) > 0;
+bool SceneModel::isGlobal(const std::string& nodeId, uint32_t index) const {
+    auto it = m_global.find(nodeId);
+    return it != m_global.end() && it->second.count(index) > 0;
 }
 
-bool SceneModel::hasAssignedParams(const std::string& nodeId) const {
-    auto it = m_assigned.find(nodeId);
-    return it != m_assigned.end() && !it->second.empty();
-}
-
-void SceneModel::assignParam(const std::string& nodeId, uint32_t index, float value) {
-    m_assigned[nodeId].insert(index);
-    for (Scene& scene : m_scenes) scene.params[nodeId][index] = value;
-}
-
-void SceneModel::unassignParam(const std::string& nodeId, uint32_t index) {
-    auto it = m_assigned.find(nodeId);
-    if (it == m_assigned.end()) return;
-    it->second.erase(index);
-    if (it->second.empty()) m_assigned.erase(it);
-    for (Scene& scene : m_scenes) {
-        auto node = scene.params.find(nodeId);
-        if (node == scene.params.end()) continue;
-        node->second.erase(index);
-        if (node->second.empty()) scene.params.erase(node);
+void SceneModel::setGlobal(const std::string& nodeId, uint32_t index, bool global, float value) {
+    if (global) {
+        m_global[nodeId].insert(index);
+        for (Scene& scene : m_scenes) {
+            auto node = scene.params.find(nodeId);
+            if (node == scene.params.end()) continue;
+            node->second.erase(index);
+            if (node->second.empty()) scene.params.erase(node);
+        }
+        return;
     }
+    auto it = m_global.find(nodeId);
+    if (it != m_global.end()) {
+        it->second.erase(index);
+        if (it->second.empty()) m_global.erase(it);
+    }
+    for (Scene& scene : m_scenes) scene.params[nodeId][index] = value;
 }
 
 std::set<std::string> SceneModel::sceneControlledBlocks(const BoardState& live) const {
     std::set<std::string> result;
-    for (const auto& [nodeId, indices] : m_assigned) {
-        if (!indices.empty() && live.bypass.count(nodeId)) result.insert(nodeId);
-    }
     if (count() < 2) return result;
     for (const auto& [nodeId, liveBypassed] : live.bypass) {
-        for (int i = 0; i < count(); ++i) {
+        for (int i = 0; i < count() && !result.count(nodeId); ++i) {
             if (i == m_active) continue;
             auto it = m_scenes[i].bypass.find(nodeId);
-            if (it != m_scenes[i].bypass.end() && it->second != liveBypassed) {
-                result.insert(nodeId);
-                break;
+            if (it != m_scenes[i].bypass.end() && it->second != liveBypassed) result.insert(nodeId);
+        }
+    }
+    for (const auto& [nodeId, liveValues] : live.params) {
+        if (result.count(nodeId)) continue;
+        for (int i = 0; i < count() && !result.count(nodeId); ++i) {
+            if (i == m_active) continue;
+            auto node = m_scenes[i].params.find(nodeId);
+            if (node == m_scenes[i].params.end()) continue;
+            for (const auto& [index, value] : node->second) {
+                auto liveValue = liveValues.find(index);
+                if (liveValue != liveValues.end() && !isGlobal(nodeId, index)
+                    && std::abs(liveValue->second - value) > kParamEpsilon) {
+                    result.insert(nodeId);
+                    break;
+                }
             }
         }
     }
@@ -176,8 +179,8 @@ std::set<std::string> SceneModel::sceneControlledBlocks(const BoardState& live) 
 
 void SceneModel::prune(const BoardState& live) {
     auto alive = [&live](const std::string& id) { return live.bypass.count(id) > 0; };
-    for (auto it = m_assigned.begin(); it != m_assigned.end();) {
-        it = alive(it->first) ? std::next(it) : m_assigned.erase(it);
+    for (auto it = m_global.begin(); it != m_global.end();) {
+        it = alive(it->first) ? std::next(it) : m_global.erase(it);
     }
     for (Scene& scene : m_scenes) {
         for (auto it = scene.bypass.begin(); it != scene.bypass.end();) {
@@ -190,11 +193,11 @@ void SceneModel::prune(const BoardState& live) {
 }
 
 QJsonObject SceneModel::toJson() const {
-    QJsonObject assigned;
-    for (const auto& [nodeId, indices] : m_assigned) {
+    QJsonObject global;
+    for (const auto& [nodeId, indices] : m_global) {
         QJsonArray arr;
         for (uint32_t index : indices) arr.append(static_cast<int>(index));
-        assigned[QString::fromStdString(nodeId)] = arr;
+        global[QString::fromStdString(nodeId)] = arr;
     }
 
     QJsonArray list;
@@ -220,7 +223,7 @@ QJsonObject SceneModel::toJson() const {
 
     return QJsonObject{
         {"active", m_active},
-        {"assignedParams", assigned},
+        {"globalParams", global},
         {"list", list},
     };
 }
@@ -233,12 +236,15 @@ bool SceneModel::fromJson(const QJsonObject& obj, const BoardState& live) {
     }
 
     m_scenes.clear();
-    m_assigned.clear();
+    m_global.clear();
 
-    const QJsonObject assigned = obj["assignedParams"].toObject();
-    for (auto it = assigned.constBegin(); it != assigned.constEnd(); ++it) {
+    // Presets from before every parameter was per scene only stored
+    // "assignedParams"; their scenes simply lack the other values, so
+    // switching leaves those alone until a scene is captured again.
+    const QJsonObject global = obj["globalParams"].toObject();
+    for (auto it = global.constBegin(); it != global.constEnd(); ++it) {
         for (const QJsonValue& v : it.value().toArray()) {
-            m_assigned[it.key().toStdString()].insert(static_cast<uint32_t>(v.toInt()));
+            m_global[it.key().toStdString()].insert(static_cast<uint32_t>(v.toInt()));
         }
     }
 
@@ -260,7 +266,7 @@ bool SceneModel::fromJson(const QJsonObject& obj, const BoardState& live) {
             for (auto v = values.constBegin(); v != values.constEnd(); ++v) {
                 bool ok = false;
                 const uint32_t paramIndex = v.key().toUInt(&ok);
-                if (ok && isAssigned(it.key().toStdString(), paramIndex)) {
+                if (ok && !isGlobal(it.key().toStdString(), paramIndex)) {
                     scene.params[it.key().toStdString()][paramIndex] = static_cast<float>(v.value().toDouble());
                 }
             }

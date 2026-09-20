@@ -8,8 +8,8 @@
 #include <vector>
 
 // Snapshots inside one board preset (Helix/Quad Cortex style).
-// Every block's on/off state is per scene. Parameters only vary per scene
-// once they are assigned; everything else stays global to the preset.
+// Every block's on/off state and every parameter is per scene, unless a
+// parameter is marked global ("same in all scenes").
 // Switching scenes never touches the graph, so tails ring on.
 class SceneModel {
 public:
@@ -28,7 +28,7 @@ public:
         QString color;
         float levelDb = 0.0f;
         std::map<std::string, bool> bypass;
-        std::map<std::string, ParamMap> params;          // assigned params only
+        std::map<std::string, ParamMap> params;          // all non-global params
     };
 
     // Changes needed to move the live board to a scene.
@@ -53,7 +53,7 @@ public:
     // Curated scene colours, readable on the dark UI.
     static const std::vector<NamedColor>& palette();
 
-    // Stores the live board into the active scene (bypass + assigned params).
+    // Stores the live board into the active scene (bypass + non-global params).
     void captureActive(const BoardState& live);
     // Differences between the live board and scene `index`.
     Changes changesTo(int index, const BoardState& live) const;
@@ -71,15 +71,14 @@ public:
     // Copies the live board into scene `index` (not only the active one).
     void overwriteScene(int index, const BoardState& live);
 
-    bool isAssigned(const std::string& nodeId, uint32_t index) const;
-    bool hasAssignedParams(const std::string& nodeId) const;
-    // Seeds every scene with `value`.
-    void assignParam(const std::string& nodeId, uint32_t index, float value);
-    void unassignParam(const std::string& nodeId, uint32_t index);
-    const std::map<std::string, std::set<uint32_t>>& assignedParams() const { return m_assigned; }
+    // A global parameter keeps one value in every scene.
+    bool isGlobal(const std::string& nodeId, uint32_t index) const;
+    // Making a parameter per-scene again seeds every scene with `value`.
+    void setGlobal(const std::string& nodeId, uint32_t index, bool global, float value);
+    const std::map<std::string, std::set<uint32_t>>& globalParams() const { return m_global; }
 
-    // Blocks a scene switch can change: an assigned parameter, or an on/off
-    // state that differs between scenes. The active scene uses live values.
+    // Blocks a scene switch can change: an on/off state or a parameter that
+    // differs between scenes. The active scene uses live values.
     std::set<std::string> sceneControlledBlocks(const BoardState& live) const;
 
     // Drops data for blocks that no longer exist.
@@ -94,5 +93,5 @@ private:
 
     std::vector<Scene> m_scenes;
     int m_active = 0;
-    std::map<std::string, std::set<uint32_t>> m_assigned;
+    std::map<std::string, std::set<uint32_t>> m_global;
 };

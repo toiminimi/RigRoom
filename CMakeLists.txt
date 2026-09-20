@@ -23,7 +23,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # Find Qt6
-find_package(Qt6 COMPONENTS Widgets Core Gui Network REQUIRED)
+find_package(Qt6 COMPONENTS Widgets Core Gui Network Concurrent REQUIRED)
 
 # Find PkgConfig packages
 find_package(PkgConfig REQUIRED)
@@ -78,6 +78,10 @@ add_executable(RigRoom
     src/ui/PresetBrowser.cpp
     src/ui/FootswitchTile.cpp
     src/ui/FootswitchTile.h
+    src/ui/PluginBrowser.cpp
+    src/ui/PluginBrowser.h
+    src/ui/PluginSearch.cpp
+    src/ui/PluginSearch.h
     src/ui/PresetBrowser.h
     src/preset/PresetLibrary.cpp
     src/preset/PresetLibrary.h
@@ -101,6 +105,7 @@ target_link_options(RigRoom PRIVATE -rdynamic)
 target_link_libraries(RigRoom PRIVATE
     Qt6::Widgets
     Qt6::Network
+    Qt6::Concurrent
     PkgConfig::JACK
     PkgConfig::LILV
     PkgConfig::SUIL
@@ -160,6 +165,16 @@ if(BUILD_TESTING)
     target_compile_options(RigRoomMidiTests PRIVATE -UNDEBUG)
     target_link_libraries(RigRoomMidiTests PRIVATE Qt6::Core)
     add_test(NAME RigRoomMidiTests COMMAND RigRoomMidiTests)
+
+    add_executable(RigRoomPluginSearchTests
+        tests/PluginSearchTests.cpp
+        src/ui/PluginSearch.cpp
+        src/ui/PluginSearch.h
+    )
+    target_include_directories(RigRoomPluginSearchTests PRIVATE src)
+    target_compile_options(RigRoomPluginSearchTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomPluginSearchTests PRIVATE Qt6::Core)
+    add_test(NAME RigRoomPluginSearchTests COMMAND RigRoomPluginSearchTests)
 endif()
 
 include(GNUInstallDirs)

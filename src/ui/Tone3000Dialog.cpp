@@ -78,10 +78,20 @@ protected:
     }
 };
 
-Tone3000Dialog::Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* parent) 
-    : QDialog(parent), m_node(node), m_engine(engine) {
+Tone3000Dialog::Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* parent, Mode mode,
+                               const std::string& irPropertyUri)
+    : QDialog(parent), m_node(node), m_engine(engine), m_mode(mode), m_irPropertyUri(irPropertyUri) {
     migrateLegacyTone3000Data();
-    m_originalModelPath = node ? node->getModelFilePath() : "";
+    if (m_mode == Mode::Ir) {
+        // Remember the IR that was loaded so Cancel can put it back after a preview.
+        if (node) {
+            for (const auto& fp : node->getFileProperties()) {
+                if (fp.uri == irPropertyUri) m_originalModelPath = fp.fileValue;
+            }
+        }
+    } else {
+        m_originalModelPath = node ? node->getModelFilePath() : "";
+    }
     
     setupUI();
     m_networkManager = new QNetworkAccessManager(this);
@@ -135,7 +145,7 @@ Tone3000Dialog::Tone3000Dialog(AudioNode* node, AudioEngine* engine, QWidget* pa
 }
 
 void Tone3000Dialog::setupUI() {
-    setWindowTitle("TONE3000 Profiles Browser");
+    setWindowTitle(m_mode == Mode::Ir ? "TONE3000 Impulse Responses" : "TONE3000 NAM Captures");
     setFocusPolicy(Qt::StrongFocus);
     const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
     resize(std::min(1200, available.width() - 80), std::min(860, available.height() - 80));
@@ -260,8 +270,24 @@ void Tone3000Dialog::setupUI() {
 
     // Search bar
     auto* searchLayout = new QHBoxLayout();
+    const QString segmentStyle =
+        "QPushButton { background-color: #2d3135; color: #c5ccd2; border: 1px solid #43474a; padding: 6px 12px; font-size: 12px; }"
+        "QPushButton:checked { background-color: #173241; color: #80d8ff; border-color: #00a3e0; }";
+    m_tonesModeBtn = new QPushButton(m_mode == Mode::Ir ? "IRs" : "Tones", this);
+    m_creatorsModeBtn = new QPushButton("Creators", this);
+    for (QPushButton* b : {m_tonesModeBtn, m_creatorsModeBtn}) {
+        b->setCheckable(true);
+        b->setStyleSheet(segmentStyle);
+        b->setCursor(Qt::PointingHandCursor);
+        searchLayout->addWidget(b);
+    }
+    m_tonesModeBtn->setChecked(true);
+    m_tonesModeBtn->setToolTip(m_mode == Mode::Ir ? "Search impulse responses" : "Search NAM captures");
+    m_creatorsModeBtn->setToolTip("Search creators by name; open one to see their uploads");
+    connect(m_tonesModeBtn, &QPushButton::clicked, this, [this]() { setBrowseCreators(false); });
+    connect(m_creatorsModeBtn, &QPushButton::clicked, this, [this]() { setBrowseCreators(true); });
     m_searchEdit = new QLineEdit(this);
-    m_searchEdit->setPlaceholderText("Search tones, amps, or creators...");
+    m_searchEdit->setPlaceholderText(m_mode == Mode::Ir ? "Search cabinets, speakers, mics…" : "Search tones, amps, pedals…");
     m_searchBtn = new QPushButton("Search", this);
     auto* sortLabel = new QLabel("Sort", this);
     sortLabel->setStyleSheet("color: #a8aab0; font-size: 11px; font-weight: bold;");
@@ -286,6 +312,7 @@ void Tone3000Dialog::setupUI() {
         auto* label = new QLabel(text, this);
         label->setStyleSheet("color: #a8aab0; font-size: 11px; font-weight: bold;");
         browseLayout->addWidget(label);
+        m_namOnlyWidgets << label;
     };
 
     m_gearFilterCombo = new QComboBox(this);
@@ -332,12 +359,49 @@ void Tone3000Dialog::setupUI() {
     browseLayout->addWidget(m_favoritesCheckbox);
     browseLayout->addStretch();
     mainLayout->addLayout(browseLayout);
+    // Gear, character, architecture, size and calibration describe NAM captures only.
+    m_namOnlyWidgets << m_gearFilterCombo << m_characterFilterCombo << m_archFilterCombo
+                     << m_sizeFilterCombo << m_calibratedCheckbox;
+    for (QWidget* w : m_namOnlyWidgets) w->setVisible(m_mode == Mode::Nam);
 
     m_filterChipsWidget = new QWidget(this);
     m_filterChipsLayout = new QHBoxLayout(m_filterChipsWidget);
     m_filterChipsLayout->setContentsMargins(0, 0, 0, 0);
     m_filterChipsLayout->setSpacing(6);
     mainLayout->addWidget(m_filterChipsWidget);
+
+    // Creator header: shown while browsing one creator's uploads.
+    m_creatorHeader = new QWidget(this);
+    m_creatorHeader->setObjectName("creatorHeader");
+    m_creatorHeader->setStyleSheet(
+        "QWidget#creatorHeader { background: #171d22; border: 1px solid #2d3a44; border-radius: 8px; }"
+        "QLabel { background: transparent; border: none; }");
+    auto* creatorLayout = new QHBoxLayout(m_creatorHeader);
+    creatorLayout->setContentsMargins(10, 8, 10, 8);
+    creatorLayout->setSpacing(12);
+    m_creatorAvatar = new QLabel(m_creatorHeader);
+    m_creatorAvatar->setFixedSize(48, 48);
+    m_creatorAvatar->setAlignment(Qt::AlignCenter);
+    m_creatorAvatar->setStyleSheet("background: #22303a; color: #80d8ff; border-radius: 24px; font-size: 18px; font-weight: bold;");
+    creatorLayout->addWidget(m_creatorAvatar);
+    auto* creatorText = new QVBoxLayout();
+    creatorText->setSpacing(2);
+    m_creatorNameLabel = new QLabel(m_creatorHeader);
+    m_creatorNameLabel->setTextFormat(Qt::RichText);
+    m_creatorNameLabel->setOpenExternalLinks(true);
+    m_creatorNameLabel->setStyleSheet("font-size: 15px; color: #f1f2f4;");
+    m_creatorStatsLabel = new QLabel(m_creatorHeader);
+    m_creatorStatsLabel->setStyleSheet("font-size: 12px; color: #a8aab0;");
+    creatorText->addWidget(m_creatorNameLabel);
+    creatorText->addWidget(m_creatorStatsLabel);
+    creatorLayout->addLayout(creatorText, 1);
+    m_creatorBackBtn = new QPushButton(QString::fromUtf8("←  Back"), m_creatorHeader);
+    m_creatorBackBtn->setToolTip("Back to where you opened this creator, with the same search and results");
+    m_creatorBackBtn->setStyleSheet("QPushButton { background-color: #2d3135; color: #d9dde1; border: 1px solid #43474a; font-size: 12px; } QPushButton:hover { border-color: #00a3e0; }");
+    connect(m_creatorBackBtn, &QPushButton::clicked, this, &Tone3000Dialog::goBack);
+    creatorLayout->addWidget(m_creatorBackBtn);
+    m_creatorHeader->hide();
+    mainLayout->addWidget(m_creatorHeader);
 
     auto* contentSplitter = m_contentSplitter = new QSplitter(Qt::Horizontal, this);
     m_resultsArea = new QScrollArea(contentSplitter);
@@ -369,6 +433,8 @@ void Tone3000Dialog::setupUI() {
     m_infoCreatorLabel->setWordWrap(true);
     m_infoCreatorLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_infoCreatorLabel->setStyleSheet("color: #a8aab0; font-size: 12px;");
+    m_infoCreatorLabel->setOpenExternalLinks(false);
+    connect(m_infoCreatorLabel, &QLabel::linkActivated, this, &Tone3000Dialog::onCreatorLink);
     m_infoText = new QTextBrowser(infoContent);
     m_infoText->setOpenExternalLinks(false);
     m_infoText->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -421,7 +487,7 @@ void Tone3000Dialog::setupUI() {
     m_pageLabel->setText("Ready");
 
     m_modelsCombo = new QComboBox(this);
-    m_modelsCombo->setPlaceholderText("Select a capture variant");
+    m_modelsCombo->setPlaceholderText(m_mode == Mode::Ir ? "Select an IR file" : "Select a capture variant");
     m_previewBtn = new QPushButton("Preview", this);
     m_previewBtn->hide();
     m_loadBtn = new QPushButton("Load", this);
@@ -432,9 +498,9 @@ void Tone3000Dialog::setupUI() {
     m_loadBtn->setEnabled(false);
     m_favoriteBtn->setEnabled(false);
     auto* actionLayout = new QHBoxLayout();
-    auto* captureLabel = new QLabel("Capture", this);
-    captureLabel->setStyleSheet("color: #a8aab0; font-size: 11px; font-weight: bold;");
-    actionLayout->addWidget(captureLabel);
+    m_captureLabel = new QLabel(m_mode == Mode::Ir ? "IR file" : "Capture", this);
+    m_captureLabel->setStyleSheet("color: #a8aab0; font-size: 11px; font-weight: bold;");
+    actionLayout->addWidget(m_captureLabel);
     actionLayout->addWidget(m_modelsCombo, 1);
     actionLayout->addWidget(m_loadBtn);
     actionLayout->addWidget(m_favoriteBtn);
@@ -474,6 +540,11 @@ void Tone3000Dialog::performSearch() {
     m_selectedToneIndex = -1;
     m_selectedToneId = -1;
     m_currentTones = QJsonArray();
+    if (m_browseCreators) {
+        m_currentCreators = QJsonArray();
+        requestCreators(1, false);
+        return;
+    }
     requestSearch();
 }
 
@@ -565,7 +636,9 @@ void Tone3000Dialog::onFavoriteIdsFinished(QNetworkReply* reply, int page) {
 }
 
 QString Tone3000Dialog::requestCacheKey(int page) const {
-    return QString("%1|%2|%3|%4|%5|%6|%7|%8|%9")
+    return QString("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11")
+        .arg(m_mode == Mode::Ir ? "ir" : "nam")
+        .arg(m_creatorFilter)
         .arg(m_searchEdit->text().trimmed())
         .arg(m_gearFilterCombo->currentData().toString())
         .arg(m_characterFilterCombo->currentData().toString())
@@ -637,7 +710,8 @@ void Tone3000Dialog::requestPage(int page, bool append) {
         QUrlQuery q;
         
         QString queryStr = query;
-        const QString character = m_characterFilterCombo->currentData().toString();
+        const bool nam = m_mode == Mode::Nam;
+        const QString character = nam ? m_characterFilterCombo->currentData().toString() : QString();
         if (!character.isEmpty()) {
             if (!queryStr.isEmpty()) queryStr += " ";
             queryStr += character;
@@ -645,7 +719,8 @@ void Tone3000Dialog::requestPage(int page, bool append) {
         if (!queryStr.isEmpty() && !m_favoritesCheckbox->isChecked()) q.addQueryItem("query", queryStr);
         q.addQueryItem("page", QString::number(page));
         q.addQueryItem("page_size", QString::number(PAGE_SIZE));
-        if (!m_favoritesCheckbox->isChecked()) q.addQueryItem("format", "nam");
+        if (!m_favoritesCheckbox->isChecked()) q.addQueryItem("format", nam ? "nam" : "ir");
+        if (!m_creatorFilter.isEmpty() && !m_favoritesCheckbox->isChecked()) q.addQueryItem("creators", m_creatorFilter);
         
         QString sort = m_sortCombo->currentData().toString();
         if (sort == "favorites") {
@@ -655,14 +730,16 @@ void Tone3000Dialog::requestPage(int page, bool append) {
         }
         if (!m_favoritesCheckbox->isChecked()) q.addQueryItem("sort", sort);
         
-        QString gear = m_gearFilterCombo->currentData().toString();
-        if (!gear.isEmpty() && !m_favoritesCheckbox->isChecked()) q.addQueryItem("gears", gear);
-        
-        QString arch = m_archFilterCombo->currentData().toString();
-        if (!arch.isEmpty() && !m_favoritesCheckbox->isChecked()) q.addQueryItem("architecture", arch);
-        QString size = m_sizeFilterCombo->currentData().toString();
-        if (!size.isEmpty() && !m_favoritesCheckbox->isChecked()) q.addQueryItem("sizes", size);
-        if (m_calibratedCheckbox->isChecked() && !m_favoritesCheckbox->isChecked()) q.addQueryItem("calibrated", "true");
+        if (nam && !m_favoritesCheckbox->isChecked()) {
+            // Gear, architecture, size and calibration only describe NAM captures.
+            const QString gear = m_gearFilterCombo->currentData().toString();
+            if (!gear.isEmpty()) q.addQueryItem("gears", gear);
+            const QString arch = m_archFilterCombo->currentData().toString();
+            if (!arch.isEmpty()) q.addQueryItem("architecture", arch);
+            const QString size = m_sizeFilterCombo->currentData().toString();
+            if (!size.isEmpty()) q.addQueryItem("sizes", size);
+            if (m_calibratedCheckbox->isChecked()) q.addQueryItem("calibrated", "true");
+        }
         
         url.setQuery(q);
         
@@ -812,7 +889,9 @@ void Tone3000Dialog::onSearchFinished(QNetworkReply* reply) {
         }
     }
     m_pageLabel->setText(m_totalPages > 0 ? QString("Page %1 of %2").arg(m_currentPage).arg(m_totalPages) : QString("Page %1").arg(m_currentPage));
-    m_statusLabel->setText(m_totalResults > 0 ? QString("Showing %1 of %2 profiles.").arg(m_currentTones.size()).arg(m_totalResults) : QString("Showing %1 profiles.").arg(m_currentTones.size()));
+    const QString noun = m_mode == Mode::Ir ? "IR uploads" : "profiles";
+    m_statusLabel->setText(m_totalResults > 0 ? QString("Showing %1 of %2 %3.").arg(m_currentTones.size()).arg(m_totalResults).arg(noun)
+                                              : QString("Showing %1 %2.").arg(m_currentTones.size()).arg(noun));
 }
 
 void Tone3000Dialog::onScrollChanged(int value) {
@@ -820,7 +899,8 @@ void Tone3000Dialog::onScrollChanged(int value) {
     QScrollBar* bar = m_resultsArea->verticalScrollBar();
     if (!bar || bar->maximum() <= 0) return;
     if (value >= static_cast<int>(bar->maximum() * 0.75)) {
-        requestPage(m_currentPage + 1, true);
+        if (m_browseCreators) requestCreators(m_currentPage + 1, true);
+        else requestPage(m_currentPage + 1, true);
     }
 }
 
@@ -904,7 +984,11 @@ void Tone3000Dialog::rebuildCards() {
         if (item->widget()) item->widget()->deleteLater();
         delete item;
     }
-    for (int i = 0; i < m_currentTones.size(); ++i) appendToneCard(m_currentTones[i].toObject(), i);
+    if (m_browseCreators) {
+        for (const QJsonValue& creator : m_currentCreators) appendCreatorCard(creator.toObject());
+    } else {
+        for (int i = 0; i < m_currentTones.size(); ++i) appendToneCard(m_currentTones[i].toObject(), i);
+    }
     m_resultsLayout->addStretch();
 }
 
@@ -937,7 +1021,7 @@ void Tone3000Dialog::appendToneCard(const QJsonObject& tone, int index) {
     layout->setContentsMargins(10, 10, 14, 10);
     layout->setSpacing(12);
 
-    auto* thumbnail = new QLabel("NAM", card);
+    auto* thumbnail = new QLabel(m_mode == Mode::Ir ? "IR" : "NAM", card);
     thumbnail->setFixedSize(112, 74);
     thumbnail->setAlignment(Qt::AlignCenter);
     thumbnail->setStyleSheet(
@@ -956,8 +1040,13 @@ void Tone3000Dialog::appendToneCard(const QJsonObject& tone, int index) {
     title->setWordWrap(true);
     title->setStyleSheet("font-size: 15px; font-weight: 700; color: #f1f2f4;");
     const QString username = toneUsername(tone);
-    auto* meta = new QLabel(QString("by %1").arg(username), card);
+    auto* meta = new QLabel(QString("by <a href='creator:%1' style='color:#80d8ff; text-decoration:none;'>%2</a>")
+                                .arg(QString(QUrl::toPercentEncoding(username)), username.toHtmlEscaped()), card);
+    meta->setTextFormat(Qt::RichText);
+    meta->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+    meta->setToolTip(QString("Show everything by %1").arg(username));
     meta->setStyleSheet("font-size: 12px; color: #a8aab0;");
+    connect(meta, &QLabel::linkActivated, this, &Tone3000Dialog::onCreatorLink);
     top->addWidget(title, 1);
     if (m_favoriteToneIds.contains(tone["id"].toInt())) {
         auto* favoriteBadge = new QLabel("★ Favorited", card);
@@ -997,8 +1086,10 @@ void Tone3000Dialog::showToneInfo(const QJsonObject& tone) {
     const QJsonObject user = tone["user"].toObject();
     QString profileUrl = user["url"].toString().isEmpty() ? "https://www.tone3000.com/" + toneUsername(tone) : user["url"].toString();
     if (profileUrl.startsWith('/')) profileUrl.prepend("https://www.tone3000.com");
-    m_infoCreatorLabel->setText(QString("by <a href='%1'>%2</a>").arg(profileUrl.toHtmlEscaped(), toneUsername(tone).toHtmlEscaped()));
-    m_infoCreatorLabel->setOpenExternalLinks(true);
+    const QString creator = toneUsername(tone);
+    m_infoCreatorLabel->setText(QString("by <a href='creator:%1' style='color:#80d8ff;'>%2</a>"
+                                        " &nbsp;·&nbsp; <a href='%3' style='color:#6f8796;'>profile on web ↗</a>")
+        .arg(QString(QUrl::toPercentEncoding(creator)), creator.toHtmlEscaped(), profileUrl.toHtmlEscaped()));
     const QString description = tone["description"].toString().toHtmlEscaped().replace("\n", "<br>");
     QString toneUrl = tone["url"].toString();
     if (toneUrl.startsWith('/')) toneUrl.prepend("https://www.tone3000.com");
@@ -1078,11 +1169,12 @@ void Tone3000Dialog::updateActiveFilterChips() {
         connect(chip, &QPushButton::clicked, this, [clearFn]() { clearFn(); });
         m_filterChipsLayout->addWidget(chip);
     };
-    if (m_gearFilterCombo->currentData().toString() != "amp-cab") addChip("Gear: " + m_gearFilterCombo->currentText(), [this]() { m_gearFilterCombo->setCurrentIndex(0); });
-    if (!m_characterFilterCombo->currentData().toString().isEmpty()) addChip("Character: " + m_characterFilterCombo->currentText(), [this]() { m_characterFilterCombo->setCurrentIndex(0); });
-    if (m_archFilterCombo->currentData().toString() != "2") addChip("Architecture: " + m_archFilterCombo->currentText(), [this]() { m_archFilterCombo->setCurrentIndex(0); });
-    if (!m_sizeFilterCombo->currentData().toString().isEmpty()) addChip("Size: " + m_sizeFilterCombo->currentText(), [this]() { m_sizeFilterCombo->setCurrentIndex(0); });
-    if (m_calibratedCheckbox->isChecked()) addChip("Calibrated", [this]() { m_calibratedCheckbox->setChecked(false); });
+    if (!m_creatorFilter.isEmpty()) addChip("Creator: " + m_creatorFilter, [this]() { clearCreator(); });
+    if (m_mode == Mode::Nam && m_gearFilterCombo->currentData().toString() != "amp-cab") addChip("Gear: " + m_gearFilterCombo->currentText(), [this]() { m_gearFilterCombo->setCurrentIndex(0); });
+    if (m_mode == Mode::Nam && !m_characterFilterCombo->currentData().toString().isEmpty()) addChip("Character: " + m_characterFilterCombo->currentText(), [this]() { m_characterFilterCombo->setCurrentIndex(0); });
+    if (m_mode == Mode::Nam && m_archFilterCombo->currentData().toString() != "2") addChip("Architecture: " + m_archFilterCombo->currentText(), [this]() { m_archFilterCombo->setCurrentIndex(0); });
+    if (m_mode == Mode::Nam && !m_sizeFilterCombo->currentData().toString().isEmpty()) addChip("Size: " + m_sizeFilterCombo->currentText(), [this]() { m_sizeFilterCombo->setCurrentIndex(0); });
+    if (m_mode == Mode::Nam && m_calibratedCheckbox->isChecked()) addChip("Calibrated", [this]() { m_calibratedCheckbox->setChecked(false); });
     if (m_sortCombo->currentData().toString() != "trending") addChip("Sort: " + m_sortCombo->currentText(), [this]() { m_sortCombo->setCurrentIndex(0); });
     if (m_favoritesCheckbox->isChecked()) addChip("Favorites", [this]() { m_favoritesCheckbox->setChecked(false); });
     m_filterChipsLayout->addStretch();
@@ -1118,7 +1210,7 @@ void Tone3000Dialog::fetchModelsForTone(int toneId) {
     q.addQueryItem("tone_id", QString::number(toneId));
     q.addQueryItem("page", "1");
     q.addQueryItem("page_size", "300");
-    QString arch = m_archFilterCombo->currentData().toString();
+    const QString arch = m_mode == Mode::Nam ? m_archFilterCombo->currentData().toString() : QString();
     if (!arch.isEmpty()) q.addQueryItem("architecture", arch);
     url.setQuery(q);
 
@@ -1176,7 +1268,8 @@ void Tone3000Dialog::populateModels(const QJsonArray& models) {
     m_modelsCombo->clear();
     if (m_currentModels.isEmpty()) {
         m_isPopulatingModels = false;
-        m_statusLabel->setText("No downloadable NAM models found for this profile.");
+        m_statusLabel->setText(m_mode == Mode::Ir ? "No downloadable IR files found for this upload."
+                                                  : "No downloadable NAM models found for this profile.");
         rebuildCards();
         return;
     }
@@ -1235,10 +1328,7 @@ void Tone3000Dialog::onDownloadClicked() {
             m_downloadedToneUrl = "https://www.tone3000.com/tones/" + (slug.isEmpty() ? QString::number(toneId) : slug);
         }
 
-        QString safeSlug = slug;
-        safeSlug.replace(QRegularExpression("[^a-zA-Z0-9_\\-]"), "_");
-        if (safeSlug.isEmpty()) safeSlug = "profile";
-        toneFolder = QString("tone_%1_%2").arg(toneId > 0 ? QString::number(toneId) : "0").arg(safeSlug);
+        toneFolder = toneFolderFor(tone);
 
         m_downloadedMetadata.toneId = toneId > 0 ? QString::number(toneId).toStdString() : "";
         m_downloadedMetadata.toneTitle = title.toStdString();
@@ -1277,16 +1367,11 @@ void Tone3000Dialog::onDownloadClicked() {
         return;
     }
 
-    QString safeName = name.replace(" ", "_").replace("/", "_").replace("\\", "_");
-    if (!safeName.endsWith(".nam", Qt::CaseInsensitive)) {
-        safeName += ".nam";
-    }
-
-    QString cacheDir = tone3000CacheDir() + "/" + toneFolder;
+    const QString cacheDir = modeCacheDir() + "/" + toneFolder;
     QDir().mkpath(cacheDir);
-    m_downloadedModelPath = (cacheDir + "/" + safeName).toStdString();
+    m_downloadedModelPath = (cacheDir + "/" + fileNameFor(model, false)).toStdString();
 
-    downloadModelFile(url, safeName, false);
+    downloadModelFile(url, QString::fromStdString(m_downloadedModelPath), false);
 }
 
 void Tone3000Dialog::onPreviewClicked() {
@@ -1302,16 +1387,14 @@ void Tone3000Dialog::onPreviewClicked() {
         return;
     }
 
-    // Save as temporary preview file
-    QString safeName = "preview_" + name.replace(" ", "_").replace("/", "_").replace("\\", "_");
-    if (!safeName.endsWith(".nam", Qt::CaseInsensitive)) {
-        safeName += ".nam";
-    }
-
-    downloadModelFile(url, safeName, true);
+    // Previews go to their own folder so they never overwrite a loaded file.
+    const QString previewDir = modeCacheDir() + "/tone_preview";
+    QDir().mkpath(previewDir);
+    m_previewPath = (previewDir + "/" + fileNameFor(model, true)).toStdString();
+    downloadModelFile(url, QString::fromStdString(m_previewPath), true);
 }
 
-void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filename, bool isPreview, bool isRedirect) {
+void Tone3000Dialog::downloadModelFile(const QString& url, const QString& targetPath, bool isPreview, bool isRedirect) {
     if (m_downloadReply) {
         QNetworkReply* reply = m_downloadReply.data();
         m_downloadReply = nullptr;
@@ -1320,14 +1403,9 @@ void Tone3000Dialog::downloadModelFile(const QString& url, const QString& filena
     }
 
     m_previewDownload = isPreview;
+    m_activeDownloadPath = targetPath;
 
-    if (m_downloadedModelPath.empty()) {
-        QString cacheDir = tone3000CacheDir() + "/tone_preview";
-        QDir().mkpath(cacheDir);
-        m_downloadedModelPath = (cacheDir + "/" + filename).toStdString();
-    }
-
-    m_statusLabel->setText(isPreview ? "Downloading preview profile..." : "Downloading profile...");
+    m_statusLabel->setText(isPreview ? "Downloading preview..." : "Downloading...");
     m_progressBar->setVisible(!isPreview);
     if (!isPreview) m_progressBar->setValue(0);
     m_loadBtn->setEnabled(false);
@@ -1382,10 +1460,10 @@ void Tone3000Dialog::onDownloadFinished(QNetworkReply* reply) {
         if (nextUrl.isRelative()) {
             nextUrl = reply->url().resolved(nextUrl);
         }
-        QString fname = QFileInfo(QString::fromStdString(m_downloadedModelPath)).fileName();
+        const QString target = m_activeDownloadPath;
         bool isPrev = m_previewDownload;
         reply->deleteLater();
-        downloadModelFile(nextUrl.toString(), fname, isPrev, true);
+        downloadModelFile(nextUrl.toString(), target, isPrev, true);
         return;
     }
 
@@ -1403,7 +1481,7 @@ void Tone3000Dialog::onDownloadFinished(QNetworkReply* reply) {
     QByteArray fileData = reply->readAll();
     reply->deleteLater();
 
-    QFile file(QString::fromStdString(m_downloadedModelPath));
+    QFile file(m_activeDownloadPath);
     if (!file.open(QIODevice::WriteOnly)) {
         m_statusLabel->setText("Failed to save file.");
         QMessageBox::critical(this, "Save Error", "Could not open local file for writing.");
@@ -1416,15 +1494,13 @@ void Tone3000Dialog::onDownloadFinished(QNetworkReply* reply) {
     if (m_previewDownload) {
         m_previewDownload = false;
         if (m_node && m_engine) {
-            m_engine->suspendProcessing();
-            m_node->loadModelFile(m_downloadedModelPath);
-            m_engine->resumeProcessing();
+            applyFileToNode(m_previewPath);
             m_isPreviewing = true;
             m_statusLabel->setText("Live preview active! Play guitar to test.");
         }
     } else {
-        // Store variants on the node before accepting
-        if (m_node) {
+        // Store capture variants on a NAM node before accepting
+        if (m_node && m_mode == Mode::Nam) {
             QString currentCacheDir = QFileInfo(QString::fromStdString(m_downloadedModelPath)).absoluteDir().absolutePath();
             std::vector<AudioNode::ModelVariant> vars;
             for (int i = 0; i < m_currentModels.size(); ++i) {
@@ -1437,12 +1513,7 @@ void Tone3000Dialog::onDownloadFinished(QNetworkReply* reply) {
                     var.localPath = m_downloadedModelPath;
                 } else {
                     // Check if already cached in currentCacheDir
-                    QString itemSafeName = model["name"].toString();
-                    itemSafeName.replace(QRegularExpression("[^a-zA-Z0-9_\\-.]"), "_");
-                    if (!itemSafeName.endsWith(".nam", Qt::CaseInsensitive) && !itemSafeName.endsWith(".json", Qt::CaseInsensitive)) {
-                        itemSafeName += ".nam";
-                    }
-                    QString expectedPath = currentCacheDir + "/" + itemSafeName;
+                    QString expectedPath = currentCacheDir + "/" + fileNameFor(model, false);
                     if (QFile::exists(expectedPath)) {
                         var.localPath = expectedPath.toStdString();
                     }
@@ -1459,11 +1530,7 @@ void Tone3000Dialog::onDownloadFinished(QNetworkReply* reply) {
 }
 
 void Tone3000Dialog::reject() {
-    if (m_isPreviewing && m_node && m_engine) {
-        m_engine->suspendProcessing();
-        m_node->loadModelFile(m_originalModelPath);
-        m_engine->resumeProcessing();
-    }
+    if (m_isPreviewing && m_node && m_engine) applyFileToNode(m_originalModelPath);
     saveFilterSettings();
     QDialog::reject();
 }
@@ -1787,4 +1854,335 @@ void Tone3000Dialog::loadFilterSettings() {
         m_favoritesCheckbox->blockSignals(false);
         updateActiveFilterChips();
     }
+}
+
+// ─── Files ───────────────────────────────────────────────────────────────────
+
+QString Tone3000Dialog::modeCacheDir() const {
+    return m_mode == Mode::Ir ? tone3000CacheDir() + "/ir" : tone3000CacheDir();
+}
+
+QString Tone3000Dialog::toneFolderFor(const QJsonObject& tone) const {
+    const int toneId = tone["id"].toInt();
+    QString slug = tone["slug"].toString();
+    if (slug.isEmpty()) {
+        slug = tone["title"].toString().toLower();
+        slug.replace(QRegularExpression("[^a-z0-9]+"), "-");
+        slug.remove(QRegularExpression("^-|-$"));
+    }
+    slug.replace(QRegularExpression("[^a-zA-Z0-9_\\-]"), "_");
+    if (slug.isEmpty()) slug = "profile";
+    return QString("tone_%1_%2").arg(toneId > 0 ? QString::number(toneId) : "0").arg(slug);
+}
+
+QString Tone3000Dialog::fileNameFor(const QJsonObject& model, bool preview) const {
+    // Keep the real file type from the download URL (IRs are .wav/.flac);
+    // fall back to what the mode expects.
+    static const QStringList known{"nam", "json", "wav", "flac", "aif", "aiff"};
+    QString ext = QFileInfo(QUrl(model["model_url"].toString()).path()).suffix().toLower();
+    if (!known.contains(ext)) ext = m_mode == Mode::Ir ? "wav" : "nam";
+    QString name = model["name"].toString();
+    name.replace(QRegularExpression("[^a-zA-Z0-9_\\-.]"), "_");
+    if (name.isEmpty()) name = "file";
+    if (!name.endsWith("." + ext, Qt::CaseInsensitive)) name += "." + ext;
+    return preview ? "preview_" + name : name;
+}
+
+void Tone3000Dialog::applyFileToNode(const std::string& path) {
+    if (!m_node || !m_engine) return;
+    m_engine->suspendProcessing();
+    if (m_mode == Mode::Ir) m_node->setFileProperty(m_irPropertyUri, path);
+    else m_node->loadModelFile(path);
+    m_engine->resumeProcessing();
+}
+
+// ─── Creators ────────────────────────────────────────────────────────────────
+
+void Tone3000Dialog::onCreatorLink(const QString& link) {
+    if (link.startsWith("creator:")) {
+        showCreator(QUrl::fromPercentEncoding(link.mid(8).toUtf8()));
+    } else {
+        QDesktopServices::openUrl(QUrl(link));
+    }
+}
+
+void Tone3000Dialog::showCreator(const QString& username) {
+    if (username.trimmed().isEmpty()) return;
+    if (username.trimmed() == m_creatorFilter && !m_browseCreators) return;
+    {
+        SavedView view;
+        view.text = m_searchEdit->text();
+        view.favorites = m_favoritesCheckbox->isChecked();
+        view.browseCreators = m_browseCreators;
+        view.creatorFilter = m_creatorFilter;
+        view.creatorInfo = m_creatorInfo;
+        view.tones = m_currentTones;
+        view.creators = m_currentCreators;
+        view.page = m_currentPage;
+        view.totalPages = m_totalPages;
+        view.totalResults = m_totalResults;
+        view.hasNextPage = m_hasNextPage;
+        view.scroll = m_resultsArea->verticalScrollBar()->value();
+        view.selectedIndex = m_selectedToneIndex;
+        view.selectedToneId = m_selectedToneId;
+        view.status = m_statusLabel->text();
+        view.pageText = m_pageLabel->text();
+        m_backStack.push_back(view);
+    }
+    m_creatorFilter = username.trimmed();
+    m_creatorInfo = QJsonObject();
+    if (m_browseCreators) {
+        m_browseCreators = false;
+        m_tonesModeBtn->setChecked(true);
+        m_creatorsModeBtn->setChecked(false);
+        m_searchEdit->setPlaceholderText(m_mode == Mode::Ir ? "Search cabinets, speakers, mics…" : "Search tones, amps, pedals…");
+    }
+    {
+        // Show all of the creator's uploads, not only those matching the old query.
+        const QSignalBlocker blocker(m_searchEdit);
+        m_searchEdit->clear();
+    }
+    if (m_favoritesCheckbox->isChecked()) {
+        const QSignalBlocker blocker(m_favoritesCheckbox);
+        m_favoritesCheckbox->setChecked(false);
+        onFavoritesToggled(false); // re-enables filters; its search is superseded below
+    }
+    updateCreatorHeader();
+    fetchCreatorInfo(m_creatorFilter);
+    performSearch();
+}
+
+void Tone3000Dialog::clearCreator() {
+    if (m_creatorFilter.isEmpty()) return;
+    m_backStack.clear();
+    m_creatorFilter.clear();
+    m_creatorInfo = QJsonObject();
+    updateCreatorHeader();
+    performSearch();
+}
+
+void Tone3000Dialog::fetchCreatorInfo(const QString& username) {
+    const QString key = CredentialStore::tone3000ApiKey();
+    if (key.isEmpty()) return;
+    if (m_creatorInfoReply) m_creatorInfoReply->abort();
+    QUrl url("https://www.tone3000.com/api/v1/users");
+    QUrlQuery q;
+    q.addQueryItem("query", username);
+    q.addQueryItem("page_size", "10");
+    url.setQuery(q);
+    QNetworkRequest request(url);
+    request.setRawHeader("Authorization", ("Bearer " + key).toUtf8());
+    QNetworkReply* reply = m_networkManager->get(request);
+    m_creatorInfoReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, username]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError || username != m_creatorFilter) return;
+        const QJsonArray users = QJsonDocument::fromJson(reply->readAll()).object()["data"].toArray();
+        for (const QJsonValue& value : users) {
+            const QJsonObject user = value.toObject();
+            if (user["username"].toString().compare(username, Qt::CaseInsensitive) == 0) {
+                m_creatorInfo = user;
+                break;
+            }
+        }
+        updateCreatorHeader();
+    });
+}
+
+void Tone3000Dialog::updateCreatorHeader() {
+    m_creatorHeader->setVisible(!m_creatorFilter.isEmpty() && !m_browseCreators);
+    if (m_creatorFilter.isEmpty()) return;
+    m_creatorBackBtn->setText(m_backStack.empty() ? QString::fromUtf8("×  All creators")
+                                                  : QString::fromUtf8("←  Back to search"));
+    const QJsonObject& u = m_creatorInfo;
+    const QString display = u["display_name"].toString().isEmpty() ? m_creatorFilter : u["display_name"].toString();
+    QString profileUrl = u["url"].toString();
+    if (profileUrl.isEmpty()) profileUrl = "https://www.tone3000.com/" + m_creatorFilter;
+    if (profileUrl.startsWith('/')) profileUrl.prepend("https://www.tone3000.com");
+    m_creatorNameLabel->setText(QString("<b>%1</b>%2 &nbsp;<span style='color:#8a9199;'>@%3</span> &nbsp;"
+                                        "<a href='%4' style='color:#6f8796;'>profile on web ↗</a>")
+        .arg(display.toHtmlEscaped(),
+             u["is_verified"].toBool() ? QString(" <span style='color:#00a3e0;'>✓</span>") : QString(),
+             m_creatorFilter.toHtmlEscaped(), profileUrl.toHtmlEscaped()));
+    if (u.isEmpty()) {
+        m_creatorStatsLabel->setText(m_mode == Mode::Ir ? "Impulse responses by this creator" : "Captures by this creator");
+    } else {
+        m_creatorStatsLabel->setText(QString("%1 uploads  ·  %2 downloads  ·  %3 favorites")
+            .arg(u["tones_count"].toInt()).arg(u["downloads_count"].toInt()).arg(u["favorites_count"].toInt()));
+    }
+    m_creatorAvatar->setText(m_creatorFilter.left(1).toUpper());
+    const QString avatar = u["avatar_url"].toString();
+    if (!avatar.isEmpty()) m_imageLoader->load(m_creatorAvatar, avatar);
+}
+
+void Tone3000Dialog::setBrowseCreators(bool creators) {
+    m_tonesModeBtn->setChecked(!creators);
+    m_creatorsModeBtn->setChecked(creators);
+    if (m_browseCreators == creators) return;
+    m_browseCreators = creators;
+    m_searchEdit->setPlaceholderText(creators ? "Search creators by name…"
+        : (m_mode == Mode::Ir ? "Search cabinets, speakers, mics…" : "Search tones, amps, pedals…"));
+    if (creators) {
+        m_creatorFilter.clear();
+        m_creatorInfo = QJsonObject();
+    }
+    for (QWidget* w : m_namOnlyWidgets) w->setVisible(!creators && m_mode == Mode::Nam);
+    m_favoritesCheckbox->setVisible(!creators);
+    m_sortCombo->setEnabled(!creators);
+    updateCreatorHeader();
+    performSearch();
+}
+
+void Tone3000Dialog::requestCreators(int page, bool append) {
+    const QString key = CredentialStore::tone3000ApiKey();
+    if (key.isEmpty()) {
+        m_statusLabel->setText("Enter your TONE3000 secret key to search creators.");
+        m_apiKeyBanner->show();
+        return;
+    }
+    if (m_currentReply) {
+        QNetworkReply* old = m_currentReply.data();
+        m_currentReply = nullptr;
+        old->abort();
+        old->deleteLater();
+    }
+    if (!append) {
+        m_currentCreators = QJsonArray();
+        rebuildCards();
+    }
+    updateActiveFilterChips();
+    QUrl url("https://www.tone3000.com/api/v1/users");
+    QUrlQuery q;
+    const QString text = m_searchEdit->text().trimmed();
+    if (!text.isEmpty()) q.addQueryItem("query", text);
+    q.addQueryItem("sort", "downloads");
+    q.addQueryItem("page", QString::number(page));
+    q.addQueryItem("page_size", "10"); // the API's maximum for creators
+    url.setQuery(q);
+    QNetworkRequest request(url);
+    request.setRawHeader("Authorization", ("Bearer " + key).toUtf8());
+    m_isLoadingPage = true;
+    m_statusLabel->setText(append ? "Loading more creators..." : "Searching creators...");
+    QNetworkReply* reply = m_networkManager->get(request);
+    m_currentReply = reply;
+    reply->setProperty("tone3000_page", page);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, append]() { onCreatorsFinished(reply, append); });
+}
+
+void Tone3000Dialog::onCreatorsFinished(QNetworkReply* reply, bool append) {
+    if (reply != m_currentReply.data()) return;
+    m_currentReply = nullptr;
+    m_isLoadingPage = false;
+    reply->deleteLater();
+    if (!m_browseCreators) return;
+    if (reply->error() != QNetworkReply::NoError) {
+        if (reply->error() != QNetworkReply::OperationCanceledError) m_statusLabel->setText("Could not search creators.");
+        return;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
+    const QJsonArray users = obj["data"].toArray();
+    const int page = reply->property("tone3000_page").toInt();
+    if (!append) m_currentCreators = QJsonArray();
+    for (const QJsonValue& v : users) m_currentCreators.append(v);
+    m_currentPage = page;
+    const int totalPages = obj["total_pages"].toInt(0);
+    m_hasNextPage = totalPages > 0 ? page < totalPages : users.size() == 10;
+    rebuildCards();
+    m_pageLabel->setText(totalPages > 0 ? QString("Page %1 of %2").arg(page).arg(totalPages) : QString("Page %1").arg(page));
+    m_statusLabel->setText(m_currentCreators.isEmpty() ? "No creators found." :
+        QString("Showing %1 creators. Click one to see their uploads.").arg(m_currentCreators.size()));
+}
+
+void Tone3000Dialog::appendCreatorCard(const QJsonObject& creator) {
+    const QString username = creator["username"].toString();
+    auto* card = new ToneCardFrame(m_resultsContent);
+    card->onClicked = [this, username]() {
+        // Rebuilding the list deletes this card; leave the handler first.
+        QTimer::singleShot(0, this, [this, username]() { showCreator(username); });
+    };
+    card->setCursor(Qt::PointingHandCursor);
+    card->setFixedHeight(72);
+    card->setStyleSheet("QFrame { background-color: #1b1e20; border: 1px solid #2d3135; border-radius: 10px; }"
+                        "QFrame:hover { border-color: #00a3e0; } QLabel { border: none; background: transparent; }");
+    auto* layout = new QHBoxLayout(card);
+    layout->setContentsMargins(10, 8, 14, 8);
+    layout->setSpacing(12);
+    auto* avatar = new QLabel(username.left(1).toUpper(), card);
+    avatar->setFixedSize(48, 48);
+    avatar->setAlignment(Qt::AlignCenter);
+    avatar->setStyleSheet("background: #22303a; color: #80d8ff; border-radius: 24px; font-size: 18px; font-weight: bold;");
+    const QString avatarUrl = creator["avatar_url"].toString();
+    if (!avatarUrl.isEmpty()) m_imageLoader->load(avatar, avatarUrl);
+    layout->addWidget(avatar);
+    auto* text = new QVBoxLayout();
+    text->setSpacing(3);
+    const QString display = creator["display_name"].toString().isEmpty() ? username : creator["display_name"].toString();
+    auto* name = new QLabel(QString("<b>%1</b>%2 &nbsp;<span style='color:#8a9199;'>@%3</span>")
+        .arg(display.toHtmlEscaped(),
+             creator["is_verified"].toBool() ? QString(" <span style='color:#00a3e0;'>✓</span>") : QString(),
+             username.toHtmlEscaped()), card);
+    name->setStyleSheet("font-size: 14px; color: #f1f2f4;");
+    auto* stats = new QLabel(QString("%1 uploads  ·  %2 models  ·  %3 downloads  ·  %4 favorites")
+        .arg(creator["tones_count"].toInt()).arg(creator["models_count"].toInt())
+        .arg(creator["downloads_count"].toInt()).arg(creator["favorites_count"].toInt()), card);
+    stats->setStyleSheet("font-size: 12px; color: #b7bbc0;");
+    text->addWidget(name);
+    text->addWidget(stats);
+    layout->addLayout(text, 1);
+    m_resultsLayout->addWidget(card);
+}
+
+void Tone3000Dialog::goBack() {
+    if (m_backStack.empty()) {
+        clearCreator();
+        return;
+    }
+    const SavedView view = m_backStack.back();
+    m_backStack.pop_back();
+
+    // Cancel whatever the creator page was loading.
+    ++m_searchGeneration;
+    if (m_currentReply) {
+        QNetworkReply* reply = m_currentReply.data();
+        m_currentReply = nullptr;
+        reply->abort();
+        reply->deleteLater();
+    }
+    m_isLoadingPage = false;
+
+    {
+        const QSignalBlocker b1(m_searchEdit);
+        const QSignalBlocker b2(m_favoritesCheckbox);
+        m_searchEdit->setText(view.text);
+        m_favoritesCheckbox->setChecked(view.favorites);
+    }
+    m_sortCombo->setEnabled(!view.favorites && !view.browseCreators);
+    for (QWidget* w : m_namOnlyWidgets) {
+        w->setVisible(!view.browseCreators && m_mode == Mode::Nam);
+        w->setEnabled(!view.favorites);
+    }
+    m_favoritesCheckbox->setVisible(!view.browseCreators);
+    m_browseCreators = view.browseCreators;
+    m_tonesModeBtn->setChecked(!view.browseCreators);
+    m_creatorsModeBtn->setChecked(view.browseCreators);
+    m_searchEdit->setPlaceholderText(view.browseCreators ? "Search creators by name…"
+        : (m_mode == Mode::Ir ? "Search cabinets, speakers, mics…" : "Search tones, amps, pedals…"));
+    m_creatorFilter = view.creatorFilter;
+    m_creatorInfo = view.creatorInfo;
+    m_currentTones = view.tones;
+    m_currentCreators = view.creators;
+    m_currentPage = view.page;
+    m_totalPages = view.totalPages;
+    m_totalResults = view.totalResults;
+    m_hasNextPage = view.hasNextPage;
+    m_selectedToneIndex = -1;
+    m_selectedToneId = -1;
+    updateCreatorHeader();
+    updateActiveFilterChips();
+    rebuildCards();
+    m_statusLabel->setText(view.status);
+    m_pageLabel->setText(view.pageText);
+    if (view.selectedIndex >= 0 && view.selectedIndex < m_currentTones.size()) selectTone(view.selectedIndex);
+    // The cards are laid out on the next pass; scroll back after that.
+    QTimer::singleShot(0, this, [this, scroll = view.scroll]() { m_resultsArea->verticalScrollBar()->setValue(scroll); });
 }

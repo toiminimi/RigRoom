@@ -4,7 +4,10 @@
 #include <string>
 #include "../audio/AudioNode.h"
 
-// A row is an ordered sequence of plugin stages (up to 12 slots per row).
+// Most columns a board can have (NodeCanvas::MAX_COLS).
+inline constexpr int kMaxGridColumns = 16;
+
+// A row is an ordered sequence of plugin stages (up to kMaxGridColumns slots per row).
 // "plugins" avoids the Qt reserved word "slots".
 struct GridRow {
     enum class SplitMode { Copy, AB };
@@ -32,7 +35,7 @@ struct GridRow {
     double parentMergeX = 0.0;
     
     GridRow() {
-        plugins.resize(12, nullptr);
+        plugins.resize(kMaxGridColumns, nullptr);
     }
     
     bool isEmpty() const {

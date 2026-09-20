@@ -472,7 +472,7 @@ void NodeWidget::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
 
             for (auto* item : scene()->items()) {
                 if (auto* pb = dynamic_cast<PlusButtonWidget*>(item)) {
-                    QPointF pbPos = pb->scenePos();
+                    QPointF pbPos = pb->homePos();
                     qreal dx = mousePos.x() - pbPos.x();
                     qreal dy = mousePos.y() - pbPos.y();
                     qreal d = std::sqrt(dx * dx + dy * dy);
@@ -485,7 +485,7 @@ void NodeWidget::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
             }
 
             if (closestPb) {
-                canvas->setDragGap(closestPb->getRow(), closestPb->getCol(), closestPb->isSecondOfCol());
+                canvas->setDragGap(closestPb->getRow(), closestPb->getCol(), closestPb->insertMode());
             } else {
                 canvas->clearDragGap();
             }
@@ -511,17 +511,17 @@ void NodeWidget::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
         if (canvas) {
             int toRow = canvas->getDragGapRow();
             int toCol = canvas->getDragGapCol();
-            bool isSecondOfCol = canvas->getDragGapIsSecondOfCol();
+            int insert = canvas->getDragGapIsInsert();
             
             // Clear gap visualization first
             canvas->clearDragGap();
             
             if (toRow != -1 && toCol != -1) {
                 const auto audioNode = m_audioNode;
-                QTimer::singleShot(0, canvas, [canvas, audioNode, toRow, toCol, isSecondOfCol]() {
+                QTimer::singleShot(0, canvas, [canvas, audioNode, toRow, toCol, insert]() {
                     auto [fromRow, fromCol] = canvas->findNode(audioNode);
                     if (fromRow != -1 && fromCol != -1) {
-                        canvas->movePluginToGap(fromRow, fromCol, toRow, toCol, isSecondOfCol);
+                        canvas->movePluginToGap(fromRow, fromCol, toRow, toCol, insert);
                     } else {
                         canvas->updateLayout();
                     }

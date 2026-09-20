@@ -1,4 +1,5 @@
 #pragma once
+class QGraphicsPathItem;
 #include <QGraphicsView>
 #include <QGraphicsScene>
 #include <vector>
@@ -25,24 +26,50 @@ signals:
     void canvasAboutToBeCleared();
     void nodeAboutToBeRemoved(AudioNode* node);
 public:
+    // How a block is placed at a plus marker. At a split or merge the lane has
+    // two markers: before the junction and after it (on this lane's path).
+    enum InsertMode : int { FillSlot = 0, InsertAuto = 1, InsertBefore = 2, InsertAfter = 3 };
     explicit NodeCanvas(AudioEngine* engine, QWidget* parent = nullptr);
     ~NodeCanvas() override;
     
     // Insert / remove plugin at grid position
     void insertPluginAt(int row, int col, std::shared_ptr<AudioNode> audioNode);
-    // Insert before the node currently at col (shifts others right)
-    void insertPluginBefore(int row, int col, std::shared_ptr<AudioNode> audioNode, bool isSecondOfCol = false);
+    // Places a block at (row, col). If the slot is occupied, or `insert` is set
+    // (an insert marker between blocks), a new column opens there first and
+    // later blocks in every lane shift right. Returns false if the board is full.
+    bool insertPluginBefore(int row, int col, std::shared_ptr<AudioNode> audioNode, int insert = FillSlot);
+    // Makes an empty column at the insert point `col` (a boundary; col ==
+    // columns means after the last one) without adding columns: blocks slide
+    // right into the nearest column that is empty in every lane, or else slide
+    // left into one. The lane `row` and the branches containing it widen to
+    // include the new column; other sections keep it outside. The signal path
+    // is unchanged. Returns the new empty column (col, or col - 1 after a left
+    // shift), or -1 if there is no room (boardFull is emitted).
+    int insertColumn(int row, int col, int side = InsertAuto);
+    // What insertColumn would do, without changing anything.
+    struct InsertPlan {
+        int emptyColumn = -1;   // the empty column that gets used; -1 = no room
+        bool right = true;      // blocks slide right (else left)
+        int newColumn = -1;     // where the new block goes
+        bool laneOnly = false;  // only the target lane's blocks move
+        int splitGap[5] = {};
+        int mergeGap[5] = {};
+    };
+    InsertPlan planInsertColumn(int row, int col, int side = InsertAuto) const;
+    // Where a path's split/merge is drawn right now (follows an insert preview).
+    qreal shownSplitX(int row) const;
+    qreal shownMergeX(int row) const;
     void removePluginAt(int row, int col);
     void replacePluginAt(int row, int col, std::shared_ptr<AudioNode> newNode);
     // Move a plugin from one slot to another (reorder)
     void movePlugin(int fromRow, int fromCol, int toRow, int toCol);
-    void movePluginToGap(int fromRow, int fromCol, int toRow, int toColGap, bool isSecondOfCol = false);
+    bool movePluginToGap(int fromRow, int fromCol, int toRow, int toColGap, int insert = FillSlot);
 
-    void setDragGap(int row, int plusIdx, bool isSecondOfCol = false);
+    void setDragGap(int row, int plusIdx, int insert = FillSlot);
     void clearDragGap();
     int getDragGapRow() const { return m_dragGapRow; }
     int getDragGapCol() const { return m_dragGapCol; }
-    bool getDragGapIsSecondOfCol() const { return m_dragGapIsSecondOfCol; }
+    int getDragGapIsInsert() const { return m_dragGapInsert; }
     
     // Full layout recalculation
     void updateLayout();
@@ -58,7 +85,7 @@ public:
     void setMidiMarkedNodes(std::unordered_set<std::string> ids);
     bool isMidiMarked(const std::string& id) const { return m_midiMarkedNodes.count(id) > 0; }
     
-    void onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol = false);
+    void onPlusButtonClicked(int row, int col, QPoint screenPos, int insert = FillSlot);
     
     std::shared_ptr<AudioNode> getPluginAt(int row, int col) const;
     std::pair<int,int> findNode(const std::shared_ptr<AudioNode>& node) const;
@@ -114,7 +141,7 @@ public:
     static constexpr int NUM_ROWS = 5;
     static constexpr int MAIN_ROW = 2;
     static constexpr int MIN_COLS = 6;
-    static constexpr int MAX_COLS = 12;
+    static constexpr int MAX_COLS = kMaxGridColumns;
     static constexpr int NUM_COLS = MAX_COLS;
     
     int getNumCols() const { return m_numCols; }
@@ -142,8 +169,12 @@ signals:
     void autoFitChanged(bool enabled);
     void nodeSelected(std::shared_ptr<AudioNode> node);
     void nodeBypassToggled(std::shared_ptr<AudioNode> node);
+    // A plugin from the browser was dropped on a free slot or insert marker.
+    void pluginDropped(const QString& uri, int row, int col, int insert);
+    // An insert or move could not fit (no column is empty in every lane).
+    void boardFull();
     void editPluginUI(std::shared_ptr<AudioNode> node);
-    void plusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol);
+    void plusButtonClicked(int row, int col, QPoint screenPos, int insert);
     void nodeContextMenuRequested(int row, int col, QPoint screenPos);
 
 protected:
@@ -155,8 +186,14 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    // Plugins dragged in from the plugin browser.
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dragLeaveEvent(QDragLeaveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private:
+    PlusButtonWidget* nearestDropTarget(const QPointF& scenePos) const;
     void clearSceneItems();
     void rebuildAudioConnections();
     void normalizeRoutingTopology();
@@ -172,8 +209,6 @@ private:
     float pathMixerGainBetween(int parentRow, int sourceCol, int destinationCol) const;
     float branchSplitGain(int row) const;
     void layoutRow(int r, qreal cy, qreal trackLeft, qreal trackRight, qreal trackW, qreal sysRightX, qreal sysLeftX, qreal sysMidY);
-    void reflowLayoutWithDragGap();
-    void reflowRow(int r, qreal cy, qreal trackLeft, qreal trackRight, qreal trackW);
     PlusButtonWidget* findPlusButton(int row, int col) const;
     int activeLaneSteps() const;
     qreal canvasHeightFor(qreal viewportHeight) const;
@@ -199,7 +234,26 @@ private:
 
     int m_dragGapRow = -1;
     int m_dragGapCol = -1;
-    bool m_dragGapIsSecondOfCol = false;
+    int m_dragGapInsert = FillSlot;
+    int m_previewInsertCol = -1;
+    int m_previewInsertRow = -1;
+    // Wires and handles of each parallel path, so an insert preview can slide
+    // splits and merges along with the blocks.
+    struct RouteItems {
+        QGraphicsPathItem* wire = nullptr;
+        QGraphicsPathItem* splitPath = nullptr;
+        QGraphicsPathItem* mergePath = nullptr;
+        QGraphicsItem* splitHandle = nullptr;
+        QGraphicsItem* mergeHandle = nullptr;
+        qreal cy = 0.0, parentY = 0.0;
+        qreal splitX = 0.0, mergeX = 0.0;       // as laid out
+        qreal shownSplitX = 0.0, shownMergeX = 0.0;
+    };
+    RouteItems m_routeItems[5];
+    class QVariantAnimation* m_routeAnim = nullptr;
+    void setRoutePositions(const qreal splitX[5], const qreal mergeX[5]);
+    void animateRoutesTo(const qreal splitX[5], const qreal mergeX[5]);
+    void previewInsertColumn(int row, int col); // col -1 restores the real positions
     QGraphicsRectItem* m_dragPlaceholderItem = nullptr;
 
     QTimer* m_animationTimer = nullptr;

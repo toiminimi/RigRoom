@@ -43,6 +43,8 @@ public:
 
     static std::vector<CLAPPluginDescriptor> scanLibrary(const std::string& path);
     static std::vector<CLAPPluginDescriptor> scanStandardPaths(const std::vector<std::string>& customPaths = {});
+    // .clap files in the standard and custom folders (no loading).
+    static std::vector<std::string> listLibraries(const std::vector<std::string>& customPaths = {});
 
 private:
     void initHostCallbacks();

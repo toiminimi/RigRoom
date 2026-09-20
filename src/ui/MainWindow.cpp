@@ -15,6 +15,7 @@
 #include "AboutDialog.h"
 #include "PresetBrowser.h"
 #include "FootswitchTile.h"
+#include "PluginBrowser.h"
 #include "../control/MidiRouter.h"
 #include <filesystem>
 #include <iostream>
@@ -280,504 +281,6 @@ private:
 };
 
 namespace {
-struct PickerPluginInfo {
-    QString name;
-    QString uri;
-    QString category;
-    QString brand;
-    QString thumbnailPath;
-    QString format;
-    QString searchable;
-    int audioInputs = 2;
-    int audioOutputs = 2;
-    int controlPorts = 0;
-    QString version;
-    QString description;
-    QStringList features;
-    QString path;
-    bool hasNativeGUI = false;
-};
-
-static QString pluginCategoryGlyph(const QString& category) {
-    if (category == "Amplifiers") return "AMP";
-    if (category == "Delays") return "DLY";
-    if (category == "Reverbs") return "RVB";
-    if (category == "Distortions") return "DST";
-    if (category == "Dynamics") return "DYN";
-    if (category == "EQ & Filters") return "EQ";
-    if (category == "Modulations") return "MOD";
-    if (category == "VST3 Plugins") return "VST";
-    return "FX";
-}
-
-static std::vector<PickerPluginInfo> buildPickerInfos(const std::vector<MainWindow::PluginInfo>& available) {
-    std::vector<PickerPluginInfo> plugins;
-    plugins.reserve(available.size());
-    for (const auto& info : available) {
-        QString name = QString::fromStdString(info.name);
-        QString category = QString::fromStdString(info.category);
-        QString brand = QString::fromStdString(info.brand);
-        QString uri = QString::fromStdString(info.uri);
-        QString format = info.isLV2 ? "LV2" : (info.uri == "builtin:bypass" ? "Built-in" : (info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3"));
-        QString searchable = (name + " " + category + " " + brand + " " + uri + " " + format).toLower();
-
-        QStringList featureList;
-        for (const auto& feat : info.features) {
-            featureList.push_back(QString::fromStdString(feat));
-        }
-
-        plugins.push_back({
-            name,
-            uri,
-            category,
-            brand,
-            info.thumbnailPath,
-            format,
-            searchable,
-            info.audioInputs,
-            info.audioOutputs,
-            info.controlPorts,
-            QString::fromStdString(info.version),
-            QString::fromStdString(info.description),
-            featureList,
-            QString::fromStdString(info.path),
-            info.hasNativeGUI
-        });
-    }
-    return plugins;
-}
-
-class PluginPickerDialog final : public QDialog {
-public:
-    PluginPickerDialog(
-        const std::vector<PickerPluginInfo>& plugins,
-        QSet<QString>* favorites,
-        std::function<void()> favoritesChanged,
-        QWidget* parent = nullptr)
-        : QDialog(parent), m_plugins(plugins), m_favorites(favorites), m_favoritesChanged(std::move(favoritesChanged)) {
-        setWindowTitle("Plugin Browser & Selector");
-        setModal(true);
-        resize(840, 560);
-        setStyleSheet(
-            "QDialog { background: #16161a; color: #e9e9ee; }"
-            "QLineEdit, QComboBox, QListWidget { background: #202026; border: 1px solid #33333d; border-radius: 5px; color: #ececf0; padding: 6px 10px; font-size: 12px; }"
-            "QListWidget::item { border: none; padding: 0; }"
-            "QListWidget::item:selected { background: transparent; }"
-            "QToolButton { border: none; color: #ffc857; font-size: 16px; padding: 4px; }"
-            "QPushButton { background: #00a8e8; border: none; border-radius: 5px; color: white; font-weight: bold; padding: 8px 16px; font-size: 12px; }"
-            "QPushButton:hover { background: #27b9f0; }");
-
-        // Pre-load and scale all thumbnails to cache
-        for (const auto& plugin : m_plugins) {
-            if (!plugin.thumbnailPath.isEmpty() && QFileInfo::exists(plugin.thumbnailPath)) {
-                QPixmap thumbnail(plugin.thumbnailPath);
-                m_thumbnailCache.insert(plugin.thumbnailPath, thumbnail.scaled(42, 42, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            }
-        }
-
-        auto* mainLayout = new QVBoxLayout(this);
-        mainLayout->setContentsMargins(16, 16, 16, 16);
-        mainLayout->setSpacing(12);
-
-        // Filter Bar (Search + Format Filter + Category Filter)
-        auto* filterRow = new QHBoxLayout();
-        filterRow->setSpacing(8);
-
-        m_search = new QLineEdit(this);
-        m_search->setPlaceholderText("Search plugins by name, brand, category, or URI...");
-
-        m_formatFilter = new QComboBox(this);
-        m_formatFilter->setMinimumWidth(120);
-        m_formatFilter->addItems({"All Formats", "LV2", "CLAP", "VST3"});
-
-        m_category = new QComboBox(this);
-        m_category->setMinimumWidth(140);
-
-        m_resultCount = new QLabel(this);
-        m_resultCount->setStyleSheet("color: #00b0ff; font-size: 11px; font-weight: bold; padding-left: 4px;");
-
-        filterRow->addWidget(m_search, 1);
-        filterRow->addWidget(m_formatFilter);
-        filterRow->addWidget(m_category);
-        filterRow->addWidget(m_resultCount);
-        mainLayout->addLayout(filterRow);
-
-        // Split Body: Left List + Right Details Pane
-        auto* splitLayout = new QHBoxLayout();
-        splitLayout->setSpacing(14);
-
-        // Left Container: Plugin List
-        m_list = new QListWidget(this);
-        m_list->setSpacing(4);
-        m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-        splitLayout->addWidget(m_list, 5);
-
-        // Right Container: Enhanced Details Pane
-        m_detailsPane = new QWidget(this);
-        m_detailsPane->setStyleSheet("QWidget#detailsPane { background: #1f1f26; border: 1px solid #2e2e38; border-radius: 8px; }");
-        m_detailsPane->setObjectName("detailsPane");
-        
-        auto* detailsLayout = new QVBoxLayout(m_detailsPane);
-        detailsLayout->setContentsMargins(16, 16, 16, 16);
-        detailsLayout->setSpacing(12);
-
-        auto* headerLayout = new QHBoxLayout();
-        headerLayout->setSpacing(12);
-
-        m_detailIconLabel = new QLabel(m_detailsPane);
-        m_detailIconLabel->setFixedSize(48, 48);
-        m_detailIconLabel->setAlignment(Qt::AlignCenter);
-        headerLayout->addWidget(m_detailIconLabel);
-
-        auto* titleBox = new QVBoxLayout();
-        titleBox->setSpacing(2);
-        m_detailNameLabel = new QLabel("Select a plugin", m_detailsPane);
-        m_detailNameLabel->setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff; border: none;");
-        m_detailBrandLabel = new QLabel("", m_detailsPane);
-        m_detailBrandLabel->setStyleSheet("font-size: 11px; color: #8a8a98; border: none;");
-        titleBox->addWidget(m_detailNameLabel);
-        titleBox->addWidget(m_detailBrandLabel);
-        headerLayout->addLayout(titleBox, 1);
-        detailsLayout->addLayout(headerLayout);
-
-        // Badges Row
-        auto* badgeRow = new QHBoxLayout();
-        badgeRow->setSpacing(6);
-        m_detailFormatBadge = new QLabel(m_detailsPane);
-        m_detailFormatBadge->setStyleSheet("background: #00b0ff; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        m_detailCategoryBadge = new QLabel(m_detailsPane);
-        m_detailCategoryBadge->setStyleSheet("background: #2e303c; color: #e0e0e0; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        m_detailAudioBadge = new QLabel(m_detailsPane);
-        m_detailAudioBadge->setStyleSheet("background: #1c2b36; color: #38c5ff; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        m_detailGuiBadge = new QLabel(m_detailsPane);
-        m_detailGuiBadge->setStyleSheet("background: #1b3022; color: #4caf50; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-
-        badgeRow->addWidget(m_detailFormatBadge);
-        badgeRow->addWidget(m_detailCategoryBadge);
-        badgeRow->addWidget(m_detailAudioBadge);
-        badgeRow->addWidget(m_detailGuiBadge);
-        badgeRow->addStretch();
-        detailsLayout->addLayout(badgeRow);
-
-        // Graphical Preview Card (Modgui / Thumbnail Skin Preview)
-        m_detailPreviewLabel = new QLabel(m_detailsPane);
-        m_detailPreviewLabel->setObjectName("detailPreview");
-        m_detailPreviewLabel->setFixedHeight(140);
-        m_detailPreviewLabel->setAlignment(Qt::AlignCenter);
-        m_detailPreviewLabel->setStyleSheet("QLabel#detailPreview { background: #141419; border: 1px solid #2a2a35; border-radius: 6px; padding: 4px; }");
-        detailsLayout->addWidget(m_detailPreviewLabel);
-
-        auto* divider = new QFrame(m_detailsPane);
-        divider->setFrameShape(QFrame::HLine);
-        divider->setStyleSheet("color: #2e2e38;");
-        detailsLayout->addWidget(divider);
-
-        // Metadata Fields
-        auto* formLayout = new QFormLayout();
-        formLayout->setSpacing(8);
-        formLayout->setLabelAlignment(Qt::AlignLeft);
-
-        m_detailUriLabel = new QLabel(m_detailsPane);
-        m_detailUriLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        m_detailUriLabel->setStyleSheet("font-size: 11px; color: #7b93a4; border: none;");
-        m_detailUriLabel->setWordWrap(true);
-
-        m_detailPathLabel = new QLabel(m_detailsPane);
-        m_detailPathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        m_detailPathLabel->setStyleSheet("font-size: 11px; color: #7b93a4; border: none;");
-        m_detailPathLabel->setWordWrap(true);
-
-        m_detailParamsLabel = new QLabel(m_detailsPane);
-        m_detailParamsLabel->setStyleSheet("font-size: 11px; color: #e0e0e0; border: none;");
-
-        m_detailTagsLabel = new QLabel(m_detailsPane);
-        m_detailTagsLabel->setStyleSheet("font-size: 11px; color: #00b0ff; border: none;");
-        m_detailTagsLabel->setWordWrap(true);
-
-        formLayout->addRow("<b style='color:#a0a0b0;'>URI / Identifier:</b>", m_detailUriLabel);
-        formLayout->addRow("<b style='color:#a0a0b0;'>Path / Location:</b>", m_detailPathLabel);
-        formLayout->addRow("<b style='color:#a0a0b0;'>Control Parameters:</b>", m_detailParamsLabel);
-        formLayout->addRow("<b style='color:#a0a0b0;'>Features & Tags:</b>", m_detailTagsLabel);
-        detailsLayout->addLayout(formLayout);
-
-        detailsLayout->addStretch();
-
-        // Details Footer Action Row
-        auto* detailActions = new QHBoxLayout();
-        m_detailFavoriteBtn = new QToolButton(m_detailsPane);
-        m_detailFavoriteBtn->setText("☆ Favorite");
-        m_detailFavoriteBtn->setStyleSheet(
-            "QToolButton { background: #262730; color: #ffc857; font-weight: bold; border-radius: 4px; padding: 6px 10px; font-size: 11px; border: 1px solid #3d3e4d; }"
-            "QToolButton:hover { background: #323440; }"
-        );
-        detailActions->addWidget(m_detailFavoriteBtn);
-        detailActions->addStretch();
-        detailsLayout->addLayout(detailActions);
-
-        splitLayout->addWidget(m_detailsPane, 4);
-        mainLayout->addLayout(splitLayout, 1);
-
-        // Bottom Actions Bar
-        auto* actions = new QHBoxLayout();
-        auto* hint = new QLabel("Tip: Double-click a plugin to quickly add it to your board.", this);
-        hint->setStyleSheet("color: #7d7d8a; font-size: 11px;");
-        auto* cancel = new QPushButton("Cancel", this);
-        cancel->setStyleSheet("QPushButton { background: #2c2c34; } QPushButton:hover { background: #3a3a44; }");
-        auto* add = new QPushButton("Add Plugin to Board", this);
-        add->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
-        actions->addWidget(hint, 1);
-        actions->addWidget(cancel);
-        actions->addWidget(add);
-        mainLayout->addLayout(actions);
-
-        // Populate Category Filter Combo (Filter out format strings)
-        QSet<QString> categories;
-        for (const auto& plugin : m_plugins) {
-            if (!plugin.category.isEmpty() && !plugin.category.contains("Plugin")) {
-                categories.insert(plugin.category);
-            }
-        }
-        m_category->addItem("All Categories");
-        m_category->addItem("Favorites");
-        QStringList categoryList = categories.values();
-        categoryList.sort();
-        m_category->addItems(categoryList);
-
-        m_searchTimer = new QTimer(this);
-        m_searchTimer->setSingleShot(true);
-        connect(m_searchTimer, &QTimer::timeout, this, [this] { refreshResults(); });
-
-        connect(m_search, &QLineEdit::textChanged, this, [this] { m_searchTimer->start(120); });
-        connect(m_search, &QLineEdit::returnPressed, this, [this] { acceptSelection(); });
-        connect(m_formatFilter, &QComboBox::currentTextChanged, this, [this] { refreshResults(); });
-        connect(m_category, &QComboBox::currentTextChanged, this, [this] { refreshResults(); });
-        connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
-        connect(add, &QPushButton::clicked, this, [this] { acceptSelection(); });
-        connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) { acceptSelection(); });
-        connect(m_list, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* current, QListWidgetItem*) {
-            if (current) {
-                updateDetailsPane(current->data(Qt::UserRole).toString());
-            }
-        });
-
-        refreshResults();
-        m_search->setFocus();
-    }
-
-    QString selectedUri() const { return m_selectedUri; }
-
-private:
-    void updateDetailsPane(const QString& uri) {
-        auto it = std::find_if(m_plugins.begin(), m_plugins.end(), [&](const PickerPluginInfo& p) {
-            return p.uri == uri;
-        });
-        if (it == m_plugins.end()) return;
-
-        const PickerPluginInfo& plugin = *it;
-        const bool isFav = m_favorites->contains(plugin.uri);
-
-        m_detailNameLabel->setText(plugin.name);
-        m_detailBrandLabel->setText(plugin.brand.isEmpty() ? "Unknown Vendor" : plugin.brand);
-
-        // Format Badge Styling
-        if (plugin.format == "LV2") {
-            m_detailFormatBadge->setText("LV2");
-            m_detailFormatBadge->setStyleSheet("background: #00B0FF; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        } else if (plugin.format == "CLAP") {
-            m_detailFormatBadge->setText("CLAP");
-            m_detailFormatBadge->setStyleSheet("background: #AB47BC; color: #FFF; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        } else {
-            m_detailFormatBadge->setText("VST3");
-            m_detailFormatBadge->setStyleSheet("background: #FFA726; color: #000; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        }
-
-        m_detailCategoryBadge->setText(plugin.category.toUpper());
-        m_detailUriLabel->setText(plugin.uri);
-        m_detailPathLabel->setText(plugin.path.isEmpty() ? (plugin.thumbnailPath.isEmpty() ? "Standard Plugin Bundle" : plugin.thumbnailPath) : plugin.path);
-
-        // Audio I/O Layout Badge
-        if (plugin.audioInputs == 2 && plugin.audioOutputs == 2) {
-            m_detailAudioBadge->setText("Stereo (2x2)");
-        } else if (plugin.audioInputs == 1 && plugin.audioOutputs == 1) {
-            m_detailAudioBadge->setText("Mono (1x1)");
-        } else {
-            m_detailAudioBadge->setText(QString("Audio (%1 In / %2 Out)").arg(plugin.audioInputs).arg(plugin.audioOutputs));
-        }
-
-        // GUI Badge
-        if (plugin.hasNativeGUI) {
-            m_detailGuiBadge->setText("Native UI");
-            m_detailGuiBadge->setStyleSheet("background: #1b3022; color: #4caf50; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        } else {
-            m_detailGuiBadge->setText("Parameters");
-            m_detailGuiBadge->setStyleSheet("background: #252830; color: #90a0b0; font-weight: bold; border-radius: 3px; padding: 2px 6px; font-size: 10px;");
-        }
-
-        // Parameter Ports & Features
-        if (plugin.controlPorts > 0) {
-            m_detailParamsLabel->setText(QString("%1 Parameters").arg(plugin.controlPorts));
-        } else {
-            m_detailParamsLabel->setText("Dynamic / Standard Ports");
-        }
-
-        if (!plugin.features.isEmpty()) {
-            m_detailTagsLabel->setText(plugin.features.join(", "));
-        } else {
-            m_detailTagsLabel->setText("Standard " + plugin.format + " Effect");
-        }
-
-        m_currentThumbnailPath = plugin.thumbnailPath;
-        if (!plugin.thumbnailPath.isEmpty() && QFileInfo::exists(plugin.thumbnailPath)) {
-            QPixmap fullPixmap(plugin.thumbnailPath);
-            if (!fullPixmap.isNull()) {
-                m_detailPreviewLabel->setPixmap(fullPixmap.scaled(340, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                m_detailPreviewLabel->show();
-            } else {
-                m_detailPreviewLabel->hide();
-            }
-        } else {
-            m_detailPreviewLabel->hide();
-        }
-
-        const bool hasThumbnail = !plugin.thumbnailPath.isEmpty() && m_thumbnailCache.contains(plugin.thumbnailPath);
-        if (hasThumbnail) {
-            m_detailIconLabel->setPixmap(m_thumbnailCache.value(plugin.thumbnailPath).scaled(48, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        } else {
-            m_detailIconLabel->setText(pluginCategoryGlyph(plugin.category));
-            m_detailIconLabel->setStyleSheet("background: #123348; color: #38c5ff; border-radius: 6px; font-weight: bold; font-size: 12px;");
-        }
-
-        m_detailFavoriteBtn->setText(isFav ? "★ Favorited" : "☆ Add Favorite");
-        m_detailFavoriteBtn->disconnect();
-        connect(m_detailFavoriteBtn, &QToolButton::clicked, this, [this, plugin] {
-            if (m_favorites->contains(plugin.uri)) m_favorites->remove(plugin.uri);
-            else m_favorites->insert(plugin.uri);
-            m_favoritesChanged();
-            updateDetailsPane(plugin.uri);
-            if (m_category->currentText() == "Favorites") {
-                refreshResults();
-            }
-        });
-    }
-
-    void refreshResults() {
-        const QString query = m_search->text().trimmed().toLower();
-        const QString formatFilter = m_formatFilter->currentText();
-        const QString category = m_category->currentText();
-        std::vector<PickerPluginInfo> results;
-        for (const auto& plugin : m_plugins) {
-            const bool favorite = m_favorites->contains(plugin.uri);
-            if (formatFilter != "All Formats" && plugin.format != formatFilter) continue;
-            if (category == "Favorites" && !favorite) continue;
-            if (category != "All Categories" && category != "Favorites" && plugin.category != category) continue;
-            if (!query.isEmpty() && !plugin.searchable.contains(query)) continue;
-            results.push_back(plugin);
-        }
-        std::sort(results.begin(), results.end(), [this](const PickerPluginInfo& left, const PickerPluginInfo& right) {
-            const bool leftFavorite = m_favorites->contains(left.uri);
-            const bool rightFavorite = m_favorites->contains(right.uri);
-            if (leftFavorite != rightFavorite) return leftFavorite;
-            return QString::localeAwareCompare(left.name, right.name) < 0;
-        });
-
-        m_list->clear();
-        m_resultCount->setText(QString::number(results.size()) + " plugins");
-        for (const auto& plugin : results) {
-            const bool hasThumbnail = !plugin.thumbnailPath.isEmpty() && m_thumbnailCache.contains(plugin.thumbnailPath);
-            auto* item = new QListWidgetItem(m_list);
-            item->setData(Qt::UserRole, plugin.uri);
-            item->setSizeHint(QSize(0, hasThumbnail ? 54 : 40));
-            auto* row = new QWidget(m_list);
-            row->setStyleSheet("QWidget { background: #202026; border: 1px solid #2e2e38; border-radius: 5px; } QWidget:hover { background: #282832; border-color: #00a8e8; }");
-            auto* rowLayout = new QHBoxLayout(row);
-            rowLayout->setContentsMargins(6, 4, 6, 4);
-            rowLayout->setSpacing(7);
-
-            auto* visual = new QLabel(row);
-            visual->setFixedSize(hasThumbnail ? 42 : 28, hasThumbnail ? 42 : 28);
-            visual->setAlignment(Qt::AlignCenter);
-            if (hasThumbnail) {
-                visual->setPixmap(m_thumbnailCache.value(plugin.thumbnailPath));
-            } else {
-                visual->setText(pluginCategoryGlyph(plugin.category));
-                visual->setStyleSheet("background: #123348; color: #38c5ff; border-radius: 4px; font-weight: bold; font-size: 9px;");
-            }
-            rowLayout->addWidget(visual);
-
-            auto* name = new QLabel(plugin.name, row);
-            name->setStyleSheet("font-weight: bold; color: #f3f3f6; border: none;");
-            rowLayout->addWidget(name, 1);
-
-            const QString metadata = plugin.brand.isEmpty()
-                ? plugin.category + " · " + plugin.format
-                : plugin.brand + " · " + plugin.category + " · " + plugin.format;
-            auto* metadataLabel = new QLabel(metadata, row);
-            metadataLabel->setStyleSheet("font-size: 10px; color: #8a8a98; border: none;");
-            rowLayout->addWidget(metadataLabel);
-
-            auto* favorite = new QToolButton(row);
-            favorite->setText(m_favorites->contains(plugin.uri) ? "★" : "☆");
-            favorite->setToolTip("Toggle favorite");
-            favorite->setFixedSize(28, 28);
-            connect(favorite, &QToolButton::clicked, this, [this, favorite, plugin] {
-                if (m_favorites->contains(plugin.uri)) {
-                    m_favorites->remove(plugin.uri);
-                    favorite->setText("☆");
-                } else {
-                    m_favorites->insert(plugin.uri);
-                    favorite->setText("★");
-                }
-                m_favoritesChanged();
-                updateDetailsPane(plugin.uri);
-                if (m_category->currentText() == "Favorites") {
-                    refreshResults();
-                }
-            });
-            rowLayout->addWidget(favorite);
-            m_list->setItemWidget(item, row);
-        }
-        if (m_list->count()) {
-            m_list->setCurrentRow(0);
-            updateDetailsPane(m_list->item(0)->data(Qt::UserRole).toString());
-        }
-    }
-
-    void acceptSelection() {
-        if (auto* item = m_list->currentItem()) {
-            m_selectedUri = item->data(Qt::UserRole).toString();
-            accept();
-        }
-    }
-
-    std::vector<PickerPluginInfo> m_plugins;
-    QSet<QString>* m_favorites;
-    std::function<void()> m_favoritesChanged;
-    QLineEdit* m_search = nullptr;
-    QComboBox* m_formatFilter = nullptr;
-    QComboBox* m_category = nullptr;
-    QListWidget* m_list = nullptr;
-    QLabel* m_resultCount = nullptr;
-    QTimer* m_searchTimer = nullptr;
-    QHash<QString, QPixmap> m_thumbnailCache;
-    QString m_selectedUri;
-    QString m_currentThumbnailPath;
-
-    // Enhanced Details Pane Widgets
-    QWidget* m_detailsPane = nullptr;
-    QLabel* m_detailIconLabel = nullptr;
-    QLabel* m_detailNameLabel = nullptr;
-    QLabel* m_detailBrandLabel = nullptr;
-    QLabel* m_detailFormatBadge = nullptr;
-    QLabel* m_detailCategoryBadge = nullptr;
-    QLabel* m_detailAudioBadge = nullptr;
-    QLabel* m_detailGuiBadge = nullptr;
-    QLabel* m_detailPreviewLabel = nullptr;
-    QLabel* m_detailUriLabel = nullptr;
-    QLabel* m_detailPathLabel = nullptr;
-    QLabel* m_detailParamsLabel = nullptr;
-    QLabel* m_detailTagsLabel = nullptr;
-    QToolButton* m_detailFavoriteBtn = nullptr;
-};
 }
 
 #include <QSettings>
@@ -936,6 +439,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(m_canvas, &NodeCanvas::editPluginUI, this, &MainWindow::onPluginDoubleClicked);
     connect(m_canvas, &NodeCanvas::nodeSelected, this, &MainWindow::onNodeSelected);
     connect(m_canvas, &NodeCanvas::nodeBypassToggled, this, &MainWindow::onNodeBypassToggled);
+    connect(m_canvas, &NodeCanvas::boardFull, this, [this]() {
+        if (m_statusLabel) {
+            m_statusLabel->setText("No room to insert: every column holds a block. "
+                                   "Add a column (Columns + in the canvas corner) or remove a block.");
+        }
+    });
+    connect(m_canvas, &NodeCanvas::pluginDropped, this, [this](const QString& uri, int row, int col, int insert) {
+        addPluginAt(uri, row, col, insert);
+    });
     connect(m_canvas, &NodeCanvas::plusButtonClicked, this, &MainWindow::onPlusButtonClicked);
     connect(m_canvas, &NodeCanvas::nodeContextMenuRequested, this, &MainWindow::onNodeContextMenuRequested);
     connect(m_canvas, &NodeCanvas::routingNodeSelected, this, &MainWindow::showRoutingNodeControls);
@@ -1110,6 +622,18 @@ void MainWindow::setupUI() {
     QLabel* logo = new QLabel("RIGROOM", this);
     logo->setStyleSheet("font-size: 20px; font-weight: bold; color: #00B0FF; letter-spacing: 2px;");
     topBar->addWidget(logo);
+    topBar->addSpacing(18);
+    auto* pluginsBtn = new QPushButton("＋  Plugins", this);
+    pluginsBtn->setToolTip("Open the plugin browser (Ctrl+B). Keep it open and drag plugins onto the signal chain, "
+                           "or double-click one to add it at the end. The + buttons on the board still add one at a time.");
+    pluginsBtn->setCursor(Qt::PointingHandCursor);
+    pluginsBtn->setStyleSheet(
+        "QPushButton { background-color: #1D5B79; color: white; font-weight: bold; border-radius: 4px; padding: 6px 14px; font-size: 12px; border: none; }"
+        "QPushButton:hover { background-color: #23739A; }");
+    connect(pluginsBtn, &QPushButton::clicked, this, &MainWindow::togglePluginLibrary);
+    topBar->addWidget(pluginsBtn);
+    auto* pluginsSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_B), this);
+    connect(pluginsSc, &QShortcut::activated, this, &MainWindow::togglePluginLibrary);
     
     // Preset actions live in the preset panel below; they are created here so
     // setUnsavedChanges() can restyle the Save button from the start.
@@ -1987,6 +1511,18 @@ void MainWindow::scanPlugins() {
     const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
     LilvNode* brandProperty = lilv_new_uri(m_lilvWorld, "http://moddevices.com/ns/mod#brand");
     LilvNode* thumbnailProperty = lilv_new_uri(m_lilvWorld, "http://moddevices.com/ns/modgui#thumbnail");
+    LilvNode* commentProperty = lilv_new_uri(m_lilvWorld, "http://www.w3.org/2000/01/rdf-schema#comment");
+    LilvNode* licenseProperty = lilv_new_uri(m_lilvWorld, "http://usefulinc.com/ns/doap#license");
+    LilvNode* minorVersionProperty = lilv_new_uri(m_lilvWorld, "http://lv2plug.in/ns/lv2core#minorVersion");
+    LilvNode* microVersionProperty = lilv_new_uri(m_lilvWorld, "http://lv2plug.in/ns/lv2core#microVersion");
+    auto firstValue = [](const LilvPlugin* plugin, LilvNode* property) -> std::string {
+        std::string value;
+        if (LilvNodes* nodes = lilv_plugin_get_value(plugin, property)) {
+            if (const LilvNode* node = lilv_nodes_get_first(nodes)) value = lilv_node_as_string(node);
+            lilv_nodes_free(nodes);
+        }
+        return value;
+    };
     
     LILV_FOREACH(plugins, i, plugins) {
         const LilvPlugin* p = lilv_plugins_get(plugins, i);
@@ -2016,6 +1552,23 @@ void MainWindow::scanPlugins() {
         }
         
         info.isLV2 = true;
+        if (LilvNode* author = lilv_plugin_get_author_name(p)) {
+            info.author = lilv_node_as_string(author);
+            lilv_node_free(author);
+        }
+        info.description = firstValue(p, commentProperty);
+        {
+            // doap:license is usually a URI; show its last path segment ("GPL-3.0").
+            std::string license = firstValue(p, licenseProperty);
+            const auto slash = license.find_last_of("/#");
+            if (slash != std::string::npos && slash + 1 < license.size()) license = license.substr(slash + 1);
+            info.license = license;
+        }
+        {
+            const std::string minor = firstValue(p, minorVersionProperty);
+            const std::string micro = firstValue(p, microVersionProperty);
+            if (!minor.empty()) info.version = minor + "." + (micro.empty() ? "0" : micro);
+        }
 
         // Extract LV2 port details & bundle path
         LilvNode* audioPortClass = lilv_new_uri(m_lilvWorld, LILV_URI_AUDIO_PORT);
@@ -2082,12 +1635,16 @@ void MainWindow::scanPlugins() {
         else if (classURI.find("Dynamics") != std::string::npos) info.category = "Dynamics";
         else if (classURI.find("Filter") != std::string::npos || classURI.find("EQ") != std::string::npos) info.category = "EQ & Filters";
         else if (classURI.find("Modulator") != std::string::npos || classURI.find("Chorus") != std::string::npos || classURI.find("Flanger") != std::string::npos || classURI.find("Phaser") != std::string::npos) info.category = "Modulations";
-        else info.category = "Utilities";
+        else info.category = inferPluginCategory(QString::fromStdString(info.name), {}).toStdString();
         
         m_availablePlugins.push_back(info);
     }
     lilv_node_free(brandProperty);
     lilv_node_free(thumbnailProperty);
+    lilv_node_free(commentProperty);
+    lilv_node_free(licenseProperty);
+    lilv_node_free(minorVersionProperty);
+    lilv_node_free(microVersionProperty);
     
     // Scan VST3 plugins
     std::vector<std::string> vst3Dirs = {
@@ -2112,13 +1669,7 @@ void MainWindow::scanPlugins() {
                     scannedPaths.insert(fullPath);
                     
                     std::string name = entry.path().stem().string();
-                    std::string category = "Utilities";
-                    std::string lowerName = QString::fromStdString(name).toLower().toStdString();
-                    if (lowerName.find("delay") != std::string::npos) category = "Delays";
-                    else if (lowerName.find("reverb") != std::string::npos) category = "Reverbs";
-                    else if (lowerName.find("amp") != std::string::npos || lowerName.find("gx") != std::string::npos || lowerName.find("guitarix") != std::string::npos) category = "Amplifiers";
-                    else if (lowerName.find("dist") != std::string::npos || lowerName.find("fuzz") != std::string::npos || lowerName.find("drive") != std::string::npos) category = "Distortions";
-                    else if (lowerName.find("eq") != std::string::npos || lowerName.find("filter") != std::string::npos) category = "EQ & Filters";
+                    const std::string category = inferPluginCategory(QString::fromStdString(name), {}).toStdString();
                     PluginInfo vstInfo = { name, entry.path().string(), category, "", "", false, 2, 2, 0, "", "", {}, entry.path().string(), true };
                     m_availablePlugins.push_back(vstInfo);
                 }
@@ -2133,17 +1684,67 @@ void MainWindow::scanPlugins() {
     for (const auto& p : m_customCLAPPaths) {
         if (!p.isEmpty()) customClapDirs.push_back(p.toStdString());
     }
-    auto clapPlugins = CLAPPluginNode::scanStandardPaths(customClapDirs);
+    // CLAP scanning loads every library, so results are cached per file
+    // (modification time + size) and only new or changed files are opened.
+    const QString clapCachePath = QDir::homePath() + "/.cache/RigRoom/plugin-scan.json";
+    QJsonObject clapCache;
+    {
+        QFile cacheFile(clapCachePath);
+        if (cacheFile.open(QFile::ReadOnly)) {
+            clapCache = QJsonDocument::fromJson(cacheFile.readAll()).object()["clap"].toObject();
+        }
+    }
+    QJsonObject newClapCache;
+    std::vector<CLAPPluginDescriptor> clapPlugins;
+    for (const std::string& libraryPath : CLAPPluginNode::listLibraries(customClapDirs)) {
+        const QString key = QString::fromStdString(libraryPath);
+        const QFileInfo fileInfo(key);
+        const QString stamp = QString("%1:%2").arg(fileInfo.lastModified().toMSecsSinceEpoch()).arg(fileInfo.size());
+        std::vector<CLAPPluginDescriptor> descs;
+        const QJsonObject cached = clapCache[key].toObject();
+        if (cached["stamp"].toString() == stamp) {
+            for (const QJsonValue& v : cached["plugins"].toArray()) {
+                const QJsonObject o = v.toObject();
+                CLAPPluginDescriptor d;
+                d.id = o["id"].toString().toStdString();
+                d.name = o["name"].toString().toStdString();
+                d.vendor = o["vendor"].toString().toStdString();
+                d.version = o["version"].toString().toStdString();
+                d.description = o["description"].toString().toStdString();
+                for (const QJsonValue& f : o["features"].toArray()) d.features.push_back(f.toString().toStdString());
+                d.pluginPath = libraryPath;
+                d.pluginIndex = static_cast<uint32_t>(o["index"].toInt());
+                descs.push_back(d);
+            }
+        } else {
+            descs = CLAPPluginNode::scanLibrary(libraryPath);
+        }
+        QJsonArray plugins;
+        for (const auto& d : descs) {
+            QJsonArray features;
+            for (const auto& f : d.features) features.append(QString::fromStdString(f));
+            plugins.append(QJsonObject{
+                {"id", QString::fromStdString(d.id)}, {"name", QString::fromStdString(d.name)},
+                {"vendor", QString::fromStdString(d.vendor)}, {"version", QString::fromStdString(d.version)},
+                {"description", QString::fromStdString(d.description)}, {"features", features},
+                {"index", static_cast<int>(d.pluginIndex)},
+            });
+        }
+        newClapCache[key] = QJsonObject{{"stamp", stamp}, {"plugins", plugins}};
+        clapPlugins.insert(clapPlugins.end(), descs.begin(), descs.end());
+    }
+    if (newClapCache != clapCache) {
+        QDir().mkpath(QFileInfo(clapCachePath).absolutePath());
+        QFile cacheFile(clapCachePath);
+        if (cacheFile.open(QFile::WriteOnly | QFile::Truncate)) {
+            cacheFile.write(QJsonDocument(QJsonObject{{"version", 1}, {"clap", newClapCache}}).toJson(QJsonDocument::Compact));
+        }
+    }
     for (const auto& clapDesc : clapPlugins) {
         std::string uri = clapDesc.pluginPath + ":" + std::to_string(clapDesc.pluginIndex);
-        std::string category = "Utilities";
-        if (!clapDesc.features.empty()) {
-            std::string feat = clapDesc.features[0];
-            if (feat.find("distortion") != std::string::npos || feat.find("fuzz") != std::string::npos || feat.find("overdrive") != std::string::npos) category = "Distortions";
-            else if (feat.find("delay") != std::string::npos || feat.find("reverb") != std::string::npos) category = "Delays & Reverbs";
-            else if (feat.find("filter") != std::string::npos || feat.find("equalizer") != std::string::npos) category = "EQ & Filters";
-            else if (feat.find("modulation") != std::string::npos || feat.find("chorus") != std::string::npos || feat.find("flanger") != std::string::npos || feat.find("phaser") != std::string::npos) category = "Modulations";
-        }
+        QStringList featureTags;
+        for (const auto& f : clapDesc.features) featureTags << QString::fromStdString(f);
+        const std::string category = inferPluginCategory(QString::fromStdString(clapDesc.name), featureTags).toStdString();
         PluginInfo clapInfo = {
             clapDesc.name,
             uri,
@@ -2183,6 +1784,12 @@ void MainWindow::loadFavoritePlugins() {
     for (const QJsonValue& value : document.array()) {
         if (value.isString()) m_favoritePluginUris.insert(value.toString());
     }
+    QFile recentFile(QDir::homePath() + "/.config/RigRoom/plugin-recent.json");
+    if (recentFile.open(QFile::ReadOnly)) {
+        for (const QJsonValue& value : QJsonDocument::fromJson(recentFile.readAll()).array()) {
+            if (value.isString()) m_recentPluginUris.append(value.toString());
+        }
+    }
 }
 
 void MainWindow::saveFavoritePlugins() const {
@@ -2193,6 +1800,12 @@ void MainWindow::saveFavoritePlugins() const {
     QFile file(QDir::homePath() + "/.config/RigRoom/plugin-favorites.json");
     if (file.open(QFile::WriteOnly | QFile::Truncate)) {
         file.write(QJsonDocument(favorites).toJson());
+    }
+    QJsonArray recent;
+    for (const QString& uri : m_recentPluginUris) recent.append(uri);
+    QFile recentFile(QDir::homePath() + "/.config/RigRoom/plugin-recent.json");
+    if (recentFile.open(QFile::WriteOnly | QFile::Truncate)) {
+        recentFile.write(QJsonDocument(recent).toJson());
     }
 }
 
@@ -2384,52 +1997,116 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
     return true;
 }
 
-void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, bool isSecondOfCol) {
-    Q_UNUSED(screenPos);
-    std::vector<PickerPluginInfo> plugins = buildPickerInfos(m_availablePlugins);
-    PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
-    if (picker.exec() != QDialog::Accepted) return;
-
-    const std::string uri = picker.selectedUri().toStdString();
-    std::shared_ptr<AudioNode> newNode;
+std::vector<PluginEntry> MainWindow::buildPluginEntries() const {
+    std::vector<PluginEntry> entries;
+    entries.reserve(m_availablePlugins.size());
     for (const auto& info : m_availablePlugins) {
-        if (info.uri == uri) {
-            if (uri == "builtin:bypass") {
-                newNode = std::make_shared<BypassNode>();
-            } else if (info.isLV2) {
-                const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
-                LILV_FOREACH(plugins, i, plugins) {
-                    const LilvPlugin* p = lilv_plugins_get(plugins, i);
-                    const LilvNode* uriNode = lilv_plugin_get_uri(p);
-                    std::string puri = lilv_node_as_string(uriNode);
-                    if (puri == uri) {
-                        newNode = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
-                        break;
-                    }
+        PluginEntry e;
+        e.name = QString::fromStdString(info.name);
+        e.uri = QString::fromStdString(info.uri);
+        e.category = QString::fromStdString(info.category);
+        e.brand = QString::fromStdString(info.brand);
+        e.author = QString::fromStdString(info.author);
+        e.format = info.isLV2 ? "LV2" : (info.uri.find(".clap") != std::string::npos ? "CLAP" : "VST3");
+        e.version = QString::fromStdString(info.version);
+        e.description = QString::fromStdString(info.description);
+        e.license = QString::fromStdString(info.license);
+        e.path = QString::fromStdString(info.path);
+        e.thumbnailPath = info.thumbnailPath;
+        for (const auto& f : info.features) e.features << QString::fromStdString(f);
+        e.audioInputs = info.audioInputs;
+        e.audioOutputs = info.audioOutputs;
+        e.controlPorts = info.controlPorts;
+        e.hasNativeGUI = info.hasNativeGUI;
+        e.finalize();
+        entries.push_back(std::move(e));
+    }
+    return entries;
+}
+
+QString MainWindow::choosePlugin() {
+    PluginBrowserDialog browser(buildPluginEntries(), &m_favoritePluginUris, &m_recentPluginUris,
+                                [this] { saveFavoritePlugins(); }, this);
+    if (browser.exec() != QDialog::Accepted) return QString();
+    return browser.selectedUri();
+}
+
+std::shared_ptr<AudioNode> MainWindow::createPluginNode(const std::string& uri) {
+    if (uri == "builtin:bypass") return std::make_shared<BypassNode>();
+    for (const auto& info : m_availablePlugins) {
+        if (info.uri != uri) continue;
+        if (info.isLV2) {
+            const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
+            LILV_FOREACH(plugins, i, plugins) {
+                const LilvPlugin* p = lilv_plugins_get(plugins, i);
+                if (uri == lilv_node_as_string(lilv_plugin_get_uri(p))) {
+                    return std::make_shared<LV2PluginNode>(m_lilvWorld, p);
                 }
-            } else if (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos) {
-                std::string path = info.uri;
-                uint32_t idx = 0;
-                auto colonPos = path.rfind(':');
-                if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
-                    idx = std::stoul(path.substr(colonPos + 1));
-                    path = path.substr(0, colonPos);
-                }
-                newNode = std::make_shared<CLAPPluginNode>(path, idx);
-            } else {
-                newNode = std::make_shared<VST3PluginNode>(info.uri);
             }
-            break;
+            return nullptr;
         }
+        if (info.uri.find(".clap") != std::string::npos) {
+            std::string path = info.uri;
+            uint32_t idx = 0;
+            auto colonPos = path.rfind(':');
+            if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
+                idx = std::stoul(path.substr(colonPos + 1));
+                path = path.substr(0, colonPos);
+            }
+            return std::make_shared<CLAPPluginNode>(path, idx);
+        }
+        return std::make_shared<VST3PluginNode>(info.uri);
     }
-    
-    if (newNode) {
-        newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-        // col here is the chain insertion index (from PlusButtonWidget), not a fixed grid column.
-        // Use insertPluginBefore to shift the chain correctly.
-        m_canvas->insertPluginBefore(row, col, newNode, isSecondOfCol);
-        showPluginControls(newNode);
+    return nullptr;
+}
+
+bool MainWindow::addPluginAt(const QString& uri, int row, int col, int insert) {
+    std::shared_ptr<AudioNode> newNode = createPluginNode(uri.toStdString());
+    if (!newNode) return false;
+    newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    // `insert` = an insert marker between blocks: later blocks shift right.
+    if (!m_canvas->insertPluginBefore(row, col, newNode, insert)) {
+        return false; // boardFull() already told the user
     }
+    showPluginControls(newNode);
+    return true;
+}
+
+bool MainWindow::appendPluginToChain(const QString& uri) {
+    int last = -1;
+    for (int c = 0; c < NodeCanvas::NUM_COLS; ++c) {
+        if (m_canvas->getPluginAt(NodeCanvas::MAIN_ROW, c)) last = c;
+    }
+    const int col = last + 1;
+    const bool free = col < m_canvas->getNumCols() && !m_canvas->getPluginAt(NodeCanvas::MAIN_ROW, col);
+    return addPluginAt(uri, NodeCanvas::MAIN_ROW, col, !free);
+}
+
+void MainWindow::togglePluginLibrary() {
+    if (m_pluginLibrary) {
+        if (m_pluginLibrary->isVisible()) {
+            m_pluginLibrary->close();
+        } else {
+            m_pluginLibrary->show();
+            m_pluginLibrary->raise();
+        }
+        return;
+    }
+    auto* library = new PluginBrowserDialog(buildPluginEntries(), &m_favoritePluginUris, &m_recentPluginUris,
+                                            [this] { saveFavoritePlugins(); }, this, true);
+    library->setAttribute(Qt::WA_DeleteOnClose);
+    connect(library, &PluginBrowserDialog::pluginChosen, this, [this](const QString& uri) {
+        if (appendPluginToChain(uri) && m_statusLabel) m_statusLabel->setText("Added at the end of the chain.");
+    });
+    m_pluginLibrary = library;
+    library->show();
+}
+
+void MainWindow::onPlusButtonClicked(int row, int col, QPoint screenPos, int insert) {
+    Q_UNUSED(screenPos);
+    const QString uri = choosePlugin();
+    if (uri.isEmpty()) return;
+    addPluginAt(uri, row, col, insert);
 }
 
 void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) {
@@ -2476,45 +2153,9 @@ void MainWindow::onNodeContextMenuRequested(int row, int col, QPoint screenPos) 
         m_canvas->removePluginAt(row, col);
         showPluginControls(nullptr);
     } else if (selected == replaceAct) {
-        std::vector<PickerPluginInfo> plugins = buildPickerInfos(m_availablePlugins);
-        PluginPickerDialog picker(plugins, &m_favoritePluginUris, [this] { saveFavoritePlugins(); }, this);
-        if (picker.exec() == QDialog::Accepted) {
-            std::string uri = picker.selectedUri().toStdString();
-            
-            std::shared_ptr<AudioNode> newNode;
-            if (uri == "builtin:bypass") {
-                newNode = std::make_shared<BypassNode>();
-            } else {
-                for (const auto& info : m_availablePlugins) {
-                    if (info.uri == uri) {
-                        if (info.isLV2) {
-                            const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
-                            LILV_FOREACH(plugins, i, plugins) {
-                                const LilvPlugin* p = lilv_plugins_get(plugins, i);
-                                const LilvNode* uriNode = lilv_plugin_get_uri(p);
-                                std::string puri = lilv_node_as_string(uriNode);
-                                if (puri == uri) {
-                                    newNode = std::make_shared<LV2PluginNode>(m_lilvWorld, p);
-                                    break;
-                                }
-                            }
-                        } else if (info.category == "CLAP Plugins" || info.uri.find(".clap") != std::string::npos) {
-                            std::string path = info.uri;
-                            uint32_t idx = 0;
-                            auto colonPos = path.rfind(':');
-                            if (colonPos != std::string::npos && colonPos > path.find(".clap")) {
-                                idx = std::stoul(path.substr(colonPos + 1));
-                                path = path.substr(0, colonPos);
-                            }
-                            newNode = std::make_shared<CLAPPluginNode>(path, idx);
-                        } else {
-                            newNode = std::make_shared<VST3PluginNode>(info.uri);
-                        }
-                        break;
-                    }
-                }
-            }
-            
+        const QString uri = choosePlugin();
+        if (!uri.isEmpty()) {
+            std::shared_ptr<AudioNode> newNode = createPluginNode(uri.toStdString());
             if (newNode) {
                 newNode->uniqueId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
                 m_canvas->replacePluginAt(row, col, newNode);
@@ -2532,6 +2173,17 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
     
     QString title = "RigRoom - Guitar Multieffects host [" + currentPreset + (m_unsavedChanges ? " *" : "") + "]";
     setWindowTitle(title);
+
+    if (m_unsavedChanges && m_scenes.count() > 1) {
+        // A parameter edit can make a block differ between scenes.
+        if (!m_sceneMarkerTimer) {
+            m_sceneMarkerTimer = new QTimer(this);
+            m_sceneMarkerTimer->setSingleShot(true);
+            m_sceneMarkerTimer->setInterval(300);
+            connect(m_sceneMarkerTimer, &QTimer::timeout, this, &MainWindow::refreshSceneMarkers);
+        }
+        m_sceneMarkerTimer->start();
+    }
 
     if (m_unsavedChanges) {
         if (m_savePresetButton && (!m_saveFeedbackTimer || !m_saveFeedbackTimer->isActive())) {
@@ -2699,7 +2351,7 @@ void MainWindow::onSlotMinusClicked() {
 void MainWindow::onSlotPlusClicked() {
     if (!m_canvas) return;
     int curr = m_canvas->getNumCols();
-    if (curr < 12) {
+    if (curr < NodeCanvas::MAX_COLS) {
         m_canvas->setNumCols(curr + 1);
         updateSlotControls();
         setUnsavedChanges(true);
@@ -2713,7 +2365,7 @@ void MainWindow::updateSlotControls() {
     int minAllowed = std::max(4, highest + 1);
     m_slotCountLabel->setText(QString::number(curr));
     m_slotMinusBtn->setEnabled(curr > minAllowed);
-    m_slotPlusBtn->setEnabled(curr < 12);
+    m_slotPlusBtn->setEnabled(curr < NodeCanvas::MAX_COLS);
 }
 
 namespace {
@@ -3224,15 +2876,11 @@ void MainWindow::showSceneMenu(int index, const QPoint& globalPos) {
 
 void MainWindow::toggleParamSceneControl(const std::shared_ptr<AudioNode>& node, uint32_t index) {
     if (!node || node->uniqueId.empty()) return;
-    if (m_scenes.isAssigned(node->uniqueId, index)) {
-        m_scenes.unassignParam(node->uniqueId, index);
-    } else {
-        float value = 0.0f;
-        for (const auto& port : node->getControlPorts()) {
-            if (port.index == index) { value = port.value; break; }
-        }
-        m_scenes.assignParam(node->uniqueId, index, value);
+    float value = 0.0f;
+    for (const auto& port : node->getControlPorts()) {
+        if (port.index == index) { value = port.value; break; }
     }
+    m_scenes.setGlobal(node->uniqueId, index, !m_scenes.isGlobal(node->uniqueId, index), value);
     setUnsavedChanges(true);
     refreshSceneMarkers();
     showPluginControls(node);
@@ -6238,12 +5886,12 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         
         uint32_t idx = param.index;
 
-        // Right-click a parameter to make it vary per scene.
-        const bool perScene = m_scenes.isAssigned(node->uniqueId, idx);
-        if (perScene) {
-            label->setText(QString::fromUtf8("◆ ") + label->text());
-            label->setStyleSheet("color: #FFD54F; font-size: 10px; border: none;");
-            label->setToolTip(label->toolTip() + "\nControlled per scene");
+        // Every parameter is stored per scene; right-click to keep one the same in all scenes.
+        const bool globalParam = m_scenes.isGlobal(node->uniqueId, idx);
+        if (globalParam) {
+            label->setText(QString::fromUtf8("= ") + label->text());
+            label->setStyleSheet("color: #8FA6DA; font-size: 10px; border: none;");
+            label->setToolTip(label->toolTip() + "\nSame in all scenes");
         }
         const MidiAssignment* paramMidi = m_presetMidi.find(node->uniqueId, MidiAssignment::Target::Param, idx);
         if (paramMidi) {
@@ -6252,12 +5900,12 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         }
         rowWidget->setContextMenuPolicy(Qt::CustomContextMenu);
         const int paramMidiCC = paramMidi ? paramMidi->cc : -1;
-        connect(rowWidget, &QWidget::customContextMenuRequested, this, [this, node, idx, perScene, rowWidget, paramMidiCC](const QPoint& pos) {
+        connect(rowWidget, &QWidget::customContextMenuRequested, this, [this, node, idx, globalParam, rowWidget, paramMidiCC](const QPoint& pos) {
             QMenu menu(this);
             menu.setStyleSheet(
                 "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
                 "QMenu::item:selected { background-color: #007ACC; color: white; }");
-            QAction* act = menu.addAction(perScene ? "Remove per-scene control" : "Control per scene");
+            QAction* act = menu.addAction(globalParam ? "Store per scene" : "Keep same in all scenes");
             menu.addSeparator();
             QAction* learnAct = menu.addAction(paramMidiCC >= 0 ? QString("MIDI: CC %1 - Learn Again...").arg(paramMidiCC)
                                                                : QString("MIDI Learn..."));
@@ -6566,9 +6214,36 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             "QPushButton:hover { background-color: #009688; }"
         );
         btnLayout->addWidget(loadBtn);
-        btnLayout->addStretch();
 
         std::string uri = fp.uri;
+
+        // Impulse-response slots (cab/IR loaders) can pull IRs straight from TONE3000.
+        const QString lowerUri = QString::fromStdString(uri).toLower();
+        const bool isIrSlot = lowerUri.contains("impulse") || lowerUri.endsWith("#irfile")
+            || lowerUri.contains("#ir") || lowerUri.contains("cabir") || lowerUri.contains("cab-ir");
+        if (isIrSlot) {
+            QPushButton* irBrowseBtn = new QPushButton("Browse TONE3000 IRs", fpFrame);
+            irBrowseBtn->setToolTip("Search impulse responses on TONE3000 and preview them live in this slot");
+            irBrowseBtn->setStyleSheet(
+                "QPushButton { background-color: #1D5B79; color: white; font-weight: bold; border-radius: 4px; padding: 6px 10px; font-size: 11px; border: none; }"
+                "QPushButton:hover { background-color: #23739A; }");
+            btnLayout->addWidget(irBrowseBtn);
+            connect(irBrowseBtn, &QPushButton::clicked, this, [this, node, uri]() {
+                Tone3000Dialog dialog(node.get(), &m_engine, this, Tone3000Dialog::Mode::Ir, uri);
+                if (dialog.exec() != QDialog::Accepted) return;
+                const std::string filePath = dialog.getDownloadedModelPath();
+                if (filePath.empty()) return;
+                m_engine.suspendProcessing();
+                node->setFileProperty(uri, filePath);
+                m_engine.resumeProcessing();
+                setUnsavedChanges(true);
+                if (m_statusLabel) {
+                    m_statusLabel->setText(QString("Loaded IR \"%1\"").arg(dialog.getDownloadedToneName()));
+                }
+                QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+            });
+        }
+        btnLayout->addStretch();
 
         fpLayout->addLayout(btnLayout);
 
@@ -7108,7 +6783,7 @@ void MainWindow::showRoutingNodeControls(int row, bool isSplit) {
     });
 }
 
-void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect) {
+void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx, QPointer<QComboBox> combo, QPointer<QLabel> fileLabel, bool isRedirect, const QString& redirectUrl) {
     if (variantIdx < 0 || variantIdx >= (int)node->getModelVariants().size()) return;
 
     if (m_currentDownloadReply) {
@@ -7117,10 +6792,12 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
         m_currentDownloadReply = nullptr;
     }
 
-    auto& vars = node->getModelVariants();
-    auto& var = const_cast<AudioNode::ModelVariant&>(vars[variantIdx]);
+    // Copies, not references: the node's variant list may change while downloading.
+    const AudioNode::ModelVariant var = node->getModelVariants()[variantIdx];
+    const std::string variantName = var.name;
+    const std::string variantUrl = var.url;
 
-    QString urlStr = QString::fromStdString(var.url);
+    QString urlStr = redirectUrl.isEmpty() ? QString::fromStdString(var.url) : redirectUrl;
     if (urlStr.isEmpty()) return;
 
     QString safeName = QString::fromStdString(var.name);
@@ -7129,7 +6806,15 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
         safeName += ".nam";
     }
 
+    // Same per-tone folder as the TONE3000 browser, so variants of different
+    // tones with the same name never overwrite each other.
     QString cacheDir = QDir::homePath() + "/.cache/RigRoom/tone3000";
+    const AudioNode::ModelMetadata toneMeta = node->getModelMetadata();
+    if (!toneMeta.toneId.empty()) {
+        QString slug = QString::fromStdString(toneMeta.toneSlug);
+        slug.replace(QRegularExpression("[^a-zA-Z0-9_\\-]"), "_");
+        cacheDir += QString("/tone_%1_%2").arg(QString::fromStdString(toneMeta.toneId), slug.isEmpty() ? "profile" : slug);
+    }
     QDir().mkpath(cacheDir);
     QString localFilePath = cacheDir + "/" + safeName;
 
@@ -7164,7 +6849,7 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
         }
     });
 
-    connect(m_currentDownloadReply, &QNetworkReply::finished, this, [=, this, &var]() {
+    connect(m_currentDownloadReply, &QNetworkReply::finished, this, [=, this]() {
         if (!m_currentDownloadReply) return;
 
         // Check for redirection manually to strip auth headers on redirect target
@@ -7177,8 +6862,7 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
             m_currentDownloadReply->deleteLater();
             m_currentDownloadReply = nullptr;
             
-            var.url = nextUrl.toString().toStdString();
-            downloadVariant(node, variantIdx, combo, fileLabel, true);
+            downloadVariant(node, variantIdx, combo, fileLabel, true, nextUrl.toString());
             return;
         }
 
@@ -7202,22 +6886,27 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
             file.write(data);
             file.close();
 
-            var.localPath = localFilePath.toStdString();
+            // Only record the path if the variant is still the one we fetched.
+            const auto& current = node->getModelVariants();
+            if (variantIdx < static_cast<int>(current.size()) && current[variantIdx].name == variantName
+                && current[variantIdx].url == variantUrl) {
+                node->setModelVariantLocalPath(variantIdx, localFilePath.toStdString());
+            }
 
             m_engine.suspendProcessing();
-            node->loadModelFile(var.localPath);
+            node->loadModelFile(localFilePath.toStdString());
             m_engine.resumeProcessing();
 
             AudioNode::ModelMetadata meta = node->getModelMetadata();
             parseNamFileMetadata(localFilePath, meta);
-            if (!var.name.empty()) meta.toneTitle = var.name;
+            if (!variantName.empty()) meta.toneTitle = variantName;
             node->setModelMetadata(meta);
 
-            node->setModelDisplayName(var.name.empty() ? safeName.toStdString() : var.name);
+            node->setModelDisplayName(variantName.empty() ? safeName.toStdString() : variantName);
             setUnsavedChanges(true);
             saveConfigSettings();
 
-            if (!combo.isNull()) combo->setItemText(variantIdx, QString::fromStdString(var.name) + " (Cached)");
+            if (!combo.isNull()) combo->setItemText(variantIdx, QString::fromStdString(variantName) + " (Cached)");
             showPluginControls(node);
         } else {
             if (!fileLabel.isNull()) fileLabel->setText("Failed to save model file!");

@@ -135,8 +135,9 @@ void testScenesSwitchAndRecall() {
     scenes.reset(live);
     assert(scenes.count() == 1 && scenes.activeIndex() == 0);
 
-    scenes.assignParam("drive", 0, 0.2f);
-    assert(scenes.isAssigned("drive", 0) && !scenes.isAssigned("drive", 1));
+    // Knob 1 of the drive stays the same in every scene.
+    scenes.setGlobal("drive", 1, true, 0.5f);
+    assert(scenes.isGlobal("drive", 1) && !scenes.isGlobal("drive", 0));
 
     // Scene 2: lead - delay on, more gain.
     const int lead = scenes.addScene(live);
@@ -145,16 +146,18 @@ void testScenesSwitchAndRecall() {
     assert(c.empty()); // copy of scene 1
     live.bypass["delay"] = false;
     live.params["drive"][0] = 0.9f;
-    live.params["drive"][1] = 0.7f; // unassigned: global
+    live.params["drive"][1] = 0.7f; // global
+    live.params["delay"][0] = 0.6f; // per scene like everything else
     scenes.setActiveLevel(3.0f);
 
-    // Back to scene 1: delay off, gain back, unassigned param untouched.
+    // Back to scene 1: delay off, gain and delay time back, global param untouched.
     c = scenes.switchTo(0, live);
     assert(scenes.activeIndex() == 0);
     assert(c.bypass.size() == 1 && c.bypass[0].first == "delay" && c.bypass[0].second == true);
-    assert(c.params.size() == 1 && std::get<0>(c.params[0]) == "drive" && std::abs(std::get<2>(c.params[0]) - 0.2f) < 1e-6f);
+    assert(c.params.size() == 2);
     assert(c.levelDb == 0.0f);
     applyTo(live, c);
+    assert(std::abs(live.params["drive"][0] - 0.2f) < 1e-6f && std::abs(live.params["delay"][0] - 0.3f) < 1e-6f);
     assert(live.params["drive"][1] == 0.7f);
 
     // Edits in scene 1 are recalled after a round trip.
@@ -168,18 +171,24 @@ void testScenesSwitchAndRecall() {
     assert(live.bypass["drive"] == true);
     assert(std::abs(scenes.scene(1).levelDb - 3.0f) < 1e-6f);
 
-    // Unassigning stops the param from changing per scene.
-    scenes.unassignParam("drive", 0);
+    // Making a param global stops it from changing per scene.
+    scenes.setGlobal("drive", 0, true, 0.0f);
+    scenes.setGlobal("delay", 0, true, 0.0f);
     live.params["drive"][0] = 0.4f;
     c = scenes.switchTo(1, live);
     assert(c.params.empty());
+    // And per scene again: every scene starts from the current value.
+    scenes.setGlobal("drive", 0, false, 0.4f);
+    live.params["drive"][0] = 0.1f;
+    c = scenes.switchTo(0, live);
+    assert(c.params.size() == 1 && std::abs(std::get<2>(c.params[0]) - 0.4f) < 1e-6f);
 }
 
 void testScenesJsonRoundTripAndPrune() {
     SceneModel scenes;
     auto live = board(false, true, 0.2f);
     scenes.reset(live);
-    scenes.assignParam("drive", 0, 0.2f);
+    scenes.setGlobal("delay", 0, true, 0.3f);
     scenes.addScene(live);
     scenes.renameScene(1, "Lead");
     scenes.setSceneColor(1, "#FF9800");
@@ -194,7 +203,8 @@ void testScenesJsonRoundTripAndPrune() {
     assert(loaded.count() == 2 && loaded.activeIndex() == 1);
     assert(loaded.scene(1).name == "Lead" && loaded.scene(1).color == "#FF9800");
     assert(std::abs(loaded.scene(1).levelDb - 2.5f) < 1e-6f);
-    assert(loaded.isAssigned("drive", 0));
+    assert(loaded.isGlobal("delay", 0) && !loaded.isGlobal("drive", 0));
+    assert(loaded.scene(0).params.count("delay") == 0); // its only knob is global
     assert(std::abs(loaded.scene(1).params.at("drive").at(0) - 0.8f) < 1e-6f);
     assert(std::abs(loaded.scene(0).params.at("drive").at(0) - 0.2f) < 1e-6f);
 
@@ -275,10 +285,15 @@ void testSceneControlledBlocks() {
     auto marked = scenes.sceneControlledBlocks(live);
     assert(marked.size() == 1 && marked.count("delay"));
 
-    // Assigned params mark the block even when values are equal.
-    scenes.assignParam("drive", 0, 0.2f);
+    // A parameter that differs between scenes marks its block.
+    live.params["drive"][0] = 0.9f;
     marked = scenes.sceneControlledBlocks(live);
     assert(marked.count("drive") && marked.count("delay"));
+    // Unless it is global.
+    scenes.setGlobal("drive", 0, true, 0.9f);
+    assert(!scenes.sceneControlledBlocks(live).count("drive"));
+    scenes.setGlobal("drive", 0, false, 0.9f);
+    live.params["drive"][0] = 0.3f;
 
     // Removed blocks are not reported.
     live.bypass.erase("drive");
