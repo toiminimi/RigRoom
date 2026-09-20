@@ -23,22 +23,19 @@ and play it from a MIDI footswitch.
 - **Parallel paths.** Drop the `SPLIT` tool into a gap to branch the signal, and
   drag the split or merge handle to change where it separates and rejoins.
   Branches can nest, up to five lanes.
-- **Insert anywhere without rewiring.** Markers appear between blocks, at the
-  ends of a path, and on both sides of every split and merge, so a block can go
-  before or after a junction. Room is made by sliding blocks within the lane, or
-  the whole board, never by changing what connects to what.
-- **Per-branch mix, pan and level**, with the wire's colour and thickness showing
-  the gain it carries.
+- **Insert anywhere.** A block can be dropped between two others, at either end
+  of a path, or on either side of a split or merge. The board makes room by
+  itself and the rest of the signal path is left untouched.
+- **Per-branch mix, pan and level**, with the wire showing the gain it carries.
 
 ### Plugin hosting
 
 - **LV2, VST3 and CLAP**, scanned from the standard folders plus any you add.
-- **The plugins' own windows**, embedded through Suil (LV2), IPlugView (VST3) and
-  the CLAP GUI extension, including Gtk and X11 interfaces in their own process.
+- **The plugins' own windows**, embedded in the block's panel, with awkward
+  toolkits hosted in their own process so they cannot take RigRoom down.
 - **Neural Amp Modeler** captures and impulse responses load straight into a
   block's file slots.
-- **Inspector** with knobs, switches and the plugin's own presets for anything
-  without a window of its own.
+- **Inspector** with knobs, switches and the plugin's own presets.
 
 ### Plugin browser
 
@@ -46,20 +43,19 @@ and play it from a MIDI footswitch.
 
 - **Search that keeps up with typing** across name, maker, category, format and
   tags, ranked so the obvious match comes first.
-- **Favorites, recently used and categories** in the sidebar; drag a plugin from
-  the browser onto the board, or keep the window open beside it.
-- **An info panel** with maker, version, licence, description, port counts and
-  tags — and a picture of the plugin's own GUI.
-- **Plugin pictures** (experimental): RigRoom can open each plugin's window on a
-  hidden display, photograph it and keep the picture. Needs Xvfb or a compositor
-  that can open a virtual session; nothing appears on screen.
+- **Favorites, recently used and categories**; drag a plugin onto the board, or
+  keep the browser open beside it.
+- **An info panel** with maker, version, licence, description and ports.
+- **Plugin pictures** (experimental): RigRoom can photograph each plugin's own
+  GUI in the background and show it in the info panel.
 
 ### Presets and scenes
 
 - **Banks of four presets** (01A–32D) with named banks and a grid of all of them.
 - **Scenes**: up to 8 per preset, storing every block's on/off state and every
-  parameter, switched without reloading a thing — no gap, and delay and reverb
-  tails ring on. A knob can be pinned to stay the same in all scenes.
+  parameter. Switching one reloads nothing, so there is no gap and the blocks
+  that stay on keep playing; blocks that switch off fade rather than click. A
+  knob can be pinned to stay the same in all scenes.
 - **A performance bar** that reads like a floor unit: bank, presets A–D, scenes.
 
 ### MIDI control
@@ -69,9 +65,8 @@ and play it from a MIDI footswitch.
 - **Global CC commands** for previous/next preset, bank up/down, presets A–D and
   scenes, each with Learn.
 - **Per-preset Learn** for block on/off and for any parameter, so an expression
-  pedal drives what you point it at.
-- **Controller takeover**: a parameter can wait until the controller reaches its
-  stored value, or follow the moment it moves, as a wah pedal should.
+  pedal drives what you point it at. A controlled parameter can take over at
+  once, or wait until the controller reaches the stored value.
 
 ### TONE3000
 
@@ -79,14 +74,14 @@ and play it from a MIDI footswitch.
 
 - **Search captures and impulse responses** from inside RigRoom and load them
   into a block.
-- **Browse by creator**, open a profile, and go back to the search you came from.
+- **Browse by creator** and open a creator's profile.
 
 ### Audio engine
 
 - Runs on **PipeWire-JACK or JACK**, with the block size, ports and gains chosen
   in Settings.
-- **Bypass that does not click**, latency and xrun reporting, and a preset level
-  ahead of the master output.
+- **Bypass that does not click**, latency and xrun reporting, and preset and
+  scene levels ahead of the master output.
 
 ---
 
