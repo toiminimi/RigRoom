@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 - 2026-09-21
 
 - RigRoom starts much faster: LV2 plugin details are remembered between runs and read again only for plugins that were installed or updated. "Rescan Plugins Now" still reads every plugin.
 - The NAM block's "Browse TONE3000" button is now "Browse Captures" (and "Browse IRs" for impulse responses), since it opens your own library as well as TONE3000.
