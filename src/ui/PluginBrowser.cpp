@@ -1,4 +1,5 @@
 #include "PluginBrowser.h"
+#include "BrowserStyle.h"
 #include <QAbstractListModel>
 #include <QApplication>
 #include <QButtonGroup>
@@ -336,23 +337,7 @@ PluginBrowserDialog::PluginBrowserDialog(const std::vector<PluginEntry>& plugins
     setModal(!library);
     if (library) setWindowFlag(Qt::Tool, true); // stays above the board, doesn't block it
     resize(library ? 980 : 1080, 680);
-    setStyleSheet(
-        "QDialog { background-color: #141417; }"
-        "QLabel { color: #D8D8DE; background: transparent; }"
-        "QLineEdit { background-color: #1F1F24; color: #EDEDF2; border: 1px solid #34343C; border-radius: 6px; padding: 7px 10px; font-size: 13px; }"
-        "QLineEdit:focus { border-color: #00B0FF; }"
-        "QListWidget#sidebar { background: #17171B; border: none; color: #C8C8D0; font-size: 12px; outline: none; }"
-        "QListWidget#sidebar::item { padding: 6px 10px; border-radius: 5px; }"
-        "QListWidget#sidebar::item:selected { background: #0B4F6C; color: white; }"
-        "QListWidget#sidebar::item:hover:!selected { background: #202026; }"
-        "QListView#results { background: #17171B; border: 1px solid #26262C; border-radius: 6px; outline: none; }"
-        "QToolButton.formatChip { background: #1F1F24; color: #B8B8C4; border: 1px solid #34343C; border-radius: 12px; padding: 3px 12px; font-size: 11px; }"
-        "QToolButton.formatChip:checked { background: #0B4F6C; color: white; border-color: #00B0FF; }"
-        "QPushButton { background: #2A2A30; color: #E0E0E0; border: 1px solid #3A3A42; border-radius: 5px; padding: 6px 14px; }"
-        "QPushButton:hover { background: #34343C; }"
-        "QPushButton#addButton { background: #00897B; border: none; font-weight: bold; color: white; }"
-        "QPushButton#addButton:hover { background: #009688; }"
-        "QPushButton#addButton:disabled { background: #2A2A30; color: #666; }");
+    setStyleSheet(BrowserStyle::kStyleSheet);
 
     auto* root = new QHBoxLayout(this);
     root->setContentsMargins(12, 12, 12, 12);
@@ -494,13 +479,8 @@ PluginBrowserDialog::PluginBrowserDialog(const std::vector<PluginEntry>& plugins
     m_addButton->setObjectName("addButton");
     m_addButton->setDefault(true);
     // Set on the button itself so the app-wide button style can't override it.
-    m_addButton->setStyleSheet(
-        "QPushButton { background: #00897B; border: none; font-weight: bold; color: white; border-radius: 5px; padding: 7px 16px; }"
-        "QPushButton:hover { background: #009688; }"
-        "QPushButton:disabled { background: #2A2A30; color: #666; }");
-    m_favoriteButton->setStyleSheet(
-        "QPushButton { background: #2A2A30; color: #E0E0E0; border: 1px solid #3A3A42; border-radius: 5px; padding: 7px 12px; }"
-        "QPushButton:hover { background: #34343C; }");
+    m_addButton->setStyleSheet(BrowserStyle::kPrimaryButton);
+    m_favoriteButton->setStyleSheet(BrowserStyle::kSecondaryButton);
     connect(m_addButton, &QPushButton::clicked, this, &PluginBrowserDialog::accept);
     buttons->addWidget(m_favoriteButton);
     buttons->addStretch();

@@ -59,6 +59,7 @@ private slots:
     void onNodeSelected(std::shared_ptr<AudioNode> node);
     void onNodeBypassToggled(std::shared_ptr<AudioNode> node);
     void updateCPUStatus();
+    void applyInspectorHeight();
     void showPluginControls(std::shared_ptr<AudioNode> node);
     void onPluginDoubleClicked(std::shared_ptr<AudioNode> node);
     void onPlusButtonClicked(int row, int col, QPoint screenPos, int insert);
@@ -78,7 +79,8 @@ private:
     void registerExternalUI(ExternalPluginUIWindow* uiWin);
     void unregisterExternalUI(ExternalPluginUIWindow* uiWin);
     void setupUI();
-    void scanPlugins();
+    // fullRescan ignores the cached plugin details and reads every plugin again.
+    void scanPlugins(bool fullRescan = false);
     void savePresetToFile(const QString& path);
     void loadPresetFromFile(const QString& path);
     void refreshPresetList();
@@ -144,6 +146,7 @@ private:
     // UI Elements
     NodeCanvas* m_canvas = nullptr;
     QSplitter* m_workspaceSplitter = nullptr;
+    int m_inspectorHeight = 260; // what the user dragged the inspector to, in pixels
     int m_viewBank = 0;
     QLabel* m_bankLabel = nullptr;
     QToolButton* m_bankPrevBtn = nullptr;

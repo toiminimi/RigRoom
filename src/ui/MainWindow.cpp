@@ -40,6 +40,7 @@
 #include <QFileInfo>
 #include <suil/suil.h>
 #include <QJsonDocument>
+#include <QSaveFile>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFile>
@@ -294,7 +295,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     resize(1200, 800);
     
     m_networkManager = new QNetworkAccessManager(this);
-    m_toneImageLoader = new Tone3000ImageLoader(this);
+    m_toneImageLoader = Tone3000ImageLoader::instance();
     setupRigController();
     
     // Create configs dir and automatically migrate legacy PedalBoard settings & presets
@@ -414,30 +415,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QSettings windowSettings("RigRoom", "RigRoom");
     const QByteArray windowGeometry = windowSettings.value("main_window_geometry").toByteArray();
     if (!windowGeometry.isEmpty()) restoreGeometry(windowGeometry);
-    const QList<int> workspaceSizes = windowSettings.value("main_workspace_vertical_splitter").value<QList<int>>();
-    QTimer::singleShot(0, this, [this, workspaceSizes]() {
-        constexpr int minimumCanvasHeight = 260;
-        constexpr int minimumInspectorHeight = 180;
-        constexpr int defaultInspectorHeight = 260;
-        const int workspaceHeight = std::max(1, m_workspaceSplitter->height());
-        const int maximumInspectorHeight = std::max(minimumInspectorHeight,
-                                                    workspaceHeight - minimumCanvasHeight);
-
-        int requestedInspectorHeight = defaultInspectorHeight;
-        if (workspaceSizes.size() == m_workspaceSplitter->count()) {
-            const int savedTotal = std::accumulate(workspaceSizes.cbegin(), workspaceSizes.cend(), 0,
-                                                   [](int total, int size) { return total + std::max(0, size); });
-            if (savedTotal > 0) {
-                requestedInspectorHeight = qRound(static_cast<double>(workspaceSizes.constLast())
-                                                   / savedTotal * workspaceHeight);
-            }
-        }
-
-        const int inspectorHeight = std::clamp(requestedInspectorHeight, minimumInspectorHeight,
-                                               maximumInspectorHeight);
-        m_workspaceSplitter->setSizes({std::max(minimumCanvasHeight, workspaceHeight - inspectorHeight),
-                                       inspectorHeight});
-    });
+    // The inspector keeps its height in pixels; applyInspectorHeight() fits it
+    // in whenever the workspace changes size, so a window that is maximized
+    // after start-up still gets the remembered height.
+    m_inspectorHeight = windowSettings.value("main_inspector_height", 0).toInt();
+    if (m_inspectorHeight <= 0) {
+        const QList<int> legacy = windowSettings.value("main_workspace_vertical_splitter").value<QList<int>>();
+        m_inspectorHeight = legacy.size() == 2 && legacy.last() > 0 ? legacy.last() : 260;
+    }
+    m_workspaceSplitter->installEventFilter(this);
+    QTimer::singleShot(0, this, &MainWindow::applyInspectorHeight);
     m_canvas->setSystemChannelModes(m_engine.isHardwareInputStereo(), m_engine.isHardwareOutputStereo());
     m_canvas->applyRoutingChange(true);
     if (!m_audioConfigured) {
@@ -1056,7 +1043,7 @@ void MainWindow::setupUI() {
         rescanBtn->setEnabled(false);
         qApp->processEvents();
         
-        scanPlugins();
+        scanPlugins(true);
 
         int newLV2 = 0, newCLAP = 0, newVST3 = 0;
         for (const auto& plugin : m_availablePlugins) {
@@ -1467,6 +1454,10 @@ void MainWindow::setupUI() {
     m_presetNameLabel->installEventFilter(this);
     midSplitter->addWidget(m_canvas);
     midSplitter->setStretchFactor(0, 1);
+    connect(midSplitter, &QSplitter::splitterMoved, this, [this, midSplitter]() {
+        m_inspectorHeight = midSplitter->sizes().value(1, m_inspectorHeight);
+        QSettings("RigRoom", "RigRoom").setValue("main_inspector_height", m_inspectorHeight);
+    });
     
     // Bottom inspector: responsive control deck
     m_paramContainer = new QWidget(this);
@@ -1575,7 +1566,7 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(statusBarContainer);
 }
 
-void MainWindow::scanPlugins() {
+void MainWindow::scanPlugins(bool fullRescan) {
     m_availablePlugins.clear();
 
     if (m_lilvWorld) {
@@ -1607,6 +1598,30 @@ void MainWindow::scanPlugins() {
 
     m_lilvWorld = lilv_world_new();
     lilv_world_load_all(m_lilvWorld);
+
+    // Reading each LV2 plugin's details parses its bundle's Turtle files and is
+    // most of the startup time, so the details are cached per plugin with a
+    // stamp of its bundle (newest file time + file count). A changed bundle is
+    // read again; a full rescan reads everything.
+    const QString scanCachePath = QDir::homePath() + "/.cache/RigRoom/plugin-scan.json";
+    QJsonObject scanCache;
+    {
+        QFile cacheFile(scanCachePath);
+        if (cacheFile.open(QFile::ReadOnly)) scanCache = QJsonDocument::fromJson(cacheFile.readAll()).object();
+    }
+    const QJsonObject lv2Cache = fullRescan ? QJsonObject() : scanCache["lv2"].toObject();
+    QJsonObject newLv2Cache;
+    QHash<QString, QString> bundleStamps;
+    auto bundleStamp = [&bundleStamps](const QString& bundle) {
+        auto it = bundleStamps.constFind(bundle);
+        if (it != bundleStamps.constEnd()) return *it;
+        qint64 newest = QFileInfo(bundle).lastModified().toMSecsSinceEpoch();
+        const QFileInfoList entries = QDir(bundle).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot);
+        for (const QFileInfo& entry : entries) newest = std::max(newest, entry.lastModified().toMSecsSinceEpoch());
+        const QString stamp = QString("%1:%2").arg(newest).arg(entries.size());
+        bundleStamps.insert(bundle, stamp);
+        return stamp;
+    };
     
     const LilvPlugins* plugins = lilv_world_get_all_plugins(m_lilvWorld);
     LilvNode* brandProperty = lilv_new_uri(m_lilvWorld, "http://moddevices.com/ns/mod#brand");
@@ -1626,7 +1641,30 @@ void MainWindow::scanPlugins() {
     
     LILV_FOREACH(plugins, i, plugins) {
         const LilvPlugin* p = lilv_plugins_get(plugins, i);
-        
+        const QString cacheKey = QString::fromStdString(lilvString(lilv_plugin_get_uri(p)));
+        const QString stamp = bundleStamp(QString::fromStdString(lilvFilePath(lilv_plugin_get_bundle_uri(p))));
+        if (const QJsonObject cached = lv2Cache[cacheKey].toObject(); !cached.isEmpty() && cached["stamp"].toString() == stamp) {
+            PluginInfo info;
+            info.isLV2 = true;
+            info.uri = cacheKey.toStdString();
+            info.name = cached["name"].toString().toStdString();
+            info.category = cached["category"].toString().toStdString();
+            info.brand = cached["brand"].toString().toStdString();
+            info.thumbnailPath = cached["thumbnail"].toString();
+            info.audioInputs = cached["audioInputs"].toInt();
+            info.audioOutputs = cached["audioOutputs"].toInt();
+            info.controlPorts = cached["controlPorts"].toInt();
+            info.version = cached["version"].toString().toStdString();
+            info.description = cached["description"].toString().toStdString();
+            info.path = cached["path"].toString().toStdString();
+            info.hasNativeGUI = cached["gui"].toBool();
+            info.author = cached["author"].toString().toStdString();
+            info.license = cached["license"].toString().toStdString();
+            newLv2Cache[cacheKey] = cached;
+            m_availablePlugins.push_back(info);
+            continue;
+        }
+
         PluginInfo info;
         
         info.name = lilvTakeString(lilv_plugin_get_name(p));
@@ -1726,7 +1764,16 @@ void MainWindow::scanPlugins() {
         else if (classURI.find("Filter") != std::string::npos || classURI.find("EQ") != std::string::npos) info.category = "EQ & Filters";
         else if (classURI.find("Modulator") != std::string::npos || classURI.find("Chorus") != std::string::npos || classURI.find("Flanger") != std::string::npos || classURI.find("Phaser") != std::string::npos) info.category = "Modulations";
         else info.category = inferPluginCategory(QString::fromStdString(info.name), {}).toStdString();
-        
+
+        auto text = [](const std::string& value) { return QString::fromStdString(value); };
+        newLv2Cache[cacheKey] = QJsonObject{
+            {"stamp", stamp}, {"name", text(info.name)}, {"category", text(info.category)},
+            {"brand", text(info.brand)}, {"thumbnail", info.thumbnailPath},
+            {"audioInputs", info.audioInputs}, {"audioOutputs", info.audioOutputs},
+            {"controlPorts", info.controlPorts}, {"version", text(info.version)},
+            {"description", text(info.description)}, {"path", text(info.path)},
+            {"gui", info.hasNativeGUI}, {"author", text(info.author)}, {"license", text(info.license)},
+        };
         m_availablePlugins.push_back(info);
     }
     lilv_node_free(brandProperty);
@@ -1793,14 +1840,7 @@ void MainWindow::scanPlugins() {
     }
     // CLAP scanning loads every library, so results are cached per file
     // (modification time + size) and only new or changed files are opened.
-    const QString clapCachePath = QDir::homePath() + "/.cache/RigRoom/plugin-scan.json";
-    QJsonObject clapCache;
-    {
-        QFile cacheFile(clapCachePath);
-        if (cacheFile.open(QFile::ReadOnly)) {
-            clapCache = QJsonDocument::fromJson(cacheFile.readAll()).object()["clap"].toObject();
-        }
-    }
+    const QJsonObject clapCache = scanCache["clap"].toObject();
     QJsonObject newClapCache;
     std::vector<CLAPPluginDescriptor> clapPlugins;
     for (const std::string& libraryPath : CLAPPluginNode::listLibraries(customClapDirs)) {
@@ -1840,11 +1880,13 @@ void MainWindow::scanPlugins() {
         newClapCache[key] = QJsonObject{{"stamp", stamp}, {"plugins", plugins}};
         clapPlugins.insert(clapPlugins.end(), descs.begin(), descs.end());
     }
-    if (newClapCache != clapCache) {
-        QDir().mkpath(QFileInfo(clapCachePath).absolutePath());
-        QFile cacheFile(clapCachePath);
-        if (cacheFile.open(QFile::WriteOnly | QFile::Truncate)) {
-            cacheFile.write(QJsonDocument(QJsonObject{{"version", 1}, {"clap", newClapCache}}).toJson(QJsonDocument::Compact));
+    if (newClapCache != clapCache || newLv2Cache != scanCache["lv2"].toObject()) {
+        QDir().mkpath(QFileInfo(scanCachePath).absolutePath());
+        QSaveFile cacheFile(scanCachePath);
+        if (cacheFile.open(QFile::WriteOnly)) {
+            cacheFile.write(QJsonDocument(QJsonObject{{"version", 1}, {"clap", newClapCache}, {"lv2", newLv2Cache}})
+                                .toJson(QJsonDocument::Compact));
+            cacheFile.commit();
         }
     }
     for (const auto& clapDesc : clapPlugins) {
@@ -2340,7 +2382,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (promptUnsavedChanges()) {
         QSettings windowSettings("RigRoom", "RigRoom");
         windowSettings.setValue("main_window_geometry", saveGeometry());
-        windowSettings.setValue("main_workspace_vertical_splitter", QVariant::fromValue(m_workspaceSplitter->sizes()));
+        windowSettings.setValue("main_inspector_height", m_inspectorHeight);
         saveConfigSettings();
         closeAllPluginUIs();
         event->accept();
@@ -2349,7 +2391,21 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
 }
 
+void MainWindow::applyInspectorHeight() {
+    if (!m_workspaceSplitter || m_workspaceSplitter->count() != 2) return;
+    constexpr int minimumCanvasHeight = 260;
+    constexpr int minimumInspectorHeight = 180;
+    const int total = m_workspaceSplitter->height() - m_workspaceSplitter->handleWidth();
+    if (total <= minimumCanvasHeight + minimumInspectorHeight) return;
+    const int inspector = std::clamp(m_inspectorHeight, minimumInspectorHeight, total - minimumCanvasHeight);
+    m_workspaceSplitter->setSizes({total - inspector, inspector});
+}
+
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_workspaceSplitter && event->type() == QEvent::Resize) {
+        QTimer::singleShot(0, this, &MainWindow::applyInspectorHeight);
+        return false;
+    }
     if (event->type() == QEvent::MouseButtonDblClick) {
         if (watched == m_bankLabel) {
             renameViewBank();
@@ -6464,8 +6520,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
             namMainFlow->addWidget(modelInfo);
             namMainFlow->addWidget(namKnobBank);
 
-            auto* browseBtn = new QPushButton("Browse TONE3000", namModule);
-            browseBtn->setToolTip("Browse and download a NAM model from TONE3000");
+            auto* browseBtn = new QPushButton("Browse Captures", namModule);
+            browseBtn->setToolTip("Your capture library and TONE3000: preview, add and load NAM captures");
             browseBtn->setStyleSheet(
                 "QPushButton { background: #D97B32; color: #16191D; font-weight: bold; border: none; border-radius: 4px; padding: 7px 11px; font-size: 11px; }"
                 "QPushButton:hover { background: #EE9146; } QPushButton:focus { outline: 1px solid #80D8FF; }"
@@ -6578,8 +6634,8 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         const bool isIrSlot = lowerUri.contains("impulse") || lowerUri.endsWith("#irfile")
             || lowerUri.contains("#ir") || lowerUri.contains("cabir") || lowerUri.contains("cab-ir");
         if (isIrSlot) {
-            QPushButton* irBrowseBtn = new QPushButton("Browse TONE3000 IRs", fpFrame);
-            irBrowseBtn->setToolTip("Search impulse responses on TONE3000 and preview them live in this slot");
+            QPushButton* irBrowseBtn = new QPushButton("Browse IRs", fpFrame);
+            irBrowseBtn->setToolTip("Your IR library and TONE3000: preview impulse responses live in this slot");
             irBrowseBtn->setStyleSheet(
                 "QPushButton { background-color: #1D5B79; color: white; font-weight: bold; border-radius: 4px; padding: 6px 10px; font-size: 11px; border: none; }"
                 "QPushButton:hover { background-color: #23739A; }");

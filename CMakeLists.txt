@@ -65,9 +65,26 @@ add_executable(RigRoom
     src/ui/PlusButtonWidget.h
     src/ui/GridRow.h
     src/ui/Tone3000Dialog.cpp
+    src/ui/Tone3000DialogLibrary.cpp
+    src/ui/AddToLibraryDialog.cpp
+    src/ui/AddToLibraryDialog.h
     src/ui/Tone3000Dialog.h
     src/ui/Tone3000ImageLoader.cpp
     src/ui/Tone3000ImageLoader.h
+    src/ui/Tone3000Types.cpp
+    src/ui/Tone3000Types.h
+    src/ui/Tone3000Library.cpp
+    src/ui/Tone3000Library.h
+    src/ui/Tone3000Api.cpp
+    src/ui/Tone3000Api.h
+    src/ui/Tone3000ResultModel.cpp
+    src/ui/Tone3000ResultModel.h
+    src/ui/BrowserStyle.h
+    src/ui/NamMetadata.cpp
+    src/ui/NamMetadata.h
+    src/ui/CaptureLibrary.cpp
+    src/ui/CaptureLibraryEnrich.cpp
+    src/ui/CaptureLibrary.h
     src/ui/ModelDetailsDialog.cpp
     src/ui/ModelDetailsDialog.h
     src/ui/GtkUIHelper.cpp
@@ -193,6 +210,38 @@ if(BUILD_TESTING)
     target_compile_options(RigRoomPluginSearchTests PRIVATE -UNDEBUG)
     target_link_libraries(RigRoomPluginSearchTests PRIVATE Qt6::Core)
     add_test(NAME RigRoomPluginSearchTests COMMAND RigRoomPluginSearchTests)
+
+    add_executable(RigRoomTone3000Tests
+        tests/Tone3000Tests.cpp
+        src/ui/Tone3000Types.cpp
+        src/ui/Tone3000Types.h
+        src/ui/Tone3000Library.cpp
+        src/ui/Tone3000Library.h
+        src/ui/NamMetadata.cpp
+        src/ui/NamMetadata.h
+        src/ui/CaptureLibrary.cpp
+        src/ui/CaptureLibrary.h
+    )
+    target_include_directories(RigRoomTone3000Tests PRIVATE src)
+    target_compile_options(RigRoomTone3000Tests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomTone3000Tests PRIVATE Qt6::Core Qt6::Concurrent)
+    add_test(NAME RigRoomTone3000Tests COMMAND RigRoomTone3000Tests)
+
+    add_executable(RigRoomCaptureLibraryTests
+        tests/CaptureLibraryTests.cpp
+        src/ui/NamMetadata.cpp
+        src/ui/NamMetadata.h
+        src/ui/CaptureLibrary.cpp
+        src/ui/CaptureLibrary.h
+        src/ui/Tone3000Types.cpp
+        src/ui/Tone3000Types.h
+        src/ui/Tone3000Library.cpp
+        src/ui/Tone3000Library.h
+    )
+    target_include_directories(RigRoomCaptureLibraryTests PRIVATE src)
+    target_compile_options(RigRoomCaptureLibraryTests PRIVATE -UNDEBUG)
+    target_link_libraries(RigRoomCaptureLibraryTests PRIVATE Qt6::Core Qt6::Concurrent)
+    add_test(NAME RigRoomCaptureLibraryTests COMMAND RigRoomCaptureLibraryTests)
 endif()
 
 include(GNUInstallDirs)
