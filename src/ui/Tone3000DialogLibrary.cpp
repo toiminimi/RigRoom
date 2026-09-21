@@ -29,6 +29,7 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMenu>
+#include <QNetworkReply>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProgressBar>
