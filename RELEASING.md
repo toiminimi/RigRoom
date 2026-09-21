@@ -46,7 +46,16 @@ the application version and is bumped only when the preset format changes.
 2. **Add a `CHANGELOG.md` section** for the new version, dated.
 3. **Add a `<release>` entry** to `packaging/org.rigroom.RigRoom.appdata.xml`,
    newest first, with the same date as the changelog.
-4. **Tag the release**:
+4. **Check the three files agree with the tag** before creating it:
+   ```bash
+   ./packaging/check-release-version.sh v0.11.1
+   ```
+   It compares the tag against `CMakeLists.txt`, the newest `<release>` entry
+   and the top `CHANGELOG.md` heading, and validates the appdata when
+   `appstreamcli` is installed. `release.yml` runs the same check before
+   building, so a mismatch stops the release instead of publishing an AppImage
+   named after the previous version.
+5. **Tag the release**:
    ```bash
    git tag -a v0.11.1 -m "RigRoom v0.11.1"
    git push origin v0.11.1
