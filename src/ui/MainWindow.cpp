@@ -1748,21 +1748,38 @@ void MainWindow::scanPlugins() {
         if (!p.isEmpty()) vst3Dirs.push_back(p.toStdString());
     }
     
+    // Bundles live in subdirectories too (yabridge groups them per vendor under
+    // ~/.vst3/yabridge), so walk the tree but never descend into a bundle itself.
     QSet<QString> scannedPaths;
+    QSet<QString> scannedNames;
     for (const auto& dirPath : vst3Dirs) {
         if (!std::filesystem::exists(dirPath)) continue;
         try {
-            for (const auto& entry : std::filesystem::directory_iterator(dirPath)) {
-                if (entry.path().extension() == ".vst3") {
-                    QString fullPath = QString::fromStdString(entry.path().string());
-                    if (scannedPaths.contains(fullPath)) continue;
-                    scannedPaths.insert(fullPath);
-                    
-                    std::string name = entry.path().stem().string();
-                    const std::string category = inferPluginCategory(QString::fromStdString(name), {}).toStdString();
-                    PluginInfo vstInfo = { name, entry.path().string(), category, "", "", false, 2, 2, 0, "", "", {}, entry.path().string(), true };
-                    m_availablePlugins.push_back(vstInfo);
+            namespace fs = std::filesystem;
+            auto opts = fs::directory_options::follow_directory_symlink
+                      | fs::directory_options::skip_permission_denied;
+            for (auto it = fs::recursive_directory_iterator(dirPath, opts);
+                 it != fs::recursive_directory_iterator(); ++it) {
+                const auto& entry = *it;
+                if (entry.path().extension() != ".vst3") {
+                    if (it.depth() >= 4) it.disable_recursion_pending();
+                    continue;
                 }
+                it.disable_recursion_pending();
+
+                QString fullPath = QString::fromStdString(entry.path().string());
+                if (scannedPaths.contains(fullPath)) continue;
+                scannedPaths.insert(fullPath);
+
+                std::string name = entry.path().stem().string();
+                // yabridge often exposes the same bundle under several directories
+                QString nameKey = QString::fromStdString(name).toLower();
+                if (scannedNames.contains(nameKey)) continue;
+                scannedNames.insert(nameKey);
+
+                const std::string category = inferPluginCategory(QString::fromStdString(name), {}).toStdString();
+                PluginInfo vstInfo = { name, entry.path().string(), category, "", "", false, 2, 2, 0, "", "", {}, entry.path().string(), true };
+                m_availablePlugins.push_back(vstInfo);
             }
         } catch (const std::exception& e) {
             std::cerr << "Error scanning VST3 directory " << dirPath << ": " << e.what() << std::endl;

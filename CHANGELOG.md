@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: Windows plugins bridged with yabridge did not show up in the plugin browser. VST3 folders are now searched through their subfolders, so plugins grouped by vendor (as yabridge does) are found, and a plugin offered in more than one folder is listed once.
+
 ## 0.11.1 - 2026-09-20
 
 - Fixed: RigRoom crashed on startup if any installed LV2 bundle was missing its name; such a plugin is now listed by its URI instead. Plugins and ports with incomplete metadata no longer bring the whole application down.
