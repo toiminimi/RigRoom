@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in RigRoom does not work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems do not belong here — see [SECURITY.md](https://github.com/toiminimi/RigRoom/blob/master/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and how can it be reproduced?
+      description: What you did, what you expected, and what happened instead.
+      placeholder: |
+        1. Load preset ...
+        2. Switch to scene B
+        3. Audio drops out
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: RigRoom version
+      description: Shown under Settings → About.
+      placeholder: 0.12.0
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distribution and audio server
+      placeholder: Fedora 44, PipeWire-JACK
+    validations:
+      required: true
+  - type: input
+    id: plugin
+    attributes:
+      label: Plugin involved, if any
+      description: Name and format (LV2, VST3, CLAP, NAM). Mention if it runs through yabridge.
+      placeholder: Neural Amp Modeler (VST3, yabridge)
+  - type: textarea
+    id: output
+    attributes:
+      label: Terminal output or crash_debug.txt
+      description: |
+        RigRoom prints errors only to the terminal, so start it from one (e.g. `./RigRoom-*.AppImage`) and paste what it prints.
+        After a crash, RigRoom writes `crash_debug.txt` into the directory it was started from — paste its contents too.
+      render: text

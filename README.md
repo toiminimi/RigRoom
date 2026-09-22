@@ -135,6 +135,13 @@ Build dependencies:
 
 ---
 
+## Bugs and feature requests
+
+Report bugs and suggest features in
+[GitHub Issues](https://github.com/toiminimi/RigRoom/issues/new/choose).
+
+---
+
 ## License and credits
 
 Released under the **GNU General Public License v3.0**. See [LICENSE](LICENSE),

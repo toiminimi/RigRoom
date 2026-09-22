@@ -1,6 +1,17 @@
 # Contributing To RigRoom
 
-## Getting Started
+RigRoom is developed by a single maintainer, and pull requests are not
+accepted.
+
+## Bugs And Feature Requests
+
+Open a [GitHub issue](https://github.com/toiminimi/RigRoom/issues/new/choose)
+using the bug report or feature request form. For bugs, the RigRoom version,
+distribution, audio server and any terminal output help the most.
+
+Report security problems privately as described in [SECURITY.md](SECURITY.md).
+
+## Building From Source
 
 Clone recursively so the pinned VST3 interfaces are available:
 
@@ -8,14 +19,4 @@ Clone recursively so the pinned VST3 interfaces are available:
 git clone --recurse-submodules https://github.com/toiminimi/RigRoom.git
 ```
 
-Build with CMake as described in the README. Keep changes focused, preserve
-real-time audio safety, and test plugin scanning and routing changes with
-PipeWire-JACK or JACK.
-
-## Pull Requests
-
-Describe the user-visible behavior, include verification steps, and avoid
-committing build artifacts, downloaded plugins, presets containing credentials,
-or private model files.
-
-By contributing, you agree that your contribution is licensed under GPL-3.0-or-later.
+Then build with CMake as described in the README.

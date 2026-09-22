@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest something RigRoom should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What would you like to do, and why?
+      description: Describe the situation or problem rather than a specific solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggestion
+      description: How you imagine it could work, if you have an idea.
