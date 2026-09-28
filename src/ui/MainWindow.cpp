@@ -5201,10 +5201,24 @@ private:
         XMapWindow(m_dpy, containerId);
         XMapRaised(m_dpy, containerId);
         
-        if (XQueryTree(m_dpy, containerId, &root, &parent, &children, &numChildren) && children) {
+        // Only talk XEmbed to children that advertise _XEMBED_INFO. Bridges
+        // like yabridge/vstbridge place their own wrapper window here and run
+        // the XEmbed handshake themselves.
+        Atom xembedInfo = XInternAtom(m_dpy, "_XEMBED_INFO", True);
+        if (xembedInfo != None && XQueryTree(m_dpy, containerId, &root, &parent, &children, &numChildren) && children) {
             for (unsigned int i = 0; i < numChildren; ++i) {
                 Window child = children[i];
-                
+
+                Atom actualType = None;
+                int actualFormat = 0;
+                unsigned long numItems = 0;
+                unsigned long bytesAfter = 0;
+                unsigned char* data = nullptr;
+                XGetWindowProperty(m_dpy, child, xembedInfo, 0, 2, False, xembedInfo,
+                                   &actualType, &actualFormat, &numItems, &bytesAfter, &data);
+                if (data) XFree(data);
+                if (actualType != xembedInfo || numItems < 2) continue;
+
                 XEvent ev;
                 std::memset(&ev, 0, sizeof(ev));
                 ev.xclient.type = ClientMessage;
