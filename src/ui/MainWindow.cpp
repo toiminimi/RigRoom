@@ -5163,29 +5163,29 @@ protected:
 
     void showEvent(QShowEvent* event) override {
         QDialog::showEvent(event);
+        // Attach synchronously: Qt sends the show event before the window is
+        // mapped, so the plugin is embedded before it becomes visible. Bridges
+        // such as yabridge/vstbridge finish their XEmbed setup on the first
+        // VisibilityNotify and miss it if we attach after the window is shown.
         if (m_plugView && !m_attached && m_dpy) {
-            QTimer::singleShot(100, this, [this]() {
-                if (m_plugView && !m_attached && m_dpy) {
-                    bool x11Supported = (m_plugView->isPlatformTypeSupported(Steinberg::kPlatformTypeX11EmbedWindowID) == Steinberg::kResultOk);
-                    std::cout << "VST3Host: isPlatformTypeSupported(X11Embed) = " << (x11Supported ? "true" : "false") << std::endl;
-                    
-                    if (x11Supported) {
-                        Steinberg::tresult attachRes = m_plugView->attached((void*)m_x11Container, Steinberg::kPlatformTypeX11EmbedWindowID);
-                        std::cout << "VST3Host: attached returned: " << attachRes << std::endl;
-                        if (attachRes == Steinberg::kResultOk) {
-                            m_attached = true;
-                            sendXEmbedEmbeddedNotify(m_x11Container);
-                            
-                            Steinberg::ViewRect rect;
-                            rect.left = 0;
-                            rect.top = 0;
-                            rect.right = m_nativeWidth;
-                            rect.bottom = m_nativeHeight;
-                            m_plugView->onSize(&rect);
-                        }
-                    }
+            bool x11Supported = (m_plugView->isPlatformTypeSupported(Steinberg::kPlatformTypeX11EmbedWindowID) == Steinberg::kResultOk);
+            std::cout << "VST3Host: isPlatformTypeSupported(X11Embed) = " << (x11Supported ? "true" : "false") << std::endl;
+
+            if (x11Supported) {
+                Steinberg::tresult attachRes = m_plugView->attached((void*)m_x11Container, Steinberg::kPlatformTypeX11EmbedWindowID);
+                std::cout << "VST3Host: attached returned: " << attachRes << std::endl;
+                if (attachRes == Steinberg::kResultOk) {
+                    m_attached = true;
+                    sendXEmbedEmbeddedNotify(m_x11Container);
+
+                    Steinberg::ViewRect rect;
+                    rect.left = 0;
+                    rect.top = 0;
+                    rect.right = m_nativeWidth;
+                    rect.bottom = m_nativeHeight;
+                    m_plugView->onSize(&rect);
                 }
-            });
+            }
         }
     }
     
