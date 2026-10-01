@@ -343,6 +343,71 @@ void testBypassCrossfade() {
     assert(node.out[63] == 2.0f);
 }
 
+void writeJson(const QString& path, const QByteArray& json) {
+    QFile f(path);
+    assert(f.open(QFile::WriteOnly));
+    f.write(json);
+}
+
+void testDisplayNamesMayRepeat() {
+    QTemporaryDir tmp;
+    const QString presets = tmp.filePath("presets");
+    QDir().mkpath(presets);
+    // An older preset: no "name", so the file name is the name.
+    touch(presets + "/Clean.json");
+    PresetLibrary lib(presets, tmp.filePath("library.json"));
+    lib.load();
+    assert(lib.nameAt(0) == "Clean");
+
+    // A second "Clean" gets a file of its own but keeps the name.
+    const QString second = lib.uniqueFileName("Clean");
+    assert(second == "Clean 2.json");
+    writeJson(presets + "/" + second, R"({"name":"Clean"})");
+    lib.assign(5, second);
+    assert(lib.nameAt(5) == "Clean");
+    assert(lib.nameAt(0) == "Clean");
+    assert(lib.slotOf("Clean.json") == 0 && lib.slotOf(second) == 5);
+    assert(lib.uniqueFileName("Clean") == "Clean 3.json");
+
+    // Any characters in names; only the file name is cleaned up.
+    assert(PresetLibrary::fileStem(QString::fromUtf8("Ääni")) == QString::fromUtf8("Ääni"));
+    assert(PresetLibrary::fileStem("AC/DC: Back?") == "ACDC Back");
+    assert(PresetLibrary::fileStem("  /  ") == "Preset");
+    assert(PresetLibrary::fileStem("..hidden") == "hidden");
+    writeJson(presets + "/ACDC Back.json", R"({"name":"AC/DC: Back?"})");
+    lib.assign(6, "ACDC Back.json");
+    assert(lib.nameAt(6) == "AC/DC: Back?");
+
+    // An older build renamed the file but left the name inside: the file wins.
+    writeJson(presets + "/Lead.json", R"({"name":"Clean"})");
+    lib.assign(7, "Lead.json");
+    assert(lib.nameAt(7) == "Lead");
+    assert(PresetLibrary::storedName("Clean 12.json", "Clean") == "Clean");
+    assert(PresetLibrary::storedName("Clean x.json", "Clean").isEmpty());
+
+    // The index format is unchanged: a reload keeps every slot.
+    lib.save();
+    PresetLibrary again(presets, tmp.filePath("library.json"));
+    assert(!again.load());
+    assert(again.presetAt(5) == second && again.nameAt(5) == "Clean");
+    assert(again.presetAt(7) == "Lead.json");
+}
+
+void testFirstFreeSlotInBank() {
+    QTemporaryDir tmp;
+    const QString presets = tmp.filePath("presets");
+    QDir().mkpath(presets);
+    PresetLibrary lib(presets, tmp.filePath("library.json"));
+    lib.load();
+    assert(lib.firstFreeSlotInBank(2) == 8);
+    for (int i = 0; i < 4; ++i) {
+        const QString file = QString("p%1.json").arg(i);
+        touch(presets + "/" + file);
+        lib.assign(8 + i, file);
+    }
+    assert(lib.firstFreeSlotInBank(2) == 12); // full bank: the next free slot after it
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -355,6 +420,8 @@ int main(int argc, char** argv) {
     testBankNamesAndSceneSummaries();
     testSceneControlledBlocks();
     testBypassCrossfade();
+    testDisplayNamesMayRepeat();
+    testFirstFreeSlotInBank();
     std::cout << "Preset tests passed" << std::endl;
     return 0;
 }

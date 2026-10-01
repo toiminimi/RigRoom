@@ -90,17 +90,32 @@ private:
     // Loads the preset in a library slot. Asks about unsaved changes first,
     // unless `remote` (MIDI): then edits are discarded with a status message.
     bool loadSlot(int slot, bool remote = false);
-    // Asks for a name (and target slot when targetSlot < 0) and saves the board there.
-    bool savePresetToSlot(int targetSlot, const QString& suggestedName = QString());
-    int promptTargetSlot(int defaultSlot, const QString& presetName);
+    // Lets the user pick a free slot in the bank grid; -1 if cancelled.
+    int pickFreeSlot(const QString& prompt);
     // Prompts for a name when requestedName is null.
     void renamePresetInSlot(int slot, const QString& requestedName = QString());
     void startPresetRename();
     void startSlotRename(int slot, QWidget* tile);
     void showSlotTileMenu(int slot, QWidget* tile, const QPoint& globalPos);
     void updateCanvasInfo();
-    void duplicatePresetInSlot(int slot);
-    void deletePresetInSlot(int slot);
+    // target < 0: opens the bank grid to pick where the copy goes.
+    void duplicatePresetInSlot(int slot, int target = -1);
+    // The All Banks grid; with a valid source it opens picking where to
+    // duplicate (or, with move, move) that preset.
+    void openPresetGrid(int source = -1, bool move = false);
+    // confirmed: the grid already asked.
+    void deletePresetInSlot(int slot, bool confirmed = false);
+    // Empty slots: start a blank board there (written on the first save), or
+    // write the current board there as a new preset.
+    bool startBlankInSlot(int slot);
+    bool copyCurrentToSlot(int slot);
+    // `tile` (optional) is used for inline renaming of the pending blank board.
+    void showEmptySlotMenu(int slot, QWidget* tile, const QPoint& globalPos);
+    void clearBoard();
+    // The loaded preset is now the file in `slot`.
+    void setCurrentPreset(int slot);
+    // Slot the board belongs to: the loaded preset's, or the pending blank one's.
+    int boardSlot() const { return m_currentSlot >= 0 ? m_currentSlot : m_pendingSlot; }
     // Performance bar: bank selector + A-D slot buttons.
     void rebuildSlotButtons();
     void setViewBank(int bank);
@@ -154,10 +169,12 @@ private:
     QSplitter* m_workspaceSplitter = nullptr;
     int m_inspectorHeight = 260; // what the user dragged the inspector to, in pixels
     int m_viewBank = 0;
-    QLabel* m_bankLabel = nullptr;
+    // Bank selector: shows the bank, opens the grid; right-click to rename.
+    QPushButton* m_bankLabel = nullptr;
+    QLabel* m_bankNumberLabel = nullptr;
+    QLabel* m_bankNameLabel = nullptr;
     QToolButton* m_bankPrevBtn = nullptr;
     QToolButton* m_bankNextBtn = nullptr;
-    QToolButton* m_slotGridBtn = nullptr;
     QHBoxLayout* m_slotBarLayout = nullptr;
     std::vector<FootswitchTile*> m_slotButtons;
     QLabel* m_presetNameLabel = nullptr; // canvas info label (click: show bank, double-click: rename)
@@ -262,7 +279,10 @@ private:
     bool m_unsavedChanges = false;
     bool m_isLoadingPreset = false;
     int m_currentSlot = -1;
+    QString m_currentPresetFile; // identity of the loaded preset; names may repeat
     QString m_currentPresetName; // empty = unsaved "Untitled" board
+    // An empty slot holding a blank board that has not been saved yet (-1 = none).
+    int m_pendingSlot = -1;
     void setUnsavedChanges(bool unsaved);
     bool promptUnsavedChanges();
 

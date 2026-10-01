@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Click an empty preset slot to start a new preset there; Save keeps it without asking for a name. Right-click an empty slot to copy the current preset into it. The separate New Preset item is gone; Ctrl+N starts a new preset in the first free slot of the bank.
+- Preset names no longer have to be unique (the slot, e.g. 05B, tells them apart) and can use any characters, such as ä and ö.
+- Save As is now Save Copy To (Ctrl+Shift+S): it puts the current board, edits included, into a free slot and leaves the original as it was saved. Duplicate and the new Move pick their target in the bank grid.
+- The bank grid is larger and easier to read, and moving, duplicating, renaming and deleting there keep it open in place. Moves can be undone (Ctrl+Z); deleting still asks first.
+- Deleting the loaded preset clears the board and leaves the slot empty, instead of loading the next preset.
+- The bank number is now a button that opens the bank grid; right-click it to name the bank.
+
 ## 0.13.0 - 2026-10-01
 
 - Presets and plugin presets keep a VST3 plugin's full settings, such as the amp picked in AmpliTube, not only its parameters. Scenes still switch only parameters.

@@ -108,27 +108,33 @@ QString PresetLibrary::bankLabel(int bank) const {
     return name.isEmpty() ? number : number + " " + name;
 }
 
-QStringList PresetLibrary::sceneNamesAt(int slot) const {
+const PresetLibrary::PresetMeta* PresetLibrary::metaAt(int slot) const {
     const QString path = pathAt(slot);
-    if (path.isEmpty()) return {};
+    if (path.isEmpty()) return nullptr;
     const QFileInfo info(path);
-    if (!info.exists()) return {};
-    auto cached = m_sceneNameCache.find(path);
-    if (cached != m_sceneNameCache.end() && cached->second.modified == info.lastModified()) {
-        return cached->second.names;
+    if (!info.exists()) return nullptr;
+    auto cached = m_metaCache.find(path);
+    if (cached != m_metaCache.end() && cached->second.modified == info.lastModified()) {
+        return &cached->second;
     }
 
-    QStringList names;
+    PresetMeta meta;
+    meta.modified = info.lastModified();
     QFile file(path);
     if (file.open(QFile::ReadOnly)) {
         const QJsonObject obj = QJsonDocument::fromJson(file.readAll()).object();
+        meta.name = storedName(presetAt(slot), obj["name"].toString());
         const QJsonArray list = obj["scenes"].toObject()["list"].toArray();
         if (list.size() > 1) {
-            for (const QJsonValue& scene : list) names << scene.toObject()["name"].toString();
+            for (const QJsonValue& scene : list) meta.sceneNames << scene.toObject()["name"].toString();
         }
     }
-    m_sceneNameCache[path] = {info.lastModified(), names};
-    return names;
+    return &(m_metaCache[path] = meta);
+}
+
+QStringList PresetLibrary::sceneNamesAt(int slot) const {
+    const PresetMeta* meta = metaAt(slot);
+    return meta ? meta->sceneNames : QStringList();
 }
 
 QString PresetLibrary::slotLabel(int slot) const {
@@ -145,7 +151,47 @@ QString PresetLibrary::presetAt(int slot) const {
 
 QString PresetLibrary::nameAt(int slot) const {
     const QString fileName = presetAt(slot);
-    return fileName.isEmpty() ? QString() : QFileInfo(fileName).completeBaseName();
+    if (fileName.isEmpty()) return QString();
+    const PresetMeta* meta = metaAt(slot);
+    return meta && !meta->name.isEmpty() ? meta->name : QFileInfo(fileName).completeBaseName();
+}
+
+QString PresetLibrary::fileStem(const QString& displayName) {
+    QString stem;
+    for (const QChar c : displayName) {
+        if (c.category() == QChar::Other_Control || QStringLiteral("/\\:*?\"<>|").contains(c)) continue;
+        stem += c;
+    }
+    stem = stem.simplified();
+    while (stem.startsWith('.')) stem.remove(0, 1);
+    stem = stem.trimmed();
+    return stem.isEmpty() ? QStringLiteral("Preset") : stem;
+}
+
+QString PresetLibrary::storedName(const QString& fileName, const QString& name) {
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty()) return QString();
+    // Older builds rename the file but not the name inside it; once they no
+    // longer match, the file name is the user's latest choice.
+    const QString base = QFileInfo(fileName).completeBaseName();
+    const QString stem = fileStem(trimmed);
+    if (base == stem) return trimmed;
+    if (base.startsWith(stem + ' ')) {
+        bool ok = false;
+        base.mid(stem.size() + 1).toInt(&ok);
+        if (ok) return trimmed;
+    }
+    return QString();
+}
+
+QString PresetLibrary::uniqueFileName(const QString& displayName) const {
+    const QString stem = fileStem(displayName);
+    const QDir dir(m_presetDir);
+    QString fileName = stem + ".json";
+    for (int n = 2; dir.exists(fileName) || slotOf(fileName) >= 0; ++n) {
+        fileName = QString("%1 %2.json").arg(stem).arg(n);
+    }
+    return fileName;
 }
 
 QString PresetLibrary::pathAt(int slot) const {
@@ -217,6 +263,11 @@ int PresetLibrary::firstFreeSlot(int startAt) const {
         if (!isOccupied(slot)) return slot;
     }
     return -1;
+}
+
+int PresetLibrary::firstFreeSlotInBank(int bank) const {
+    const int start = slotFor(std::clamp(bank, 0, m_numBanks - 1), 0);
+    return firstFreeSlot(start);
 }
 
 QStringList PresetLibrary::presetFilesOnDisk() const {

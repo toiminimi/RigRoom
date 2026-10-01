@@ -497,10 +497,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         configFileCheck.close();
     }
     
-    // The name wins over the slot number, in case the library was rearranged.
-    int startupSlot = lastPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(lastPresetName);
-    if (startupSlot < 0 && !lastPresetName.isEmpty() && m_presetLibrary.isOccupied(lastSlot)) {
-        startupSlot = lastSlot;
+    // "lastPreset" is the file name without extension (older builds stored the
+    // display name, which was the same thing). The slot wins when it still holds
+    // that file; otherwise the file is followed in case the library was rearranged.
+    int startupSlot = -1;
+    if (!lastPresetName.isEmpty()) {
+        const QString lastFile = lastPresetName + ".json";
+        startupSlot = m_presetLibrary.presetAt(lastSlot) == lastFile ? lastSlot : m_presetLibrary.slotOf(lastFile);
+        if (startupSlot < 0 && m_presetLibrary.isOccupied(lastSlot)) startupSlot = lastSlot;
     }
     if (startupSlot >= 0) {
         // Load once the window is on screen and painted: a preset with slow
@@ -518,6 +522,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         waitForWindow->start();
     } else {
         m_currentSlot = -1;
+        m_currentPresetFile.clear();
         m_currentPresetName.clear();
         setUnsavedChanges(false);
     }
@@ -677,13 +682,14 @@ void MainWindow::setupUI() {
         "QMenu { background-color: #1E1E22; color: #E0E0E0; border: 1px solid #333333; }"
         "QMenu::item:selected { background-color: #007ACC; color: white; }"
         "QMenu::item:disabled { color: #555555; }");
-    QAction* newAct = m_presetMenu->addAction("New Preset");
-    newAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_N));
-    QAction* saveAsAct = m_presetMenu->addAction("Save As...");
+    // Save Copy To keeps the loaded preset as it was and puts the board, edits
+    // included, into a free slot. Duplicate copies the saved version.
+    QAction* saveAsAct = m_presetMenu->addAction("Save Copy To...");
     saveAsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
-    m_presetMenu->addSeparator();
+    QAction* duplicateAct = m_presetMenu->addAction("Duplicate...");
+    QAction* moveAct = m_presetMenu->addAction("Move...");
     QAction* renameAct = m_presetMenu->addAction("Rename...");
-    QAction* duplicateAct = m_presetMenu->addAction("Duplicate to Next Free Slot");
+    m_presetMenu->addSeparator();
     QAction* deleteAct = m_presetMenu->addAction("Delete...");
     m_presetMenu->addSeparator();
     QAction* midiAct = m_presetMenu->addAction("MIDI Assignments...");
@@ -691,19 +697,24 @@ void MainWindow::setupUI() {
     QAction* browseAct = m_presetMenu->addAction("All Banks...");
     browseAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
     // Shortcuts are handled by window-level QShortcuts; these only display them.
-    for (QAction* act : {newAct, saveAsAct, browseAct}) act->setShortcutContext(Qt::WidgetShortcut);
-    connect(newAct, &QAction::triggered, this, &MainWindow::onNewPreset);
+    for (QAction* act : {saveAsAct, browseAct}) act->setShortcutContext(Qt::WidgetShortcut);
     connect(saveAsAct, &QAction::triggered, this, &MainWindow::onSavePresetAs);
     connect(renameAct, &QAction::triggered, this, &MainWindow::onRenamePreset);
     connect(duplicateAct, &QAction::triggered, this, [this]() {
-        if (m_currentSlot >= 0) { duplicatePresetInSlot(m_currentSlot); rebuildSlotButtons(); }
+        if (m_currentSlot >= 0) duplicatePresetInSlot(m_currentSlot);
+    });
+    connect(moveAct, &QAction::triggered, this, [this]() {
+        if (m_currentSlot >= 0) openPresetGrid(m_currentSlot, true);
     });
     connect(deleteAct, &QAction::triggered, this, &MainWindow::onDeletePreset);
     connect(browseAct, &QAction::triggered, this, &MainWindow::onPresetButtonClicked);
-    connect(m_presetMenu, &QMenu::aboutToShow, this, [this, renameAct, duplicateAct, deleteAct]() {
+    connect(m_presetMenu, &QMenu::aboutToShow, this, [this, saveAsAct, renameAct, duplicateAct, moveAct, deleteAct]() {
         const bool saved = m_currentSlot >= 0;
+        // Without edits a copy of the board is just Duplicate.
+        saveAsAct->setEnabled(m_unsavedChanges || !saved);
         renameAct->setEnabled(saved);
         duplicateAct->setEnabled(saved);
+        moveAct->setEnabled(saved);
         deleteAct->setEnabled(saved);
     });
 
@@ -1359,26 +1370,43 @@ void MainWindow::setupUI() {
     connect(m_bankPrevBtn, &QToolButton::clicked, this, [this]() { m_rig->stepBank(-1); });
     bankBody->addWidget(m_bankPrevBtn);
 
-    auto* bankMiddle = new QVBoxLayout();
-    bankMiddle->setSpacing(2);
-    m_bankLabel = new QLabel(bankSection);
-    m_bankLabel->setAlignment(Qt::AlignCenter);
-    m_bankLabel->setFixedWidth(118);
-    m_bankLabel->setFixedHeight(24);
-    m_bankLabel->installEventFilter(this);
-    bankMiddle->addWidget(m_bankLabel);
-    m_slotGridBtn = new QToolButton(bankSection);
-    m_slotGridBtn->setText("▦  All banks");
-    m_slotGridBtn->setToolTip("Grid of all banks (Ctrl+P): move, swap, rename and browse presets");
-    m_slotGridBtn->setFixedWidth(118);
-    m_slotGridBtn->setFixedHeight(18);
-    m_slotGridBtn->setCursor(Qt::PointingHandCursor);
-    m_slotGridBtn->setStyleSheet(
-        "QToolButton { background: transparent; color: #8A8A96; font-size: 10px; border: none; }"
-        "QToolButton:hover { color: #00B0FF; }");
-    connect(m_slotGridBtn, &QToolButton::clicked, this, &MainWindow::onPresetButtonClicked);
-    bankMiddle->addWidget(m_slotGridBtn);
-    bankBody->addLayout(bankMiddle);
+    // One button that is both the bank display and the way into the bank grid,
+    // styled like the footswitch tiles: number on top, bank name underneath.
+    m_bankLabel = new QPushButton(bankSection);
+    m_bankLabel->setFixedSize(132, 44);
+    m_bankLabel->setCursor(Qt::PointingHandCursor);
+    m_bankLabel->setContextMenuPolicy(Qt::CustomContextMenu);
+    {
+        auto* inner = new QHBoxLayout(m_bankLabel);
+        inner->setContentsMargins(10, 3, 8, 3);
+        inner->setSpacing(4);
+        auto* texts = new QVBoxLayout();
+        texts->setSpacing(0);
+        m_bankNumberLabel = new QLabel(m_bankLabel);
+        m_bankNameLabel = new QLabel(m_bankLabel);
+        texts->addWidget(m_bankNumberLabel);
+        texts->addWidget(m_bankNameLabel);
+        inner->addLayout(texts, 1);
+        auto* arrow = new QLabel(QString::fromUtf8("▾"), m_bankLabel);
+        arrow->setStyleSheet("QLabel { color: #8A8A96; font-size: 12px; background: transparent; border: none; }");
+        inner->addWidget(arrow);
+        for (QLabel* l : {m_bankNumberLabel, m_bankNameLabel, arrow}) {
+            l->setAttribute(Qt::WA_TransparentForMouseEvents);
+        }
+    }
+    connect(m_bankLabel, &QPushButton::clicked, this, &MainWindow::onPresetButtonClicked);
+    connect(m_bankLabel, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QMenu menu(this);
+        menu.setStyleSheet(m_presetMenu->styleSheet());
+        QAction* renameAct = menu.addAction(m_presetLibrary.bankName(m_viewBank).isEmpty()
+            ? QString("Name Bank %1...").arg(m_viewBank + 1, 2, 10, QChar('0'))
+            : QString("Rename Bank %1...").arg(m_viewBank + 1, 2, 10, QChar('0')));
+        QAction* gridAct = menu.addAction("All Banks...");
+        QAction* chosen = menu.exec(m_bankLabel->mapToGlobal(pos));
+        if (chosen == renameAct) renameViewBank();
+        else if (chosen == gridAct) onPresetButtonClicked();
+    });
+    bankBody->addWidget(m_bankLabel);
 
     m_bankNextBtn = new QToolButton(bankSection);
     m_bankNextBtn->setText("▶");
@@ -1428,7 +1456,7 @@ void MainWindow::setupUI() {
     actionButtons->addWidget(m_savePresetButton);
     auto* moreBtn = new QToolButton(actionsSection);
     moreBtn->setText("⋯");
-    moreBtn->setToolTip("New, Save As, Rename, Duplicate, Delete, All banks");
+    moreBtn->setToolTip("Save As, Rename, Duplicate, Delete, All banks");
     moreBtn->setFixedSize(32, 44);
     moreBtn->setCursor(Qt::PointingHandCursor);
     moreBtn->setStyleSheet(
@@ -1938,8 +1966,9 @@ void MainWindow::refreshPresetList() {
     QDir().mkpath(presetsDirPath());
     m_presetLibrary.setPaths(presetsDirPath(), QDir::homePath() + "/.config/RigRoom/library.json");
     m_presetLibrary.load();
-    m_currentSlot = m_currentPresetName.isEmpty() ? -1 : m_presetLibrary.slotOfName(m_currentPresetName);
-    if (m_currentSlot >= 0) m_viewBank = m_presetLibrary.bankOf(m_currentSlot);
+    m_currentSlot = m_currentPresetFile.isEmpty() ? -1 : m_presetLibrary.slotOf(m_currentPresetFile);
+    if (m_pendingSlot >= 0 && m_presetLibrary.isOccupied(m_pendingSlot)) m_pendingSlot = -1;
+    if (boardSlot() >= 0) m_viewBank = m_presetLibrary.bankOf(boardSlot());
     rebuildSlotButtons();
 }
 
@@ -2375,7 +2404,7 @@ void MainWindow::setUnsavedChanges(bool unsaved) {
     m_unsavedChanges = unsaved;
     
     QString currentPreset = m_currentPresetName.isEmpty() ? QString("Untitled") : m_currentPresetName;
-    if (m_currentSlot >= 0) currentPreset = m_presetLibrary.slotLabel(m_currentSlot) + " " + currentPreset;
+    if (boardSlot() >= 0) currentPreset = m_presetLibrary.slotLabel(boardSlot()) + " " + currentPreset;
     
     QString title = "RigRoom - Guitar Multieffects host [" + currentPreset + (m_unsavedChanges ? " *" : "") + "]";
     setWindowTitle(title);
@@ -2463,18 +2492,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
         QTimer::singleShot(0, this, &MainWindow::applyInspectorHeight);
         return false;
     }
-    if (event->type() == QEvent::MouseButtonDblClick) {
-        if (watched == m_bankLabel) {
-            renameViewBank();
-            return true;
-        }
-    }
     if (event->type() == QEvent::MouseButtonDblClick && watched == m_presetNameLabel) {
         startPresetRename();
         return true;
     }
     if (event->type() == QEvent::MouseButtonRelease && watched == m_presetNameLabel) {
-        if (m_currentSlot >= 0) setViewBank(m_presetLibrary.bankOf(m_currentSlot));
+        if (boardSlot() >= 0) setViewBank(m_presetLibrary.bankOf(boardSlot()));
         return true;
     }
     if (event->type() == QEvent::MouseButtonDblClick && watched->property("branchResetValue").isValid()) {
@@ -2521,15 +2544,32 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MainWindow::onSavePreset() {
-    const QString presetName = m_currentPresetName;
-    if (presetName.isEmpty()) {
+    if (m_currentSlot < 0 && m_pendingSlot >= 0) {
+        // A blank board started in an empty slot: it becomes a preset there.
+        const int slot = m_pendingSlot;
+        if (m_presetLibrary.isOccupied(slot)) {
+            m_pendingSlot = -1;
+            onSavePresetAs();
+            return;
+        }
+        if (m_currentPresetName.isEmpty()) m_currentPresetName = "New Preset";
+        const QString fileName = m_presetLibrary.uniqueFileName(m_currentPresetName);
+        savePresetToFile(presetsDirPath() + "/" + fileName);
+        m_presetLibrary.assign(slot, fileName);
+        m_presetLibrary.save();
+        setCurrentPreset(slot);
+        setUnsavedChanges(false);
+        triggerSaveFeedback();
+        saveConfigSettings();
+        return;
+    }
+    if (m_currentPresetFile.isEmpty()) {
         onSavePresetAs();
         return;
     }
-    
-    QString fullPath = presetsDirPath() + "/" + presetName + ".json";
-    savePresetToFile(fullPath);
-    if (m_presetLibrary.slotOfName(presetName) < 0) {
+
+    savePresetToFile(presetsDirPath() + "/" + m_currentPresetFile);
+    if (m_presetLibrary.slotOf(m_currentPresetFile) < 0) {
         refreshPresetList();
     }
     setUnsavedChanges(false);
@@ -2537,9 +2577,7 @@ void MainWindow::onSavePreset() {
     saveConfigSettings();
 }
 
-void MainWindow::onNewPreset() {
-    if (!promptUnsavedChanges()) return;
-
+void MainWindow::clearBoard() {
     m_isLoadingPreset = true;
     m_parameterControlNode.reset();
     m_parameterControlBindings.clear();
@@ -2547,13 +2585,93 @@ void MainWindow::onNewPreset() {
     m_canvas->clearCanvas();
     m_canvas->setNumCols(m_globalDefaultSlots);
     updateSlotControls();
-    m_currentSlot = -1;
-    m_currentPresetName.clear();
     m_presetMidi.clear();
     resetScenesFromBoard();
     m_isLoadingPreset = false;
-    setUnsavedChanges(true);
+}
+
+void MainWindow::setCurrentPreset(int slot) {
+    m_currentSlot = slot;
+    m_currentPresetFile = m_presetLibrary.presetAt(slot);
+    m_currentPresetName = m_presetLibrary.nameAt(slot);
+    m_pendingSlot = -1;
+    if (slot >= 0) m_viewBank = m_presetLibrary.bankOf(slot);
+}
+
+void MainWindow::onNewPreset() {
+    const int slot = m_presetLibrary.firstFreeSlotInBank(m_viewBank);
+    if (slot < 0) {
+        QMessageBox::warning(this, "No Free Slots", "All preset slots are in use.");
+        return;
+    }
+    startBlankInSlot(slot);
+}
+
+bool MainWindow::startBlankInSlot(int slot) {
+    if (!m_presetLibrary.isValidSlot(slot) || m_presetLibrary.isOccupied(slot)) return false;
+    if (slot == m_pendingSlot && m_currentSlot < 0) {
+        setViewBank(m_presetLibrary.bankOf(slot));
+        return true;
+    }
+    if (!promptUnsavedChanges()) return false;
+    // "Save" in the prompt may have filled the slot.
+    if (m_presetLibrary.isOccupied(slot)) return false;
+
+    clearBoard();
+    m_currentSlot = -1;
+    m_currentPresetFile.clear();
+    m_currentPresetName = "New Preset";
+    m_pendingSlot = slot;
+    m_viewBank = m_presetLibrary.bankOf(slot);
+    // Nothing to lose yet: leaving the slot untouched leaves no file behind.
+    setUnsavedChanges(false);
     saveConfigSettings();
+    if (m_statusLabel) {
+        m_statusLabel->setText(QString("New preset in %1. Save (Ctrl+S) keeps it.").arg(m_presetLibrary.slotLabel(slot)));
+    }
+    return true;
+}
+
+bool MainWindow::copyCurrentToSlot(int slot) {
+    if (!m_presetLibrary.isValidSlot(slot) || m_presetLibrary.isOccupied(slot)) return false;
+    // The source preset's file is left as it is; its unsaved edits go to the copy.
+    if (m_currentPresetName.isEmpty()) m_currentPresetName = "New Preset";
+    const QString fileName = m_presetLibrary.uniqueFileName(m_currentPresetName);
+    savePresetToFile(presetsDirPath() + "/" + fileName);
+    m_presetLibrary.assign(slot, fileName);
+    m_presetLibrary.save();
+    setCurrentPreset(slot);
+    setUnsavedChanges(false);
+    triggerSaveFeedback();
+    saveConfigSettings();
+    return true;
+}
+
+void MainWindow::showEmptySlotMenu(int slot, QWidget* tile, const QPoint& globalPos) {
+    if (!m_presetLibrary.isValidSlot(slot) || m_presetLibrary.isOccupied(slot)) return;
+    QMenu menu(this);
+    menu.setStyleSheet(m_presetMenu->styleSheet());
+    const QString label = m_presetLibrary.slotLabel(slot);
+    if (slot == m_pendingSlot && m_currentSlot < 0) {
+        // The blank board already lives here: keep it or name it.
+        QAction* saveAct = menu.addAction(QString("Save to %1").arg(label));
+        saveAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_S));
+        QAction* renameAct = menu.addAction("Rename...");
+        QAction* chosen = menu.exec(globalPos);
+        if (chosen == saveAct) onSavePreset();
+        else if (chosen == renameAct) {
+            if (tile) startSlotRename(slot, tile);
+            else renamePresetInSlot(slot);
+        }
+        return;
+    }
+    QAction* blankAct = menu.addAction(QString("New Empty Preset in %1").arg(label));
+    const QString source = m_currentPresetName.isEmpty() || m_pendingSlot >= 0
+        ? QString("Current Board") : QString("\"%1\"").arg(m_currentPresetName);
+    QAction* copyAct = menu.addAction(QString("Copy %1 to %2").arg(source, label));
+    QAction* chosen = menu.exec(globalPos);
+    if (chosen == blankAct) startBlankInSlot(slot);
+    else if (chosen == copyAct) copyCurrentToSlot(slot);
 }
 
 void MainWindow::onSlotMinusClicked() {
@@ -2589,121 +2707,93 @@ void MainWindow::updateSlotControls() {
 }
 
 namespace {
-QString sanitizePresetName(QString name) {
-    name = name.trimmed();
-    name.replace(QRegularExpression("[^a-zA-Z0-9_\\- ]"), "");
-    return name.trimmed();
+// Sets the display name stored in a preset file, leaving the rest untouched.
+bool writePresetName(const QString& path, const QString& name) {
+    QFile in(path);
+    if (!in.open(QFile::ReadOnly)) return false;
+    const QJsonDocument doc = QJsonDocument::fromJson(in.readAll());
+    in.close();
+    if (!doc.isObject()) return false;
+    QJsonObject obj = doc.object();
+    obj["name"] = name;
+    QSaveFile out(path);
+    if (!out.open(QFile::WriteOnly)) return false;
+    out.write(QJsonDocument(obj).toJson());
+    return out.commit();
 }
 }
 
-int MainWindow::promptTargetSlot(int defaultSlot, const QString& presetName) {
-    QDialog dialog(this);
-    dialog.setWindowTitle("Choose Preset Slot");
-    auto* layout = new QVBoxLayout(&dialog);
-    auto* label = new QLabel(QString("Slot for \"%1\":").arg(presetName), &dialog);
-    auto* combo = new QComboBox(&dialog);
-    for (int slot = 0; slot < m_presetLibrary.slotCount(); ++slot) {
-        const QString name = m_presetLibrary.nameAt(slot);
-        combo->addItem(m_presetLibrary.slotLabel(slot) + "   " + (name.isEmpty() ? QString::fromUtf8("— empty —") : name), slot);
-    }
-    combo->setCurrentIndex(std::max(0, defaultSlot));
-    combo->setMaxVisibleItems(16);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(label);
-    layout->addWidget(combo);
-    layout->addWidget(buttons);
-    if (dialog.exec() != QDialog::Accepted) return -1;
-    return combo->currentData().toInt();
-}
-
-bool MainWindow::savePresetToSlot(int targetSlot, const QString& suggestedName) {
-    bool ok = false;
-    const QString presetName = sanitizePresetName(QInputDialog::getText(
-        this, "Save Preset As", "Enter preset name:", QLineEdit::Normal, suggestedName, &ok));
-    if (!ok || presetName.isEmpty()) return false;
-
-    const QString fileName = presetName + ".json";
-    const QString fullPath = presetsDirPath() + "/" + fileName;
-    const int existingSlot = m_presetLibrary.slotOf(fileName);
-
-    if (targetSlot < 0) {
-        const int defaultSlot = existingSlot >= 0 ? existingSlot : m_presetLibrary.firstFreeSlot();
-        targetSlot = promptTargetSlot(defaultSlot, presetName);
-        if (targetSlot < 0) return false;
-    }
-
-    if (QFile::exists(fullPath)) {
-        const auto reply = QMessageBox::question(this, "Overwrite Preset?",
-            "A preset named \"" + presetName + "\" already exists. Overwrite?",
-            QMessageBox::Yes | QMessageBox::No);
-        if (reply == QMessageBox::No) return false;
-    }
-
-    const QString displaced = m_presetLibrary.presetAt(targetSlot);
-    if (!displaced.isEmpty() && displaced != fileName) {
-        const auto reply = QMessageBox::question(this, "Slot In Use",
-            QString("Slot %1 holds \"%2\". Move it to the next free slot?")
-                .arg(m_presetLibrary.slotLabel(targetSlot), m_presetLibrary.nameAt(targetSlot)),
-            QMessageBox::Yes | QMessageBox::No);
-        if (reply == QMessageBox::No) return false;
-    }
-
-    savePresetToFile(fullPath);
-    m_presetLibrary.reconcileWithDisk();
-    if (!displaced.isEmpty() && displaced != fileName) {
-        // The displaced preset keeps its file; it simply moves to a free slot.
-        m_presetLibrary.clear(targetSlot);
-        m_presetLibrary.assign(targetSlot, fileName);
-        const int free = m_presetLibrary.firstFreeSlot(targetSlot);
-        if (free >= 0) m_presetLibrary.assign(free, displaced);
-    } else {
-        m_presetLibrary.assign(targetSlot, fileName);
-    }
-    m_presetLibrary.save();
-
-    m_currentPresetName = presetName;
-    m_currentSlot = m_presetLibrary.slotOf(fileName);
-    setUnsavedChanges(false);
-    triggerSaveFeedback();
-    saveConfigSettings();
-    return true;
+int MainWindow::pickFreeSlot(const QString& prompt) {
+    PresetBrowser picker(m_presetLibrary, m_currentSlot, this);
+    picker.setPendingSlot(m_currentSlot < 0 ? m_pendingSlot : -1, m_currentPresetName);
+    picker.placeUnder(m_bankLabel ? static_cast<QWidget*>(m_bankLabel) : this, this);
+    picker.beginPick(PresetBrowser::PickKind::Choose, -1, prompt);
+    if (picker.exec() != QDialog::Accepted) return -1;
+    return picker.pickedSlot();
 }
 
 void MainWindow::onSavePresetAs() {
-    savePresetToSlot(-1, m_currentPresetName);
+    // Save Copy To (and Save for a board that has no slot): the board, edits
+    // included, goes into a free slot and becomes the loaded preset there; the
+    // preset it came from stays as it was saved.
+    const QString name = m_currentPresetName.isEmpty() ? QString("New Preset") : m_currentPresetName;
+    const QString prompt = m_currentSlot >= 0
+        ? QString("Saving a copy of %1 \"%2\": click a free slot").arg(m_presetLibrary.slotLabel(m_currentSlot), name)
+        : QString("Saving \"%1\": click a free slot").arg(name);
+    const int target = pickFreeSlot(prompt);
+    if (target >= 0) copyCurrentToSlot(target);
 }
 
 void MainWindow::renamePresetInSlot(int slot, const QString& requestedName) {
+    if (slot == m_pendingSlot && m_currentSlot < 0 && !m_presetLibrary.isOccupied(slot)) {
+        // Naming a blank board means keeping it.
+        QString name = requestedName.trimmed();
+        if (requestedName.isNull()) {
+            bool ok = false;
+            name = QInputDialog::getText(this, "Rename Preset", "Name for the new preset:",
+                QLineEdit::Normal, m_currentPresetName, &ok).trimmed();
+            if (!ok) return;
+        }
+        if (name.isEmpty() || name == m_currentPresetName) return;
+        m_currentPresetName = name;
+        onSavePreset();
+        return;
+    }
     const QString oldPresetName = m_presetLibrary.nameAt(slot);
     if (oldPresetName.isEmpty()) return;
 
     QString newPresetName;
     if (requestedName.isNull()) {
         bool ok = false;
-        newPresetName = sanitizePresetName(QInputDialog::getText(
+        newPresetName = QInputDialog::getText(
             this, "Rename Preset", "Enter new name for \"" + oldPresetName + "\":",
-            QLineEdit::Normal, oldPresetName, &ok));
+            QLineEdit::Normal, oldPresetName, &ok).trimmed();
         if (!ok) return;
     } else {
-        newPresetName = sanitizePresetName(requestedName);
+        newPresetName = requestedName.trimmed();
     }
     if (newPresetName.isEmpty() || newPresetName == oldPresetName) return;
 
-    const QString oldPath = presetsDirPath() + "/" + oldPresetName + ".json";
-    const QString newPath = presetsDirPath() + "/" + newPresetName + ".json";
-    if (QFile::exists(newPath)) {
-        QMessageBox::critical(this, "Error", "A preset named \"" + newPresetName + "\" already exists.");
+    const QString oldFile = m_presetLibrary.presetAt(slot);
+    const bool isCurrent = slot == m_currentSlot && oldFile == m_currentPresetFile;
+    QString newFile = oldFile;
+    // Keep file names readable: follow the new name unless the file already fits it.
+    if (PresetLibrary::storedName(oldFile, newPresetName).isEmpty()) {
+        newFile = m_presetLibrary.uniqueFileName(newPresetName);
+        if (!QFile::rename(presetsDirPath() + "/" + oldFile, presetsDirPath() + "/" + newFile)) {
+            QMessageBox::critical(this, "Error", "Failed to rename the preset file.");
+            return;
+        }
+        m_presetLibrary.renameFile(oldFile, newFile);
+        m_presetLibrary.save();
+    }
+    // Only the name is written, so unsaved edits to the loaded preset stay unsaved.
+    if (!writePresetName(presetsDirPath() + "/" + newFile, newPresetName) && newFile == oldFile) {
+        QMessageBox::critical(this, "Error", "Failed to rename the preset.");
         return;
     }
-    if (!QFile::rename(oldPath, newPath)) {
-        QMessageBox::critical(this, "Error", "Failed to rename the preset file.");
-        return;
-    }
-    m_presetLibrary.renameFile(oldPresetName + ".json", newPresetName + ".json");
-    m_presetLibrary.save();
-    if (m_currentPresetName == oldPresetName) {
+    if (isCurrent) {
+        m_currentPresetFile = newFile;
         m_currentPresetName = newPresetName;
     }
     refreshPresetList();
@@ -2715,37 +2805,43 @@ void MainWindow::onRenamePreset() {
     if (m_currentSlot >= 0) renamePresetInSlot(m_currentSlot);
 }
 
-void MainWindow::duplicatePresetInSlot(int slot) {
+void MainWindow::duplicatePresetInSlot(int slot, int target) {
     const QString name = m_presetLibrary.nameAt(slot);
     if (name.isEmpty()) return;
-    QString copyName = name + " copy";
-    for (int n = 2; QFile::exists(presetsDirPath() + "/" + copyName + ".json"); ++n) {
-        copyName = QString("%1 copy %2").arg(name).arg(n);
-    }
-    const int target = m_presetLibrary.firstFreeSlot(slot);
     if (target < 0) {
-        QMessageBox::warning(this, "No Free Slots", "All preset slots are in use.");
+        openPresetGrid(slot);
         return;
     }
-    if (!QFile::copy(m_presetLibrary.pathAt(slot), presetsDirPath() + "/" + copyName + ".json")) {
+    // Only free slots are offered, and the pending blank board's slot counts as taken.
+    if (!m_presetLibrary.isValidSlot(target) || m_presetLibrary.isOccupied(target)
+        || (target == m_pendingSlot && m_currentSlot < 0)) return;
+    // Same name: the slot label tells the two apart.
+    const QString copyFile = m_presetLibrary.uniqueFileName(name);
+    if (!QFile::copy(m_presetLibrary.pathAt(slot), presetsDirPath() + "/" + copyFile)) {
         QMessageBox::critical(this, "Error", "Failed to copy the preset file.");
         return;
     }
-    m_presetLibrary.assign(target, copyName + ".json");
+    writePresetName(presetsDirPath() + "/" + copyFile, name);
+    m_presetLibrary.assign(target, copyFile);
     m_presetLibrary.save();
+    rebuildSlotButtons();
     if (m_statusLabel) {
         m_statusLabel->setText(QString("Duplicated '%1' to %2").arg(name, m_presetLibrary.slotLabel(target)));
     }
 }
 
-void MainWindow::deletePresetInSlot(int slot) {
+void MainWindow::deletePresetInSlot(int slot, bool confirmed) {
     const QString presetName = m_presetLibrary.nameAt(slot);
     if (presetName.isEmpty()) return;
 
-    const auto reply = QMessageBox::question(this, "Delete Preset",
-        "Are you sure you want to delete the preset \"" + presetName + "\"?\nThis cannot be undone.",
-        QMessageBox::Yes | QMessageBox::No);
-    if (reply != QMessageBox::Yes) return;
+    if (!confirmed) {
+        const auto reply = QMessageBox::question(this, "Delete Preset",
+            QString("Delete %1 \"%2\"? The preset file is removed.%3")
+                .arg(m_presetLibrary.slotLabel(slot), presetName,
+                     slot == m_currentSlot ? QString("\nThe board is cleared.") : QString()),
+            QMessageBox::Yes | QMessageBox::No);
+        if (reply != QMessageBox::Yes) return;
+    }
 
     if (!QFile::remove(m_presetLibrary.pathAt(slot))) {
         QMessageBox::critical(this, "Error", "Failed to delete the preset file.");
@@ -2753,24 +2849,24 @@ void MainWindow::deletePresetInSlot(int slot) {
     }
     m_presetLibrary.clear(slot);
     m_presetLibrary.save();
+    if (m_statusLabel) {
+        m_statusLabel->setText(QString("Deleted %1 \"%2\"").arg(m_presetLibrary.slotLabel(slot), presetName));
+    }
 
     if (slot != m_currentSlot) {
         rebuildSlotButtons();
         return;
     }
 
-    setUnsavedChanges(false);
+    // The loaded preset is gone, so its sound goes too: the slot is left empty
+    // with a blank board, like a new preset there. Nothing else gets loaded.
+    clearBoard();
     m_currentSlot = -1;
-    m_currentPresetName.clear();
-    const int next = m_presetLibrary.nextOccupied(slot, 1);
-    if (next >= 0) {
-        loadSlot(next);
-    } else {
-        m_canvas->clearCanvas();
-        m_canvas->updateLayout();
-        setUnsavedChanges(false);
-        saveConfigSettings();
-    }
+    m_currentPresetFile.clear();
+    m_currentPresetName = "New Preset";
+    m_pendingSlot = slot;
+    setUnsavedChanges(false);
+    saveConfigSettings();
 }
 
 void MainWindow::onDeletePreset() {
@@ -2781,7 +2877,7 @@ bool MainWindow::loadSlot(int slot, bool remote) {
     if (!m_presetLibrary.isOccupied(slot)) return false;
     // Selecting the preset that is already loaded is not a preset change, so
     // it must not ask about unsaved edits (use Reload to discard them).
-    if (slot == m_currentSlot && m_presetLibrary.nameAt(slot) == m_currentPresetName) {
+    if (slot == m_currentSlot && m_presetLibrary.presetAt(slot) == m_currentPresetFile) {
         setViewBank(m_presetLibrary.bankOf(slot));
         return true;
     }
@@ -2790,7 +2886,7 @@ bool MainWindow::loadSlot(int slot, bool remote) {
         // A modal prompt would stall a live switch; say what was dropped instead.
         if (m_unsavedChanges) {
             discardedNote = QString("Unsaved edits to %1 discarded. ")
-                .arg(m_currentSlot >= 0 ? m_presetLibrary.slotLabel(m_currentSlot) : QString("Untitled"));
+                .arg(boardSlot() >= 0 ? m_presetLibrary.slotLabel(boardSlot()) : QString("Untitled"));
             m_unsavedChanges = false;
         }
     } else if (!promptUnsavedChanges()) {
@@ -2803,9 +2899,7 @@ bool MainWindow::loadSlot(int slot, bool remote) {
         return false;
     }
     loadPresetFromFile(path);
-    m_currentSlot = slot;
-    m_currentPresetName = m_presetLibrary.nameAt(slot);
-    m_viewBank = m_presetLibrary.bankOf(slot);
+    setCurrentPreset(slot);
     setUnsavedChanges(false);
     saveConfigSettings();
     if (remote && m_statusLabel) {
@@ -2817,8 +2911,13 @@ bool MainWindow::loadSlot(int slot, bool remote) {
 }
 
 void MainWindow::onPresetButtonClicked() {
+    openPresetGrid();
+}
+
+void MainWindow::openPresetGrid(int source, bool move) {
     if (m_presetLibrary.reconcileWithDisk()) m_presetLibrary.save();
     PresetBrowser browser(m_presetLibrary, m_currentSlot, this);
+    browser.setPendingSlot(m_currentSlot < 0 ? m_pendingSlot : -1, m_currentPresetName);
     connect(&browser, &PresetBrowser::slotActivated, this, [this](int slot) {
         // Defer so the browser closes before a possible unsaved-changes prompt.
         QTimer::singleShot(0, this, [this, slot]() { loadSlot(slot); });
@@ -2826,29 +2925,43 @@ void MainWindow::onPresetButtonClicked() {
     connect(&browser, &PresetBrowser::slotsSwapped, this, [this](int from, int to) {
         m_presetLibrary.swap(from, to);
         m_presetLibrary.save();
-        if (!m_currentPresetName.isEmpty()) m_currentSlot = m_presetLibrary.slotOfName(m_currentPresetName);
+        if (!m_currentPresetFile.isEmpty()) m_currentSlot = m_presetLibrary.slotOf(m_currentPresetFile);
+        if (m_pendingSlot == to) m_pendingSlot = from;
         setUnsavedChanges(m_unsavedChanges);
         saveConfigSettings();
     });
-    connect(&browser, &PresetBrowser::saveCurrentToSlotRequested, this, [this](int slot) {
-        QTimer::singleShot(0, this, [this, slot]() { savePresetToSlot(slot, m_currentPresetName); });
+    connect(&browser, &PresetBrowser::blankRequested, this, [this](int slot) {
+        QTimer::singleShot(0, this, [this, slot]() { startBlankInSlot(slot); });
     });
-    // Run dialog-based actions after the popup has closed, then reopen the grid.
+    connect(&browser, &PresetBrowser::savePendingRequested, this, [this]() {
+        QTimer::singleShot(0, this, [this]() { onSavePreset(); });
+    });
+    connect(&browser, &PresetBrowser::copyCurrentRequested, this, [this](int slot) {
+        QTimer::singleShot(0, this, [this, slot]() { copyCurrentToSlot(slot); });
+    });
+    // These run without dialogs, so the grid stays open where it was; it then
+    // redraws from the library and the board state passed back here.
+    auto syncBrowser = [this, &browser]() {
+        browser.setBoardSlots(m_currentSlot, m_currentSlot < 0 ? m_pendingSlot : -1, m_currentPresetName);
+    };
+    connect(&browser, &PresetBrowser::renameTo, this, [this, syncBrowser](int slot, const QString& name) {
+        renamePresetInSlot(slot, name);
+        syncBrowser();
+    });
+    connect(&browser, &PresetBrowser::duplicateTo, this, [this](int source, int target) {
+        duplicatePresetInSlot(source, target);
+    });
+    connect(&browser, &PresetBrowser::deleteRequested, this, [this, syncBrowser](int slot) {
+        deletePresetInSlot(slot, true);
+        syncBrowser();
+    });
+    // Bank naming uses a dialog, which closes the popup; reopen it afterwards.
     auto thenReopen = [this](std::function<void()> action) {
         QTimer::singleShot(0, this, [this, action]() {
             action();
             onPresetButtonClicked();
         });
     };
-    connect(&browser, &PresetBrowser::renameRequested, this, [this, thenReopen](int slot) {
-        thenReopen([this, slot]() { renamePresetInSlot(slot); });
-    });
-    connect(&browser, &PresetBrowser::duplicateRequested, this, [this, thenReopen](int slot) {
-        thenReopen([this, slot]() { duplicatePresetInSlot(slot); rebuildSlotButtons(); });
-    });
-    connect(&browser, &PresetBrowser::deleteRequested, this, [this, thenReopen](int slot) {
-        thenReopen([this, slot]() { deletePresetInSlot(slot); });
-    });
     connect(&browser, &PresetBrowser::bankRenameRequested, this, [this, thenReopen](int bank) {
         thenReopen([this, bank]() {
             const int previous = m_viewBank;
@@ -2859,9 +2972,18 @@ void MainWindow::onPresetButtonClicked() {
         });
     });
 
-    QWidget* anchorWidget = m_bankLabel ? static_cast<QWidget*>(m_bankLabel) : this;
-    const QPoint anchor = anchorWidget->mapToGlobal(QPoint(0, anchorWidget->height() + 4));
-    browser.move(anchor);
+    browser.placeUnder(m_bankLabel ? static_cast<QWidget*>(m_bankLabel) : this, this);
+    if (m_presetLibrary.isOccupied(source)) {
+        const QString label = m_presetLibrary.slotLabel(source);
+        const QString name = m_presetLibrary.nameAt(source);
+        if (move) {
+            browser.beginPick(PresetBrowser::PickKind::Move, source,
+                              QString("Moving %1 \"%2\": click where it goes").arg(label, name));
+        } else {
+            browser.beginPick(PresetBrowser::PickKind::Duplicate, source,
+                              QString("Duplicating %1 \"%2\": click a free slot for the copy").arg(label, name));
+        }
+    }
     browser.exec();
     rebuildSlotButtons();
 }
@@ -3241,22 +3363,27 @@ void MainWindow::rebuildSlotButtons() {
     if (m_viewBank >= m_presetLibrary.numBanks()) m_viewBank = 0;
 
     // Bank label: orange when showing a bank other than the loaded preset's.
-    const bool loadedHere = m_currentSlot >= 0 && m_presetLibrary.bankOf(m_currentSlot) == m_viewBank;
-    const bool showingOther = m_currentSlot >= 0 && !loadedHere;
-    const QString bankText = m_presetLibrary.bankName(m_viewBank).isEmpty()
-        ? m_presetLibrary.bankLabel(m_viewBank) + QString::fromUtf8("  ✎")
-        : m_presetLibrary.bankLabel(m_viewBank);
-    m_bankLabel->setText(QFontMetrics(m_bankLabel->font()).elidedText(bankText, Qt::ElideRight, 104));
+    const bool loadedHere = boardSlot() >= 0 && m_presetLibrary.bankOf(boardSlot()) == m_viewBank;
+    const bool showingOther = boardSlot() >= 0 && !loadedHere;
+    const QString bankName = m_presetLibrary.bankName(m_viewBank);
+    m_bankNumberLabel->setText(QString("%1").arg(m_viewBank + 1, 2, 10, QChar('0')));
+    m_bankNameLabel->setText(QFontMetrics(m_bankNameLabel->font()).elidedText(
+        bankName.isEmpty() ? QString("Bank") : bankName, Qt::ElideRight, 96));
+    m_bankNumberLabel->setStyleSheet(QString(
+        "QLabel { color: %1; font-weight: bold; font-size: 15px; background: transparent; border: none; }")
+        .arg(showingOther ? "#FFB74D" : "#E6E6EA"));
+    m_bankNameLabel->setStyleSheet(
+        "QLabel { color: #8A8A96; font-size: 11px; background: transparent; border: none; }");
     m_bankLabel->setStyleSheet(QString(
-        "QLabel { background-color: #1C1C20; color: %1; font-weight: bold; font-size: 12px;"
-        " border: 1px solid %2; border-radius: 4px; padding: 3px 8px; }")
-        .arg(showingOther ? "#FFB74D" : "#E0E0E0", showingOther ? "#FF9800" : "#333438"));
-    QString bankTip = QString("Bank %1. Double-click to %2 it (e.g. a band, set or style); the number stays.")
+        "QPushButton { background-color: #1C1C20; border: 1px solid %1; border-radius: 4px; }"
+        "QPushButton:hover { background-color: #242429; border-color: %2; }")
+        .arg(showingOther ? "#FF9800" : "#333438", showingOther ? "#FFB74D" : "#00B0FF"));
+    QString bankTip = QString("Bank %1. Click for all banks (Ctrl+P) · right-click to %2 it.")
         .arg(m_viewBank + 1, 2, 10, QChar('0'))
-        .arg(m_presetLibrary.bankName(m_viewBank).isEmpty() ? "name" : "rename");
+        .arg(bankName.isEmpty() ? "name" : "rename");
     if (showingOther) {
         bankTip.prepend(QString("Loaded: %1 %2\n")
-            .arg(m_presetLibrary.slotLabel(m_currentSlot), m_currentPresetName));
+            .arg(m_presetLibrary.slotLabel(boardSlot()), m_currentPresetName));
     }
     m_bankLabel->setToolTip(bankTip);
 
@@ -3272,7 +3399,7 @@ void MainWindow::rebuildSlotButtons() {
             connect(tile, &FootswitchTile::clicked, this, [this, i]() { onSlotButtonClicked(i); });
             connect(tile, &FootswitchTile::doubleClicked, this, [this, i, tile]() {
                 const int slot = m_presetLibrary.slotFor(m_viewBank, i);
-                if (m_presetLibrary.isOccupied(slot)) startSlotRename(slot, tile);
+                if (m_presetLibrary.isOccupied(slot) || slot == m_pendingSlot) startSlotRename(slot, tile);
             });
             connect(tile, &QWidget::customContextMenuRequested, this, [this, i, tile](const QPoint& pos) {
                 showSlotTileMenu(m_presetLibrary.slotFor(m_viewBank, i), tile, tile->mapToGlobal(pos));
@@ -3285,8 +3412,9 @@ void MainWindow::rebuildSlotButtons() {
     for (int i = 0; i < perBank; ++i) {
         FootswitchTile* tile = m_slotButtons[i];
         const int slot = m_presetLibrary.slotFor(m_viewBank, i);
-        const QString name = m_presetLibrary.nameAt(slot);
-        const bool isCurrent = slot == m_currentSlot && !name.isEmpty();
+        const bool isPending = slot == m_pendingSlot && m_currentSlot < 0 && !m_presetLibrary.isOccupied(slot);
+        const QString name = isPending ? m_currentPresetName : m_presetLibrary.nameAt(slot);
+        const bool isCurrent = (slot == m_currentSlot || isPending) && !name.isEmpty();
         tile->setKey(QString(QChar('A' + i)));
         tile->setName(name.isEmpty() ? QString::fromUtf8("—") : name);
         tile->setState(name.isEmpty() ? FootswitchTile::State::Empty
@@ -3302,9 +3430,10 @@ void MainWindow::rebuildSlotButtons() {
                 for (int k = 0; k < scenes.size(); ++k) numbered << QString("%1 %2").arg(k + 1).arg(scenes[k]);
                 tip += "\nScenes: " + numbered.join(QString::fromUtf8(" · "));
             }
-            tip += isCurrent ? "\nLoaded" : "\nClick to load";
+            tip += isPending ? "\nNot saved yet: Save (Ctrl+S) keeps it here"
+                 : isCurrent ? "\nLoaded" : "\nClick to load";
         } else {
-            tip += "\nClick to save the current board here";
+            tip += "\nClick to start a new preset here · right-click to copy the current one here";
         }
         tile->setToolTip(tip);
     }
@@ -3317,7 +3446,7 @@ void MainWindow::onSlotButtonClicked(int indexInBank) {
     if (m_presetLibrary.isOccupied(slot)) {
         m_rig->selectInBank(indexInBank);
     } else {
-        savePresetToSlot(slot, m_currentPresetName);
+        startBlankInSlot(slot);
     }
 }
 
@@ -3343,7 +3472,7 @@ void MainWindow::refreshSceneMarkers() {
 void MainWindow::updateCanvasInfo() {
     if (!m_canvas) return;
     const QString name = m_currentPresetName.isEmpty() ? QString("Untitled") : m_currentPresetName;
-    const QString slot = m_currentSlot >= 0 ? m_presetLibrary.slotLabel(m_currentSlot) : QString("—");
+    const QString slot = boardSlot() >= 0 ? m_presetLibrary.slotLabel(boardSlot()) : QString("—");
     const auto& scene = m_scenes.active();
     const QString sceneColor = scene.color.isEmpty() ? SceneModel::defaultColor(m_scenes.activeIndex()) : scene.color;
     const QString dot = m_unsavedChanges ? QString::fromUtf8("&nbsp;<span style='color:#FF9800;'>●</span>") : QString();
@@ -3372,7 +3501,8 @@ void MainWindow::showSlotTileMenu(int slot, QWidget* tile, const QPoint& globalP
         storeAct->setEnabled(!loaded || m_unsavedChanges);
         menu.addSeparator();
         QAction* renameAct = menu.addAction("Rename...");
-        QAction* dupAct = menu.addAction("Duplicate to Next Free Slot");
+        QAction* dupAct = menu.addAction("Duplicate...");
+        QAction* moveAct = menu.addAction("Move...");
         QAction* deleteAct = menu.addAction("Delete...");
         menu.addSeparator();
         QAction* gridAct = menu.addAction("All Banks...");
@@ -3391,10 +3521,9 @@ void MainWindow::showSlotTileMenu(int slot, QWidget* tile, const QPoint& globalP
             } else if (QMessageBox::question(this, "Replace Preset",
                            QString("Replace \"%1\" in %2 with the current board?").arg(m_presetLibrary.nameAt(slot), label))
                        == QMessageBox::Yes) {
-                const QString name = m_presetLibrary.nameAt(slot);
+                m_currentPresetName = m_presetLibrary.nameAt(slot);
                 savePresetToFile(m_presetLibrary.pathAt(slot));
-                m_currentSlot = slot;
-                m_currentPresetName = name;
+                setCurrentPreset(slot);
                 setUnsavedChanges(false);
                 triggerSaveFeedback();
                 saveConfigSettings();
@@ -3403,22 +3532,23 @@ void MainWindow::showSlotTileMenu(int slot, QWidget* tile, const QPoint& globalP
             startSlotRename(slot, tile);
         } else if (chosen == dupAct) {
             duplicatePresetInSlot(slot);
-            rebuildSlotButtons();
+        } else if (chosen == moveAct) {
+            openPresetGrid(slot, true);
         } else if (chosen == deleteAct) {
             deletePresetInSlot(slot);
         } else if (chosen == gridAct) {
             onPresetButtonClicked();
         }
     } else {
-        QAction* saveAct = menu.addAction(QString("Save Current Board to %1...").arg(label));
-        if (menu.exec(globalPos) == saveAct) savePresetToSlot(slot, m_currentPresetName);
+        showEmptySlotMenu(slot, tile, globalPos);
     }
 }
 
 void MainWindow::startSlotRename(int slot, QWidget* tile) {
-    if (!tile || !m_presetLibrary.isOccupied(slot)) return;
+    const bool pending = slot == m_pendingSlot && m_currentSlot < 0;
+    if (!tile || (!m_presetLibrary.isOccupied(slot) && !pending)) return;
     auto* editor = new QLineEdit(tile); // child of the tile: always drawn on top of it
-    editor->setText(m_presetLibrary.nameAt(slot));
+    editor->setText(pending ? m_currentPresetName : m_presetLibrary.nameAt(slot));
     editor->setGeometry(tile->rect().adjusted(4, tile->height() / 2 - 2, -4, -3));
     editor->setStyleSheet("QLineEdit { background-color: #1E1E22; color: white; border: 1px solid #00B0FF; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: bold; }");
     editor->selectAll();
@@ -3439,12 +3569,12 @@ void MainWindow::startSlotRename(int slot, QWidget* tile) {
 
 void MainWindow::startPresetRename() {
     if (!m_presetNameLabel) return;
-    if (m_currentSlot < 0) {
+    if (boardSlot() < 0) {
         // Nothing to rename yet: naming an unsaved board means saving it.
         onSavePresetAs();
         return;
     }
-    const int slot = m_currentSlot;
+    const int slot = boardSlot();
     // The editor is a child of the label so nothing (e.g. the label being
     // raised on a refresh) can cover it while typing.
     QLabel* label = m_presetNameLabel;
@@ -4362,7 +4492,8 @@ void MainWindow::saveConfigSettings() {
     configObj["customCLAPPaths"] = clapArr;
 
     configObj["midi"] = m_midiConfig.toJson();
-    configObj["lastPreset"] = m_currentPresetName;
+    // The file name, which older builds also read as the preset name.
+    configObj["lastPreset"] = QFileInfo(m_currentPresetFile).completeBaseName();
     configObj["lastSlot"] = m_currentSlot;
     
     QFile configFileWrite(QDir::homePath() + "/.config/RigRoom/config.json");
@@ -4563,6 +4694,8 @@ void MainWindow::savePresetToFile(const QString& path) {
 
     QJsonObject presetObj;
     presetObj["formatVersion"] = 8;
+    // Display name; may repeat across presets. Older builds ignore it and use the file name.
+    if (!m_currentPresetName.isEmpty()) presetObj["name"] = m_currentPresetName;
     presetObj["outputLevelDb"] = m_engine.getPresetOutputLevelDB();
     // Top-level node state mirrors the active scene, so older builds open it as-is.
     presetObj["scenes"] = m_scenes.toJson();

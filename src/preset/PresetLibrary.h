@@ -52,7 +52,8 @@ public:
     bool isOccupied(int slot) const { return m_slots.count(slot) > 0; }
     // File name (e.g. "Clean.json") or empty.
     QString presetAt(int slot) const;
-    // Display name without extension, or empty.
+    // Display name: the preset's own "name" when it still matches the file,
+    // otherwise the file name without extension. Empty for a free slot.
     QString nameAt(int slot) const;
     QString pathAt(int slot) const;
     int slotOf(const QString& fileName) const;
@@ -70,6 +71,16 @@ public:
     // Same position in the next/previous bank, wrapping.
     int stepBank(int from, int dir) const;
     int firstFreeSlot(int startAt = 0) const;
+    // First free slot in `bank`, else the next free one after it.
+    int firstFreeSlotInBank(int bank) const;
+
+    // Names may repeat (the slot tells them apart); file names may not. Returns
+    // "<stem>.json", or "<stem> 2.json"... when that file already exists.
+    QString uniqueFileName(const QString& displayName) const;
+    // File-system safe stem for a display name ("Preset" if nothing is left).
+    static QString fileStem(const QString& displayName);
+    // Display name stored in a preset file, if it still belongs to that file.
+    static QString storedName(const QString& fileName, const QString& name);
     int occupiedCount() const { return static_cast<int>(m_slots.size()); }
     const std::map<int, QString>& entries() const { return m_slots; }
 
@@ -86,9 +97,11 @@ private:
     std::map<int, QString> m_slots;
     std::map<int, QString> m_bankNames;
 
-    struct SceneNameCache {
+    struct PresetMeta {
         QDateTime modified;
-        QStringList names;
+        QString name;
+        QStringList sceneNames;
     };
-    mutable std::map<QString, SceneNameCache> m_sceneNameCache;
+    const PresetMeta* metaAt(int slot) const;
+    mutable std::map<QString, PresetMeta> m_metaCache;
 };
