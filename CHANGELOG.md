@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: RigRoom could crash on exit when a Windows plugin's bridge had already stopped.
+- Plugins that take a while to load, such as Windows plugins running through yabridge, show which plugin is loading instead of RigRoom just freezing. At startup the window now appears first and the last preset loads into it.
+- Fixed: editors of some Windows VST3 plugins bridged with vstbridge opened as a blank window.
+- Presets and plugin presets now keep the full settings of VST3 plugins, including everything that is not a parameter, such as the amp chosen in AmpliTube. Scenes still switch only parameters.
+- When you assign a control to one of a VST3 plugin's generic slots (such as "Param 1") and the plugin renames the slot, RigRoom's parameter list shows the new name.
+- Fixed: a VST3 plugin's own window did not follow parameter changes made in RigRoom (its controls, MIDI, scenes or presets).
+- Changing a parameter in a VST3 plugin's own window, or a change the plugin reports itself, now marks the preset as changed.
+- VST3 plugins list only the parameters meant for the host. Many plugins (for example Amp Locker, AmpliTube, ToneLib-GFX) also report about 2000 internal "MIDI CC" entries; these are no longer shown, which makes such plugins quicker to load and their parameter list usable.
+
 ## 0.12.0 - 2026-09-21
 
 - RigRoom starts much faster: LV2 plugin details are remembered between runs and read again only for plugins that were installed or updated. "Rescan Plugins Now" still reads every plugin.

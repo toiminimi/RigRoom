@@ -36,6 +36,8 @@ and play it from a MIDI footswitch.
 - **Neural Amp Modeler** captures and impulse responses load straight into a
   block's file slots.
 - **Inspector** with knobs, switches and the plugin's own presets.
+- **Windows VST3 plugins** through yabridge or vstbridge. See the
+  [FAQ](FAQ.md) for what to expect from VST3 and Windows plugins.
 
 ### Plugin browser
 
