@@ -34,3 +34,17 @@ const char** jack_get_ports(jack_client_t* client, const char* port_name_pattern
 void jack_free(void* ptr) {}
 int jack_set_buffer_size(jack_client_t* client, jack_nframes_t nframes) { return -1; }
 float jack_cpu_load(jack_client_t* client) { return 0.0f; }
+
+// MIDI input and the engine's MIDI ring buffer: without a server there are no
+// events, and RigRoom checks the ring buffer for NULL before using it.
+typedef void jack_ringbuffer_t;
+unsigned int jack_midi_get_event_count(void* port_buffer) { return 0; }
+int jack_midi_event_get(void* event, void* port_buffer, unsigned int event_index) { return -1; }
+const char* jack_port_name(const jack_port_t* port) { return ""; }
+jack_ringbuffer_t* jack_ringbuffer_create(size_t sz) { return NULL; }
+void jack_ringbuffer_free(jack_ringbuffer_t* rb) {}
+int jack_ringbuffer_mlock(jack_ringbuffer_t* rb) { return -1; }
+size_t jack_ringbuffer_read(jack_ringbuffer_t* rb, char* dest, size_t cnt) { return 0; }
+size_t jack_ringbuffer_read_space(const jack_ringbuffer_t* rb) { return 0; }
+size_t jack_ringbuffer_write(jack_ringbuffer_t* rb, const char* src, size_t cnt) { return 0; }
+size_t jack_ringbuffer_write_space(const jack_ringbuffer_t* rb) { return 0; }

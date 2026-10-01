@@ -23,4 +23,11 @@ root="$workdir/squashfs-root"
 bundled_openssl="$(find "$root/usr/lib" -maxdepth 1 \( -name 'libssl.so*' -o -name 'libcrypto.so*' \) -printf '%f ')"
 [ -z "$bundled_openssl" ] || fail "OpenSSL in usr/lib (would shadow the host's for plugins): $bundled_openssl"
 
+# The fallback libjack stub must define every JACK symbol RigRoom uses, or the
+# AppImage won't start on systems without JACK/PipeWire.
+used="$(nm -D --undefined-only "$root/usr/bin/RigRoom" | awk '{print $2}' | grep '^jack_' | sed 's/@.*//' | sort -u)"
+stub="$(nm -D --defined-only "$root/usr/lib/fallback/libjack.so.0" | awk '{print $3}' | grep '^jack_' | sort -u)"
+missing="$(comm -23 <(echo "$used") <(echo "$stub") | tr '\n' ' ')"
+[ -z "${missing// }" ] || fail "fallback libjack lacks: $missing(add them to packaging/libjack_fallback.c)"
+
 echo "check-appimage: $appimage OK"

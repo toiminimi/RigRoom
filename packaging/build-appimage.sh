@@ -121,9 +121,10 @@ for lib in $(ldd "${BUILD_DIR}/RigRoom" | awk '{print $3}' | grep '^/'); do
     fi
 done
 
-# Copy dependencies of Qt platform plugins
-if [ -d "${APP_DIR}/usr/plugins/platforms" ]; then
-    for plugin in "${APP_DIR}/usr/plugins/platforms"/*.so; do
+# Copy dependencies of all bundled Qt plugins (platforms, image formats, TLS…).
+# Image formats need e.g. Ubuntu's libjpeg.so.8, which other distros lack.
+if [ -d "${APP_DIR}/usr/plugins" ]; then
+    for plugin in "${APP_DIR}/usr/plugins"/*/*.so; do
         if [ -f "$plugin" ]; then
             for lib in $(ldd "$plugin" 2>/dev/null | awk '{print $3}' | grep '^/'); do
                 libname=$(basename "$lib")
