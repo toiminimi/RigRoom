@@ -41,7 +41,7 @@ else
     DEBIAN_FRONTEND=noninteractive "${SUDO[@]}" apt-get install -y --no-install-recommends \
         build-essential cmake pkg-config qt6-base-dev qt6-base-private-dev \
         libgl1-mesa-dev libjack-jackd2-dev liblilv-dev libsuil-dev \
-        libsecret-1-dev libx11-dev curl file
+        libsecret-1-dev libx11-dev ca-certificates curl file
 fi
 
 # 1. Compile RigRoom in Release mode
@@ -105,7 +105,7 @@ done
 echo "--> Bundling dynamic shared libraries into AppDir..."
 mkdir -p "${APP_DIR}/usr/lib"
 
-EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcurl|libdbus-1|libpcre2-(8|32|posix)\.so"
+EXCLUDE_REGEX="libc\.so|libm\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libpipewire|libjack|libspa|libglib-2\.0|libgobject-2\.0|libgio-2\.0|libgmodule-2\.0|libsystemd|libselinux|libresolv|libmount|libblkid|libcom_err|libk5crypto|libgssapi_krb5|libkrb5|libkrb5support|libkeyutils|libz\.so|libffi|libcurl|libdbus-1|libpcre2-(8|32|posix)\.so|libssl\.so|libcrypto\.so"
 
 copy_library() {
     local source="$1"
@@ -149,12 +149,15 @@ for pass in 1 2; do
     done
 done
 
-# Bundle OpenSSL explicitly: Qt6 Network loads it dynamically (not visible to ldd)
+# OpenSSL goes in the fallback directory, which AppRun puts after the host's
+# libraries: Qt needs it for HTTPS, but native plugins loaded into RigRoom
+# (e.g. through the host's libcurl) need the host's newer OpenSSL 3.x.
+mkdir -p "${APP_DIR}/usr/lib/fallback"
 for libdir in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib; do
     for libbase in libssl libcrypto; do
         for candidate in "$libdir/${libbase}".so.*; do
-            if [ -f "$candidate" ]; then
-                copy_library "$candidate"
+            if [ -f "$candidate" ] && [ ! -e "${APP_DIR}/usr/lib/fallback/$(basename "$candidate")" ]; then
+                cp -L "$candidate" "${APP_DIR}/usr/lib/fallback/"
             fi
         done
     done
@@ -179,16 +182,36 @@ if [ -f "${SCRIPT_DIR}/org.rigroom.RigRoom.appdata.xml" ]; then
     cp "${SCRIPT_DIR}/org.rigroom.RigRoom.appdata.xml" "${APP_DIR}/usr/share/metainfo/org.rigroom.RigRoom.appdata.xml"
 fi
 
-# 3. Fetch appimagetool if not available
-APPIMAGETOOL="${ROOT_DIR}/build/appimagetool-x86_64.AppImage"
-if [ ! -f "${APPIMAGETOOL}" ]; then
-    echo "--> Downloading appimagetool..."
-    curl -sL "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -o "${APPIMAGETOOL}"
-    chmod +x "${APPIMAGETOOL}"
-fi
+# 3. Fetch appimagetool and the AppImage runtime, pinned by version and checksum.
+# The type2 runtime is statically linked, so the AppImage no longer needs
+# libfuse2 on the user's system (the old AppImageKit tool did).
+APPIMAGETOOL_VERSION="1.9.1"
+APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+RUNTIME_VERSION="20251108"
+RUNTIME_SHA256="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+APPIMAGETOOL="${ROOT_DIR}/build/appimagetool-${APPIMAGETOOL_VERSION}-x86_64.AppImage"
+RUNTIME_FILE="${ROOT_DIR}/build/runtime-${RUNTIME_VERSION}-x86_64"
+
+fetch_pinned() {
+    local url="$1" file="$2" sha="$3"
+    if [ ! -f "${file}" ] || ! echo "${sha}  ${file}" | sha256sum --check --status; then
+        echo "--> Downloading $(basename "${file}")..."
+        curl -sfL "${url}" -o "${file}.part"
+        if ! echo "${sha}  ${file}.part" | sha256sum --check --status; then
+            echo "ERROR: checksum mismatch for ${url}" >&2
+            rm -f "${file}.part"
+            exit 1
+        fi
+        mv "${file}.part" "${file}"
+    fi
+}
+fetch_pinned "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" \
+    "${APPIMAGETOOL}" "${APPIMAGETOOL_SHA256}"
+fetch_pinned "https://github.com/AppImage/type2-runtime/releases/download/${RUNTIME_VERSION}/runtime-x86_64" \
+    "${RUNTIME_FILE}" "${RUNTIME_SHA256}"
+chmod +x "${APPIMAGETOOL}"
 
 # 4. Generate AppImage
-RAW_APPIMAGE="${ROOT_DIR}/build/RigRoom-raw.AppImage"
 APP_VERSION=$(grep '^#define RIGROOM_VERSION_STRING' "${BUILD_DIR}/Version.h" | cut -d '"' -f 2)
 if [ -z "${APP_VERSION}" ]; then
     echo "ERROR: Could not determine RigRoom version from generated Version.h." >&2
@@ -198,37 +221,10 @@ DIST_DIR="${ROOT_DIR}/dist"
 mkdir -p "${DIST_DIR}"
 OUTPUT_APPIMAGE="${DIST_DIR}/RigRoom-${APP_VERSION}-x86_64.AppImage"
 echo "--> Generating ${OUTPUT_APPIMAGE}..."
+rm -f "${OUTPUT_APPIMAGE}"
+# The build container has no FUSE, so run appimagetool itself extracted.
 export APPIMAGE_EXTRACT_AND_RUN=1
-export NO_APPSTREAM=1
-ARCH=x86_64 "${APPIMAGETOOL}" "${APP_DIR}" "${RAW_APPIMAGE}"
-
-# 5. Create Universal Wrapper with Automatic FUSE 2 Bypass
-echo "--> Packaging Universal Zero-Install AppImage..."
-cat << 'EOF' > "${OUTPUT_APPIMAGE}"
-#!/bin/bash
-# RigRoom Universal AppImage Wrapper
-# Auto-detects missing FUSE 2 library on modern Linux distros (Ubuntu 22.04+, 24.04+, Fedora, Arch)
-SELF="$(readlink -f "$0")"
-if ! ldconfig -p 2>/dev/null | grep -q "libfuse.so.2" && [ ! -f /lib/x86_64-linux-gnu/libfuse.so.2 ] && [ ! -f /usr/lib64/libfuse.so.2 ] && [ ! -f /usr/lib/libfuse.so.2 ]; then
-    export APPIMAGE_EXTRACT_AND_RUN=1
-fi
-SKIP=$(awk '/^__ARCHIVE_FOLLOWS__/ { print NR + 1; exit 0; }' "$SELF")
-tail -n +$SKIP "$SELF" > /tmp/rigroom_exec_$$
-if [ -s /tmp/rigroom_exec_$$ ]; then
-    chmod +x /tmp/rigroom_exec_$$
-    /tmp/rigroom_exec_$$ "$@"
-    RET=$?
-    rm -f /tmp/rigroom_exec_$$
-    exit $RET
-else
-    rm -f /tmp/rigroom_exec_$$
-    exec "$SELF" "$@"
-fi
-exit 0
-__ARCHIVE_FOLLOWS__
-EOF
-
-cat "${RAW_APPIMAGE}" >> "${OUTPUT_APPIMAGE}"
+ARCH=x86_64 "${APPIMAGETOOL}" --no-appstream --runtime-file "${RUNTIME_FILE}" "${APP_DIR}" "${OUTPUT_APPIMAGE}"
 chmod +x "${OUTPUT_APPIMAGE}"
 (cd "${DIST_DIR}" && sha256sum "$(basename "${OUTPUT_APPIMAGE}")") > "${OUTPUT_APPIMAGE}.sha256"
 

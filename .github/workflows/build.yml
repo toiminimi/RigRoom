@@ -30,6 +30,8 @@ jobs:
           submodules: recursive
       - name: Build AppImage
         run: ./packaging/build-appimage.sh
+      - name: Check AppImage
+        run: for f in dist/RigRoom-*.AppImage; do ./packaging/check-appimage.sh "$f"; done
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v6
         with:

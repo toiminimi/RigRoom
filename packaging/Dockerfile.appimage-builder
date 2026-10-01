@@ -14,6 +14,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update \
         libsuil-dev \
         libsecret-1-dev \
         libx11-dev \
+        ca-certificates \
         curl \
         file \
     && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,26 @@
+#!/bin/bash
+# Checks a built AppImage: it must be a real type-2 AppImage (not a script
+# wrapper), and OpenSSL must sit only in usr/lib/fallback, so native plugins
+# loaded into RigRoom get the host's newer OpenSSL.
+# Usage: packaging/check-appimage.sh dist/RigRoom-X.Y.Z-x86_64.AppImage
+set -euo pipefail
+
+appimage="${1:?usage: $0 <file.AppImage>}"
+fail() { echo "check-appimage: $*" >&2; exit 1; }
+
+[ -f "$appimage" ] || fail "$appimage not found"
+[ "$(head -c 4 "$appimage" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ] || fail "$appimage is not an ELF file"
+[ "$(dd if="$appimage" bs=1 skip=8 count=3 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "414902" ] \
+    || fail "$appimage has no AppImage type 2 magic"
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+appimage_path="$(readlink -f "$appimage")"
+(cd "$workdir" && "$appimage_path" --appimage-extract >/dev/null)
+root="$workdir/squashfs-root"
+[ -x "$root/AppRun" ] || fail "no AppRun in $appimage"
+
+bundled_openssl="$(find "$root/usr/lib" -maxdepth 1 \( -name 'libssl.so*' -o -name 'libcrypto.so*' \) -printf '%f ')"
+[ -z "$bundled_openssl" ] || fail "OpenSSL in usr/lib (would shadow the host's for plugins): $bundled_openssl"
+
+echo "check-appimage: $appimage OK"
