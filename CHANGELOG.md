@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 - 2026-10-01
 
 - Presets and plugin presets keep a VST3 plugin's full settings, such as the amp picked in AmpliTube, not only its parameters. Scenes still switch only parameters.
 - A VST3 plugin's window follows changes made in RigRoom (controls, MIDI, scenes), and edits made in the plugin window mark the preset as changed.
