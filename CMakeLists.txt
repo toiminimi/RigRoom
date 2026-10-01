@@ -106,6 +106,8 @@ add_executable(RigRoom
     src/ui/PluginBrowser.h
     src/ui/PluginSearch.cpp
     src/ui/PluginSearch.h
+    src/ui/PluginLoadingOverlay.cpp
+    src/ui/PluginLoadingOverlay.h
     src/ui/PresetBrowser.h
     src/preset/PresetLibrary.cpp
     src/preset/PresetLibrary.h

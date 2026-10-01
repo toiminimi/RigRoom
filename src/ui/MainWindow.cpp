@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "PluginLoadingOverlay.h"
 #include "CredentialStore.h"
 #include "../audio/LV2Host.h"
 #include "../audio/LilvUtil.h"
@@ -100,6 +101,7 @@
 #include <numeric>
 #include <tuple>
 #include <QSet>
+#include <QElapsedTimer>
 
 class AmpPreviewLabel final : public QLabel {
 public:
@@ -501,7 +503,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         startupSlot = lastSlot;
     }
     if (startupSlot >= 0) {
-        loadSlot(startupSlot);
+        // Load once the window is on screen and painted: a preset with slow
+        // plugins (Windows plugins through Wine) would otherwise keep the
+        // whole window hidden until they have loaded.
+        auto* waitForWindow = new QTimer(this);
+        waitForWindow->setInterval(20);
+        connect(waitForWindow, &QTimer::timeout, this, [this, waitForWindow, startupSlot, tries = 0]() mutable {
+            const bool exposed = windowHandle() && windowHandle()->isExposed();
+            if (!exposed && ++tries < 100) return;
+            waitForWindow->stop();
+            waitForWindow->deleteLater();
+            QTimer::singleShot(50, this, [this, startupSlot]() { loadSlot(startupSlot); });
+        });
+        waitForWindow->start();
     } else {
         m_currentSlot = -1;
         m_currentPresetName.clear();
@@ -2216,11 +2230,40 @@ std::shared_ptr<AudioNode> MainWindow::createPluginNode(const std::string& uri) 
                 idx = std::stoul(path.substr(colonPos + 1));
                 path = path.substr(0, colonPos);
             }
-            return std::make_shared<CLAPPluginNode>(path, idx);
+            return loadPluginWithFeedback(info.uri, QString::fromStdString(info.name), [path, idx]() {
+                return std::make_shared<CLAPPluginNode>(path, idx);
+            });
         }
-        return std::make_shared<VST3PluginNode>(info.uri);
+        return loadPluginWithFeedback(info.uri, QString::fromStdString(info.name), [&info]() {
+            return std::make_shared<VST3PluginNode>(info.uri);
+        });
     }
     return nullptr;
+}
+
+std::shared_ptr<AudioNode> MainWindow::loadPluginWithFeedback(
+    const std::string& uri, const QString& name, const std::function<std::shared_ptr<AudioNode>()>& create) {
+    const QString key = QString::fromStdString(uri);
+    const bool bridged = key.contains("/yabridge/") || key.contains("/vstbridge/");
+    const bool showOverlay = bridged || m_slowPluginUris.contains(key);
+    if (showOverlay) {
+        if (!m_loadingOverlay) m_loadingOverlay = new PluginLoadingOverlay(this);
+        m_loadingOverlay->showLoading(name, bridged
+            ? "Windows plugin, starting through Wine. This can take a few seconds."
+            : "This can take a few seconds.");
+        if (m_statusLabel) m_statusLabel->setText("Loading " + name + "\u2026");
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    std::shared_ptr<AudioNode> node = create();
+    if (timer.elapsed() > 500) m_slowPluginUris.insert(key);
+
+    if (showOverlay) {
+        m_loadingOverlay->finish();
+        if (m_statusLabel) m_statusLabel->setText(node && !node->isMissing() ? "Loaded " + name : "Could not load " + name);
+    }
+    return node;
 }
 
 bool MainWindow::addPluginAt(const QString& uri, int row, int col, int insert) {
@@ -4710,7 +4753,11 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                 idx = std::stoul(path.substr(colonPos + 1));
                 path = path.substr(0, colonPos);
             }
-            auto clapNode = std::make_shared<CLAPPluginNode>(path, idx);
+            const QString displayName = nObj.contains("name") ? nObj["name"].toString()
+                                                                : QString::fromStdString(std::filesystem::path(path).stem().string());
+            auto clapNode = std::static_pointer_cast<CLAPPluginNode>(loadPluginWithFeedback(uri, displayName, [&path, idx]() {
+                return std::make_shared<CLAPPluginNode>(path, idx);
+            }));
             if (clapNode->isMissing()) {
                 std::string origName = nObj.contains("name") ? nObj["name"].toString().toStdString() : std::filesystem::path(path).stem().string();
                 node = std::make_shared<MissingPluginNode>(NodeType::CLAPPlugin, uri, origName);
@@ -4736,7 +4783,11 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                     node = clapNode;
                 }
             } else {
-                auto vstNode = std::make_shared<VST3PluginNode>(uri);
+                const QString displayName = nObj.contains("name") ? nObj["name"].toString()
+                                                                    : QString::fromStdString(std::filesystem::path(uri).stem().string());
+                auto vstNode = std::static_pointer_cast<VST3PluginNode>(loadPluginWithFeedback(uri, displayName, [&uri]() {
+                    return std::make_shared<VST3PluginNode>(uri);
+                }));
                 if (vstNode->isMissing()) {
                     std::string origName = nObj.contains("name") ? nObj["name"].toString().toStdString() : std::filesystem::path(uri).stem().string();
                     node = std::make_shared<MissingPluginNode>(NodeType::VST3Plugin, uri, origName);

@@ -29,6 +29,7 @@ class QScrollArea;
 class Tone3000ImageLoader;
 class FootswitchTile;
 class MidiRouter;
+class PluginLoadingOverlay;
 class QMenu;
 
 class MainWindow : public QMainWindow {
@@ -131,6 +132,10 @@ private:
     // Opens the plugin browser; returns the chosen URI or an empty string.
     QString choosePlugin();
     std::shared_ptr<AudioNode> createPluginNode(const std::string& uri);
+    // Runs `create` behind a loading overlay when the plugin is known to load
+    // slowly (bridged Windows plugins, or slow earlier in this session).
+    std::shared_ptr<AudioNode> loadPluginWithFeedback(const std::string& uri, const QString& name,
+                                                      const std::function<std::shared_ptr<AudioNode>()>& create);
     // Creates the plugin and places it (insert = open a column there).
     bool addPluginAt(const QString& uri, int row, int col, int insert);
     // Adds after the last block of the main lane.
@@ -287,6 +292,8 @@ public:
         std::string license;
     };
     std::vector<PluginInfo> m_availablePlugins;
+    PluginLoadingOverlay* m_loadingOverlay = nullptr;
+    QSet<QString> m_slowPluginUris;
     // Plugin GUI previews (experimental, off by default).
     class PluginPreviewService* m_previewService = nullptr;
     bool m_pluginPreviewsEnabled = false;
