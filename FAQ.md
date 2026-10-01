@@ -59,7 +59,21 @@ with it.
 In `winecfg`, Graphics tab, untick "Allow the window manager to decorate the
 windows" and "Allow the window manager to control the windows".
 
+### A plugin window opens at the wrong size
+
+Some Windows plugins (for example AmpliTube 5 through vstbridge on some
+systems) draw at the wrong size until the window is resized. Drag a corner of
+the window a little.
+
 ### RigRoom closed when I loaded a Windows plugin
 
 Some plugins crash under Wine (BIAS FX 2, for example), and RigRoom may close
 with them. Save your preset before trying a new Windows plugin.
+
+## AppImage
+
+### The AppImage doesn't start and mentions FUSE
+
+The AppImage mounts itself with FUSE, which desktop distributions include.
+Without it (for example in a container), start it with
+`./RigRoom-<version>-x86_64.AppImage --appimage-extract-and-run`.

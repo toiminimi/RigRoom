@@ -78,6 +78,11 @@ and play it from a MIDI footswitch.
   into a block.
 - **Browse by creator** and open a creator's profile.
 
+![Your capture library](Screenshots/Capture_library.png)
+
+- **Capture library** with your own folders, tags and ratings for the
+  captures and impulse responses you keep.
+
 ### Audio engine
 
 - Runs on **PipeWire-JACK or JACK**, with the block size, ports and gains chosen
@@ -141,6 +146,7 @@ Build dependencies:
 
 Report bugs and suggest features in
 [GitHub Issues](https://github.com/toiminimi/RigRoom/issues/new/choose).
+Known limitations and workarounds are in the [FAQ](FAQ.md).
 
 ---
 
