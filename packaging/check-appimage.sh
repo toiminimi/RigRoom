@@ -16,6 +16,13 @@ fail() { echo "check-appimage: $*" >&2; exit 1; }
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 appimage_path="$(readlink -f "$appimage")"
+# A downloaded release file has no execute bit; run a copy instead of
+# changing the caller's file.
+if [ ! -x "$appimage_path" ]; then
+    cp "$appimage_path" "$workdir/check.AppImage"
+    chmod +x "$workdir/check.AppImage"
+    appimage_path="$workdir/check.AppImage"
+fi
 (cd "$workdir" && "$appimage_path" --appimage-extract >/dev/null)
 root="$workdir/squashfs-root"
 [ -x "$root/AppRun" ] || fail "no AppRun in $appimage"
