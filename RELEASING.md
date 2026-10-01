@@ -40,8 +40,23 @@ the application version and is bumped only when the preset format changes.
 
 ---
 
+## Branches
+
+`dev` holds work in progress and may be pushed at any time; it must still build.
+`master` is the tested state that source builds and releases come from. Move
+`dev` to `master` with a fast-forward once it was tried in a real run and the
+tests pass:
+
+```bash
+git switch master && git merge --ff-only dev && git push && git switch dev
+```
+
+---
+
 ## Step-by-Step Release Process (Project Owner Execution)
 
+0. **Work on `dev`**: commit the version changes below there, then promote `dev`
+   to `master` (see Branches) and tag from `master`.
 1. **Update `CMakeLists.txt`**: change `project(RigRoom VERSION ...)`.
 2. **Add a `CHANGELOG.md` section** for the new version, dated.
 3. **Add a `<release>` entry** to `packaging/org.rigroom.RigRoom.appdata.xml`,

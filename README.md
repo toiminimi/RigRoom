@@ -123,6 +123,8 @@ To build one yourself (Docker or Podman is used when available):
 
 ### From source
 
+`master` is the tested state; work in progress lives on the `dev` branch.
+
 ```bash
 git clone --recurse-submodules https://github.com/toiminimi/RigRoom.git
 cd RigRoom
