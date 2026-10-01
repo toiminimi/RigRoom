@@ -2,14 +2,17 @@
 
 ## Unreleased
 
-- Fixed: RigRoom could crash on exit when a Windows plugin's bridge had already stopped.
-- Plugins that take a while to load, such as Windows plugins running through yabridge, show which plugin is loading instead of RigRoom just freezing. At startup the window now appears first and the last preset loads into it.
-- Fixed: editors of some Windows VST3 plugins bridged with vstbridge opened as a blank window.
-- Presets and plugin presets now keep the full settings of VST3 plugins, including everything that is not a parameter, such as the amp chosen in AmpliTube. Scenes still switch only parameters.
-- When you assign a control to one of a VST3 plugin's generic slots (such as "Param 1") and the plugin renames the slot, RigRoom's parameter list shows the new name.
-- Fixed: a VST3 plugin's own window did not follow parameter changes made in RigRoom (its controls, MIDI, scenes or presets).
-- Changing a parameter in a VST3 plugin's own window, or a change the plugin reports itself, now marks the preset as changed.
-- VST3 plugins list only the parameters meant for the host. Many plugins (for example Amp Locker, AmpliTube, ToneLib-GFX) also report about 2000 internal "MIDI CC" entries; these are no longer shown, which makes such plugins quicker to load and their parameter list usable.
+- Presets and plugin presets keep a VST3 plugin's full settings, such as the amp picked in AmpliTube, not only its parameters. Scenes still switch only parameters.
+- A VST3 plugin's window follows changes made in RigRoom (controls, MIDI, scenes), and edits made in the plugin window mark the preset as changed.
+- VST3 plugins show only the parameters meant for the host; many plugins also list ~2000 internal "MIDI CC" entries, which made them slow to add and their parameter list unusable.
+- Generic plugin slots such as "Param 1" show their new name once you assign a control to them in the plugin.
+- Slow plugins (Windows plugins through Wine) show a loading card instead of RigRoom just freezing, and at startup the window opens before the last preset loads.
+- The AppImage is now a standard AppImage: it needs no libfuse2, no longer copies itself to /tmp at start, and works with AppImage tools.
+- Fixed: the editor of some Windows VST3 plugins (vstbridge) opened as a blank window.
+- Fixed (AppImage): native plugins using the system's libcurl, such as Amp Locker, failed to load.
+- Fixed (AppImage): TONE3000 images didn't show on distros other than Ubuntu.
+- Fixed (AppImage): RigRoom didn't start on systems without JACK.
+- Fixed: RigRoom could crash on exit after a Windows plugin's bridge had stopped.
 
 ## 0.12.0 - 2026-09-21
 
