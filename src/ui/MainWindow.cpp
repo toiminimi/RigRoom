@@ -510,6 +510,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    // Plugin windows hold raw node pointers and call back into this window;
+    // close them while the nodes and members still exist.
+    m_isLoadingPreset = true;
+    closeAllPluginUIs();
     if (m_currentDownloadReply) {
         m_currentDownloadReply->abort();
         m_currentDownloadReply->deleteLater();
@@ -1987,6 +1991,10 @@ bool MainWindow::savePluginPreset(const std::shared_ptr<AudioNode>& node, const 
         {"pluginName", QString::fromStdString(node->getName())},
         {"parameters", parameters}
     };
+    const std::string pluginState = node->saveState();
+    if (!pluginState.empty()) {
+        preset["plugin_state"] = QString::fromLatin1(QByteArray::fromStdString(pluginState).toBase64());
+    }
     const QString modelPath = QString::fromStdString(node->getModelFilePath());
     QString modelFileName;
     if (!modelPath.isEmpty()) {
@@ -2064,6 +2072,12 @@ bool MainWindow::loadPluginPreset(const std::shared_ptr<AudioNode>& node, const 
     if (!document.isObject()) return false;
     const QJsonObject preset = document.object();
     if (preset.value("pluginUri").toString() != QString::fromStdString(node->getPluginURI())) return false;
+    const QByteArray pluginState = QByteArray::fromBase64(preset.value("plugin_state").toString().toLatin1());
+    if (!pluginState.isEmpty()) {
+        m_engine.suspendProcessing();
+        node->restoreState(pluginState.toStdString());
+        m_engine.resumeProcessing();
+    }
     for (const QJsonValue& value : preset.value("parameters").toArray()) {
         const QJsonObject parameter = value.toObject();
         node->setParameter(parameter.value("index").toInt(), static_cast<float>(parameter.value("value").toDouble()));
@@ -4562,6 +4576,12 @@ void MainWindow::savePresetToFile(const QString& path) {
                     }
                 }
                 nodeObj["parameters"] = paramsArray;
+
+                const std::string pluginState = node->saveState();
+                if (!pluginState.empty()) {
+                    nodeObj["plugin_state"] = QString::fromLatin1(
+                        QByteArray::fromStdString(pluginState).toBase64());
+                }
                 nodesArray.append(nodeObj);
             }
         }
@@ -4761,6 +4781,12 @@ void MainWindow::loadPresetFromFile(const QString& path) {
                 node->setFileProperty(u, val);
             }
             
+            // The plugin's own state first, so saved parameter values apply on top.
+            const QByteArray pluginState = QByteArray::fromBase64(nObj["plugin_state"].toString().toLatin1());
+            if (!pluginState.isEmpty()) {
+                node->restoreState(pluginState.toStdString());
+            }
+
             QJsonArray paramsArray = nObj["parameters"].toArray();
             for (int j = 0; j < paramsArray.size(); ++j) {
                 QJsonObject pObj = paramsArray[j].toObject();
@@ -5123,8 +5149,22 @@ public:
         QWindow* foreignWin = QWindow::fromWinId(m_x11Container);
         m_containerWidget = QWidget::createWindowContainer(foreignWin, this);
         layout->addWidget(m_containerWidget);
+
+        // Mirror parameter changes made in RigRoom (controls, MIDI, scenes,
+        // presets) into the plugin GUI, like the LV2 UI port sync.
+        m_node->syncControllerParams();
+        m_node->clearStateDirty();
+        auto* paramSyncTimer = new QTimer(this);
+        connect(paramSyncTimer, &QTimer::timeout, this, [this]() {
+            // Changes the plugin reported first (e.g. a slot was assigned and
+            // renamed), then RigRoom's own changes.
+            if (m_node->applyPendingRestart() && m_onParamNamesChanged) m_onParamNamesChanged();
+            m_node->syncControllerParams();
+            if (m_node->takeStateDirty() && m_onPluginEdited) m_onPluginEdited();
+        });
+        paramSyncTimer->start(100);
     }
-    
+
     ~VST3PluginUIWindow() override {
         std::cout << "VST3Host: ~VST3PluginUIWindow() destructor called!" << std::endl;
         if (m_plugView) {
@@ -5143,7 +5183,9 @@ public:
     }
 
     AudioNode* getNode() const { return m_node; }
-    
+    void setOnParamNamesChanged(std::function<void()> callback) { m_onParamNamesChanged = std::move(callback); }
+    void setOnPluginEdited(std::function<void()> callback) { m_onPluginEdited = std::move(callback); }
+
 protected:
     void resizeEvent(QResizeEvent* event) override {
         QDialog::resizeEvent(event);
@@ -5214,10 +5256,11 @@ private:
                 unsigned long numItems = 0;
                 unsigned long bytesAfter = 0;
                 unsigned char* data = nullptr;
-                XGetWindowProperty(m_dpy, child, xembedInfo, 0, 2, False, xembedInfo,
+                // Any type: clients normally use _XEMBED_INFO, some CARDINAL.
+                XGetWindowProperty(m_dpy, child, xembedInfo, 0, 2, False, AnyPropertyType,
                                    &actualType, &actualFormat, &numItems, &bytesAfter, &data);
                 if (data) XFree(data);
-                if (actualType != xembedInfo || numItems < 2) continue;
+                if (actualType == None || actualFormat != 32 || numItems < 2) continue;
 
                 XEvent ev;
                 std::memset(&ev, 0, sizeof(ev));
@@ -5248,6 +5291,8 @@ private:
     
 private:
     VST3PluginNode* m_node;
+    std::function<void()> m_onParamNamesChanged;
+    std::function<void()> m_onPluginEdited;
     Steinberg::IPlugView* m_plugView;
     bool m_attached;
     bool m_resizable;
@@ -5258,6 +5303,26 @@ private:
     Display* m_dpy;
     bool m_ownsDisplay;
 };
+
+void MainWindow::openVST3Editor(VST3PluginNode* node) {
+    auto* uiWin = new VST3PluginUIWindow(node, this);
+    // Assigning a control to one of the plugin's generic slots can rename it;
+    // rebuild the parameter list if it shows this plugin.
+    uiWin->setOnParamNamesChanged([this, node]() {
+        if (m_parameterControlNode.get() != node) return;
+        const int scroll = m_paramScroll ? m_paramScroll->verticalScrollBar()->value() : 0;
+        showPluginControls(m_parameterControlNode);
+        QTimer::singleShot(0, this, [this, scroll]() {
+            if (m_paramScroll) m_paramScroll->verticalScrollBar()->setValue(scroll);
+        });
+    });
+    // Changes inside the plugin (e.g. another amp in Amp Locker) are preset
+    // edits, like moving one of RigRoom's own controls.
+    uiWin->setOnPluginEdited([this]() {
+        if (!m_isLoadingPreset) setUnsavedChanges(true);
+    });
+    uiWin->show();
+}
 
 class CLAPPluginUIWindow : public QDialog {
 public:
@@ -6130,8 +6195,7 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
         
         connect(uiBtn, &QPushButton::clicked, this, [this, vst3Node]() {
             if (raisePluginUIForNode(vst3Node)) return;
-            auto* uiWin = new VST3PluginUIWindow(vst3Node, this);
-            uiWin->show();
+            openVST3Editor(vst3Node);
         });
         
     }
@@ -6947,8 +7011,7 @@ void MainWindow::onPluginDoubleClicked(std::shared_ptr<AudioNode> node) {
 
     if (auto* vst3Node = dynamic_cast<VST3PluginNode*>(node.get())) {
         if (vst3Node->hasEditor()) {
-            auto* uiWin = new VST3PluginUIWindow(vst3Node, this);
-            uiWin->show();
+            openVST3Editor(vst3Node);
             return;
         }
     }

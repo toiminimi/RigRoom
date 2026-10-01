@@ -123,6 +123,12 @@ public:
         return n;
     }
     
+    // The plugin's own state (everything it saves itself, not only the
+    // parameters), stored with presets. Empty if the node does not support it.
+    // Restore with audio processing suspended.
+    virtual std::string saveState() { return {}; }
+    virtual bool restoreState(const std::string& state) { (void)state; return false; }
+
     // Set a control parameter value safely from the GUI thread
     virtual void setParameter(uint32_t index, float value) {
         for (auto& port : m_controlPorts) {

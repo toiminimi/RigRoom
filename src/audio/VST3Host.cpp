@@ -1,4 +1,5 @@
 #include "VST3Host.h"
+#include <exception>
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
@@ -110,6 +111,12 @@ public:
     Steinberg::tresult PLUGIN_API tell(Steinberg::int64* pos) override {
         if (pos) *pos = m_pos;
         return Steinberg::kResultOk;
+    }
+
+    std::string bytes() const { return std::string(m_data.begin(), m_data.end()); }
+    void setBytes(const std::string& bytes) {
+        m_data.assign(bytes.begin(), bytes.end());
+        m_pos = 0;
     }
 
 private:
@@ -263,12 +270,7 @@ public:
     }
     Steinberg::tresult PLUGIN_API performEdit(Steinberg::Vst::ParamID id, Steinberg::Vst::ParamValue valueNormalized) override {
         if (m_node) {
-            for (auto& port : m_node->getControlPorts()) {
-                if (port.index == id) {
-                    port.value = valueNormalized;
-                    break;
-                }
-            }
+            m_node->onControllerEdit(id, valueNormalized);
         }
         return Steinberg::kResultOk;
     }
@@ -276,11 +278,13 @@ public:
         return Steinberg::kResultOk;
     }
     Steinberg::tresult PLUGIN_API restartComponent(Steinberg::int32 flags) override {
+        if (m_node) m_node->requestRestart(flags);
         return Steinberg::kResultOk;
     }
 
     // IComponentHandler2
     Steinberg::tresult PLUGIN_API setDirty(Steinberg::TBool state) override {
+        if (state && m_node) m_node->markStateDirty();
         return Steinberg::kResultOk;
     }
     Steinberg::tresult PLUGIN_API requestOpenEditor(Steinberg::FIDString name) override {
@@ -953,10 +957,18 @@ VST3PluginNode::VST3PluginNode(const std::string& path) : m_path(path) {
     if (m_controller) {
         Steinberg::Vst::IEditController* controller = (Steinberg::Vst::IEditController*)m_controller;
         int paramCount = controller->getParameterCount();
-        std::cout << "VST3Host: Detected " << paramCount << " parameters." << std::endl;
+        std::cout << "VST3Host: Plugin reports " << paramCount << " parameters." << std::endl;
         for (int i = 0; i < paramCount; ++i) {
             Steinberg::Vst::ParameterInfo info;
             if (controller->getParameterInfo(i, info) == Steinberg::kResultOk) {
+                // Skip parameters a host is not meant to show: hidden ones and
+                // ones that are neither automatable nor read-only meters. JUCE
+                // plugins add 2080 such "MIDI CC ch|cc" proxy parameters.
+                const bool hidden = (info.flags & Steinberg::Vst::ParameterInfo::kIsHidden) != 0;
+                const bool usable = (info.flags & (Steinberg::Vst::ParameterInfo::kCanAutomate |
+                                                   Steinberg::Vst::ParameterInfo::kIsReadOnly)) != 0;
+                if (hidden || !usable) continue;
+
                 std::string name = "";
                 for (int j = 0; j < 128 && info.title[j] != 0; ++j) {
                     name += (char)info.title[j];
@@ -973,11 +985,12 @@ VST3PluginNode::VST3PluginNode(const std::string& path) : m_path(path) {
                 
                 m_controlPorts.push_back(port);
                 m_lastParamValues.push_back(info.defaultNormalizedValue);
+                m_controllerParamValues.push_back(info.defaultNormalizedValue);
             }
         }
     }
 
-    if (m_controlPorts.empty()) {
+    if (m_controlPorts.empty() && !m_controller) {
         ControlPort ctrl1;
         ctrl1.name = "Gain";
         ctrl1.index = 0;
@@ -1007,58 +1020,66 @@ VST3PluginNode::VST3PluginNode(const std::string& path) : m_path(path) {
 }
 
 VST3PluginNode::~VST3PluginNode() {
-    // Disconnect connection points
-    Steinberg::Vst::IConnectionPoint* compCP = nullptr;
-    Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
-    if (m_component && m_controller) {
-        Steinberg::tresult compCPRes = ((Steinberg::FUnknown*)m_component)->queryInterface(Steinberg::Vst::IConnectionPoint::iid, (void**)&compCP);
-        if (compCPRes != Steinberg::kResultOk || !compCP) {
-            char swapped[16];
-            std::memcpy(swapped, Steinberg::Vst::IConnectionPoint::iid.toTUID(), 16);
-            std::swap(swapped[0], swapped[3]);
-            std::swap(swapped[1], swapped[2]);
-            std::swap(swapped[4], swapped[5]);
-            std::swap(swapped[6], swapped[7]);
-            compCPRes = ((Steinberg::FUnknown*)m_component)->queryInterface(swapped, (void**)&compCP);
-        }
+    // A bridged plugin (yabridge) throws if its host process already died;
+    // don't let that escape the destructor and abort RigRoom on exit.
+    try {
+        // Disconnect connection points
+        Steinberg::Vst::IConnectionPoint* compCP = nullptr;
+        Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
+        if (m_component && m_controller) {
+            Steinberg::tresult compCPRes = ((Steinberg::FUnknown*)m_component)->queryInterface(Steinberg::Vst::IConnectionPoint::iid, (void**)&compCP);
+            if (compCPRes != Steinberg::kResultOk || !compCP) {
+                char swapped[16];
+                std::memcpy(swapped, Steinberg::Vst::IConnectionPoint::iid.toTUID(), 16);
+                std::swap(swapped[0], swapped[3]);
+                std::swap(swapped[1], swapped[2]);
+                std::swap(swapped[4], swapped[5]);
+                std::swap(swapped[6], swapped[7]);
+                compCPRes = ((Steinberg::FUnknown*)m_component)->queryInterface(swapped, (void**)&compCP);
+            }
         
-        Steinberg::tresult ctrlCPRes = ((Steinberg::FUnknown*)m_controller)->queryInterface(Steinberg::Vst::IConnectionPoint::iid, (void**)&ctrlCP);
-        if (ctrlCPRes != Steinberg::kResultOk || !ctrlCP) {
-            char swapped[16];
-            std::memcpy(swapped, Steinberg::Vst::IConnectionPoint::iid.toTUID(), 16);
-            std::swap(swapped[0], swapped[3]);
-            std::swap(swapped[1], swapped[2]);
-            std::swap(swapped[4], swapped[5]);
-            std::swap(swapped[6], swapped[7]);
-            ctrlCPRes = ((Steinberg::FUnknown*)m_controller)->queryInterface(swapped, (void**)&ctrlCP);
-        }
+            Steinberg::tresult ctrlCPRes = ((Steinberg::FUnknown*)m_controller)->queryInterface(Steinberg::Vst::IConnectionPoint::iid, (void**)&ctrlCP);
+            if (ctrlCPRes != Steinberg::kResultOk || !ctrlCP) {
+                char swapped[16];
+                std::memcpy(swapped, Steinberg::Vst::IConnectionPoint::iid.toTUID(), 16);
+                std::swap(swapped[0], swapped[3]);
+                std::swap(swapped[1], swapped[2]);
+                std::swap(swapped[4], swapped[5]);
+                std::swap(swapped[6], swapped[7]);
+                ctrlCPRes = ((Steinberg::FUnknown*)m_controller)->queryInterface(swapped, (void**)&ctrlCP);
+            }
         
-        if (compCP && ctrlCP) {
-            compCP->disconnect(ctrlCP);
-            ctrlCP->disconnect(compCP);
+            if (compCP && ctrlCP) {
+                compCP->disconnect(ctrlCP);
+                ctrlCP->disconnect(compCP);
+            }
+            if (compCP) compCP->release();
+            if (ctrlCP) ctrlCP->release();
         }
-        if (compCP) compCP->release();
-        if (ctrlCP) ctrlCP->release();
-    }
 
-    if (m_plugView) {
-        m_plugView->release();
-    }
-    if (m_controller) {
-        Steinberg::Vst::IEditController* controller = (Steinberg::Vst::IEditController*)m_controller;
-        controller->terminate();
-        controller->release();
-    }
-    if (m_processor) {
-        Steinberg::Vst::IAudioProcessor* processor = (Steinberg::Vst::IAudioProcessor*)m_processor;
-        processor->setProcessing(false);
-        processor->release();
-    }
-    if (m_component) {
-        Steinberg::Vst::IComponent* component = (Steinberg::Vst::IComponent*)m_component;
-        component->setActive(false);
-        component->terminate();
-        component->release();
+        if (m_plugView) {
+            m_plugView->release();
+        }
+        if (m_controller) {
+            Steinberg::Vst::IEditController* controller = (Steinberg::Vst::IEditController*)m_controller;
+            controller->terminate();
+            controller->release();
+        }
+        if (m_processor) {
+            Steinberg::Vst::IAudioProcessor* processor = (Steinberg::Vst::IAudioProcessor*)m_processor;
+            processor->setProcessing(false);
+            processor->release();
+        }
+        if (m_component) {
+            Steinberg::Vst::IComponent* component = (Steinberg::Vst::IComponent*)m_component;
+            component->setActive(false);
+            component->terminate();
+            component->release();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "VST3Host: error while releasing plugin: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "VST3Host: unknown error while releasing plugin" << std::endl;
     }
     if (m_paramChanges) {
         delete (ParameterChanges*)m_paramChanges;
@@ -1079,7 +1100,11 @@ VST3PluginNode::~VST3PluginNode() {
         ModuleExitProc moduleExit = (ModuleExitProc)dlsym(m_libHandle, "ModuleExit");
         if (moduleExit) {
             std::cout << "VST3Host: Calling ModuleExit..." << std::endl;
-            moduleExit();
+            try {
+                moduleExit();
+            } catch (...) {
+                std::cerr << "VST3Host: error in ModuleExit" << std::endl;
+            }
         }
         dlclose(m_libHandle);
     }
@@ -1208,6 +1233,157 @@ void VST3PluginNode::releasePlugView() {
         m_plugView = nullptr;
         std::cout << "VST3Host: Released cached plugView pointer." << std::endl;
     }
+}
+
+void VST3PluginNode::onControllerEdit(uint32_t paramId, float normalized) {
+    for (size_t i = 0; i < m_controlPorts.size(); ++i) {
+        if (m_controlPorts[i].index == paramId) {
+            m_controlPorts[i].value = normalized;
+            // The controller already has this value; don't echo it back.
+            if (i < m_controllerParamValues.size()) m_controllerParamValues[i] = normalized;
+            markStateDirty();
+            break;
+        }
+    }
+}
+
+bool VST3PluginNode::syncControllerParams() {
+    if (!m_controller) return false;
+    Steinberg::Vst::IEditController* controller = (Steinberg::Vst::IEditController*)m_controller;
+    bool pushed = false;
+    for (size_t i = 0; i < m_controlPorts.size() && i < m_controllerParamValues.size(); ++i) {
+        const ControlPort& port = m_controlPorts[i];
+        if (port.isOutput || port.value == m_controllerParamValues[i]) continue;
+        controller->setParamNormalized(port.index, port.value);
+        m_controllerParamValues[i] = port.value;
+        pushed = true;
+    }
+    // A plugin may flag itself dirty when the host sets a value (scene
+    // switch, MIDI); that is not an edit to save.
+    if (pushed) clearStateDirty();
+    return pushed;
+}
+
+void VST3PluginNode::readParamsFromController() {
+    if (!m_controller) return;
+    Steinberg::Vst::IEditController* controller = (Steinberg::Vst::IEditController*)m_controller;
+    for (size_t i = 0; i < m_controlPorts.size() && i < m_controllerParamValues.size(); ++i) {
+        const float v = static_cast<float>(controller->getParamNormalized(m_controlPorts[i].index));
+        m_controlPorts[i].value = v;
+        m_controllerParamValues[i] = v;
+    }
+}
+
+bool VST3PluginNode::applyPendingRestart() {
+    const int32_t flags = m_pendingRestartFlags.exchange(0);
+    if (!flags || !m_controller) return false;
+    Steinberg::Vst::IEditController* controller = (Steinberg::Vst::IEditController*)m_controller;
+
+    bool namesChanged = false;
+    if (flags & Steinberg::Vst::kParamTitlesChanged) {
+        const int count = controller->getParameterCount();
+        for (int i = 0; i < count; ++i) {
+            Steinberg::Vst::ParameterInfo info;
+            if (controller->getParameterInfo(i, info) != Steinberg::kResultOk) continue;
+            for (auto& port : m_controlPorts) {
+                if (port.index != info.id) continue;
+                std::string name;
+                for (int j = 0; j < 128 && info.title[j] != 0; ++j) name += (char)info.title[j];
+                if (port.name != name) {
+                    port.name = name;
+                    namesChanged = true;
+                }
+                break;
+            }
+        }
+    }
+    // The plugin changed values itself (e.g. loaded one of its own presets).
+    if (flags & Steinberg::Vst::kParamValuesChanged) {
+        readParamsFromController();
+        markStateDirty();
+    }
+    return namesChanged;
+}
+
+std::string VST3PluginNode::saveState() {
+    if (!m_component) return {};
+    Steinberg::Vst::IComponent* component = (Steinberg::Vst::IComponent*)m_component;
+    MemoryStream* compStream = new MemoryStream();
+    const bool compOk = component->getState(compStream) == Steinberg::kResultOk;
+    const std::string compBytes = compStream->bytes();
+    compStream->release();
+    if (!compOk) return {};
+
+    std::string ctrlBytes;
+    if (m_controller) {
+        MemoryStream* ctrlStream = new MemoryStream();
+        if (((Steinberg::Vst::IEditController*)m_controller)->getState(ctrlStream) == Steinberg::kResultOk)
+            ctrlBytes = ctrlStream->bytes();
+        ctrlStream->release();
+    }
+
+    // "VST3S1", then the component and controller states, each prefixed with
+    // its length as a little-endian uint32.
+    auto putLength = [](std::string& out, uint32_t n) {
+        for (int b = 0; b < 4; ++b) out.push_back(static_cast<char>((n >> (8 * b)) & 0xff));
+    };
+    std::string blob = "VST3S1";
+    putLength(blob, static_cast<uint32_t>(compBytes.size()));
+    blob += compBytes;
+    putLength(blob, static_cast<uint32_t>(ctrlBytes.size()));
+    blob += ctrlBytes;
+    return blob;
+}
+
+bool VST3PluginNode::restoreState(const std::string& blob) {
+    if (!m_component || blob.compare(0, 6, "VST3S1") != 0) return false;
+    size_t pos = 6;
+    auto takePart = [&blob, &pos](std::string& part) {
+        if (pos + 4 > blob.size()) return false;
+        uint32_t n = 0;
+        for (int b = 0; b < 4; ++b) n |= static_cast<uint32_t>(static_cast<unsigned char>(blob[pos + b])) << (8 * b);
+        pos += 4;
+        if (pos + n > blob.size()) return false;
+        part = blob.substr(pos, n);
+        pos += n;
+        return true;
+    };
+    std::string compBytes, ctrlBytes;
+    if (!takePart(compBytes) || !takePart(ctrlBytes)) return false;
+
+    Steinberg::Vst::IComponent* component = (Steinberg::Vst::IComponent*)m_component;
+    MemoryStream* compStream = new MemoryStream();
+    compStream->setBytes(compBytes);
+    const bool ok = component->setState(compStream) == Steinberg::kResultOk;
+    if (!ok) {
+        // Leave the controller alone, so the plugin's window and sound agree.
+        compStream->release();
+        std::cerr << "VST3Host: plugin rejected the saved state (" << compBytes.size() << " bytes)" << std::endl;
+        return false;
+    }
+    if (m_controller) {
+        Steinberg::Vst::IEditController* controller = (Steinberg::Vst::IEditController*)m_controller;
+        compStream->seek(0, Steinberg::IBStream::kIBSeekSet);
+        controller->setComponentState(compStream);
+        if (!ctrlBytes.empty()) {
+            MemoryStream* ctrlStream = new MemoryStream();
+            ctrlStream->setBytes(ctrlBytes);
+            controller->setState(ctrlStream);
+            ctrlStream->release();
+        }
+    }
+    compStream->release();
+
+    // Ports now mirror the restored state; don't resend them to the plugin.
+    readParamsFromController();
+    for (size_t i = 0; i < m_controlPorts.size() && i < m_lastParamValues.size(); ++i)
+        m_lastParamValues[i] = m_controlPorts[i].value;
+    // Loading a state is not an edit; drop what the plugin reported meanwhile.
+    m_pendingRestartFlags.store(0);
+    clearStateDirty();
+    std::cout << "VST3Host: Restored plugin state (" << compBytes.size() << " + " << ctrlBytes.size()
+              << " bytes)" << std::endl;
+    return true;
 }
 
 bool VST3PluginNode::hasEditor() const {

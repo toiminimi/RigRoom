@@ -62,6 +62,7 @@ private slots:
     void applyInspectorHeight();
     void showPluginControls(std::shared_ptr<AudioNode> node);
     void onPluginDoubleClicked(std::shared_ptr<AudioNode> node);
+    void openVST3Editor(class VST3PluginNode* node);
     void onPlusButtonClicked(int row, int col, QPoint screenPos, int insert);
     void onInputHardwareChanged(int index);
     void onOutputHardwareChanged(int index);
