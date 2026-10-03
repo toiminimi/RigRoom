@@ -323,22 +323,6 @@ void Tone3000Dialog::buildUi() {
     root->setSpacing(12);
     auto* left = new QVBoxLayout();
     left->setSpacing(8);
-    m_modeSwitch = new QPushButton(m_mode == Mode::Ir ? QString::fromUtf8("⇄  Amp & pedal captures")
-                                                      : QString::fromUtf8("⇄  Impulse responses"), this);
-    m_modeSwitch->setFixedWidth(200);
-    m_modeSwitch->setCursor(Qt::PointingHandCursor);
-    m_modeSwitch->setAutoDefault(false);
-    m_modeSwitch->setToolTip(m_mode == Mode::Ir ? "Choose a NAM capture for this block instead"
-                                                : "Choose an impulse response (cab, room, effect) for this block instead");
-    m_modeSwitch->setStyleSheet(
-        "QPushButton { background-color: #1D3A4A; color: #CFEFFF; border: 1px solid #2E5A70; border-radius: 6px; padding: 7px; font-weight: bold; }"
-        "QPushButton:hover { background-color: #23506A; }");
-    m_modeSwitch->hide();
-    connect(m_modeSwitch, &QPushButton::clicked, this, [this]() {
-        m_modeSwitchRequested = true;
-        reject();
-    });
-    left->addWidget(m_modeSwitch);
     left->addWidget(buildTabs());
     left->addWidget(buildSidebar(), 1);
     root->addLayout(left);
@@ -1918,10 +1902,6 @@ void Tone3000Dialog::finishLoad(const Transfer& transfer, const QString& path) {
     captures.markUsed(path); // only counts for files in the library
     m_isPreviewing = false;
     accept();
-}
-
-void Tone3000Dialog::enableModeSwitch() {
-    if (m_modeSwitch) m_modeSwitch->show();
 }
 
 void Tone3000Dialog::applyFileToNode(const std::string& path) {

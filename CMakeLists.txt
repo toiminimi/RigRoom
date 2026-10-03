@@ -39,6 +39,8 @@ pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
 if(RIGROOM_CAPTURE_BLOCK)
     set(NAM_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/NeuralAmpModelerCore)
     set(NAM_DSP_TOOLS_DIR ${NAM_CORE_DIR}/Dependencies/AudioDSPTools)
+    # Partitioned FFT convolution for IRs, so long room IRs are not cut short.
+    set(FFT_CONVOLVER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/FFTConvolver)
     if(NOT EXISTS ${NAM_CORE_DIR}/NAM/dsp.h)
         message(FATAL_ERROR "third_party/NeuralAmpModelerCore is missing: run git submodule update --init --recursive, or configure with -DRIGROOM_CAPTURE_BLOCK=OFF")
     endif()
@@ -48,14 +50,18 @@ if(RIGROOM_CAPTURE_BLOCK)
     add_library(rigroom_nam OBJECT
         ${NAM_CORE_SOURCES}
         ${NAM_DSP_TOOLS_DIR}/dsp/dsp.cpp
-        ${NAM_DSP_TOOLS_DIR}/dsp/ImpulseResponse.cpp
         ${NAM_DSP_TOOLS_DIR}/dsp/wav.cpp
+        ${FFT_CONVOLVER_DIR}/AudioFFT.cpp
+        ${FFT_CONVOLVER_DIR}/FFTConvolver.cpp
+        ${FFT_CONVOLVER_DIR}/TwoStageFFTConvolver.cpp
+        ${FFT_CONVOLVER_DIR}/Utilities.cpp
     )
     target_include_directories(rigroom_nam SYSTEM PUBLIC
         ${NAM_CORE_DIR}
         ${NAM_DSP_TOOLS_DIR}
         ${NAM_CORE_DIR}/Dependencies/eigen
         ${NAM_CORE_DIR}/Dependencies/nlohmann
+        ${FFT_CONVOLVER_DIR}
     )
     target_include_directories(rigroom_nam SYSTEM PRIVATE ${NAM_CORE_DIR}/NAM ${NAM_DSP_TOOLS_DIR}/dsp)
     # Float all the way, like the NAM LV2 plugin.
@@ -157,7 +163,10 @@ add_executable(RigRoom
 target_include_directories(RigRoom PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
 if(RIGROOM_CAPTURE_BLOCK)
     target_sources(RigRoom PRIVATE src/audio/CaptureNode.cpp src/audio/CaptureNode.h
-        src/ui/CapturePanel.cpp src/ui/CapturePanel.h)
+        src/ui/CapturePanel.cpp src/ui/CapturePanel.h
+        src/ui/CaptureSounds.cpp src/ui/CaptureSounds.h
+        src/ui/SoundGallery.cpp src/ui/SoundGallery.h
+        src/ui/AddBlockMenu.cpp src/ui/AddBlockMenu.h)
     # Its NAM template instantiations must stay hidden too (see rigroom_nam).
     # -fpermissive: GCC 11 (CI, AppImage) rejects a name reuse in the iPlug2
     # resampler header that newer GCC accepts.

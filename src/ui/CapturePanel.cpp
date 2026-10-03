@@ -1,131 +1,44 @@
 #include "CapturePanel.h"
 #include "../audio/CaptureNode.h"
 #include "InspectorComponents.h"
-#include "NamMetadata.h"
 #include "Tone3000ImageLoader.h"
 #include <QDial>
 #include <QFileInfo>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <cmath>
 
+using namespace CaptureSounds;
+
 namespace {
-constexpr int kArt = 132; // image / artwork size in the cards
-
-QString gearOf(const std::string& raw) {
-    return NamMetadata::normalizedGear(QString::fromStdString(raw));
-}
-
-// IR uploads use their own types (cab, space, pedal, outboard).
-QString irGearOf(const std::string& raw) {
-    const QString g = QString::fromStdString(raw).toLower();
-    if (g.contains("space") || g.contains("room") || g.contains("reverb") || g.contains("hall")) return "space";
-    if (g.contains("pedal")) return "pedal";
-    if (g.contains("outboard")) return "outboard";
-    return "cab";
-}
+constexpr int kHeight = 176;
 
 QString hex(const QColor& c) { return c.name(QColor::HexRgb); }
-
 QString rgba(const QColor& c, double alpha) {
     return QString("rgba(%1,%2,%3,%4)").arg(c.red()).arg(c.green()).arg(c.blue()).arg(alpha);
 }
 
-enum class Art { Amp, Pedal, Cab, Room };
-
-// Drawn when a capture or IR has no picture.
-QPixmap placeholderArt(Art art, const QColor& accent, qreal dpr) {
-    QPixmap pm(QSize(kArt, kArt) * dpr);
-    pm.setDevicePixelRatio(dpr);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    QPainterPath clip;
-    clip.addRoundedRect(QRectF(0, 0, kArt, kArt), 8, 8);
-    p.setClipPath(clip);
-    p.fillRect(QRectF(0, 0, kArt, kArt), QColor("#141518"));
-    if (art == Art::Pedal) {
-        // A stompbox: enclosure, two knobs, a footswitch and its LED.
-        const QRectF box(30, 12, kArt - 60, kArt - 24);
-        p.setPen(QPen(accent.darker(150), 2));
-        p.setBrush(QColor("#1F2126"));
-        p.drawRoundedRect(box, 8, 8);
-        for (int i = 0; i < 2; ++i) {
-            const QPointF k(box.left() + 20 + i * 32, box.top() + 24);
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#0E0F11"));
-            p.drawEllipse(k, 10, 10);
-            p.setPen(QPen(accent.lighter(130), 2));
-            p.drawLine(k, k + QPointF(i ? 5 : -5, -6));
-        }
-        p.setPen(Qt::NoPen);
-        p.setBrush(accent);
-        p.drawEllipse(QPointF(box.center().x(), box.top() + 52), 3.5, 3.5);
-        p.setBrush(QColor("#9AA0A8"));
-        p.drawEllipse(QPointF(box.center().x(), box.bottom() - 24), 11, 11);
-        p.setBrush(QColor("#6C727A"));
-        p.drawEllipse(QPointF(box.center().x(), box.bottom() - 24), 7, 7);
-    } else if (art == Art::Room) {
-        // Reflections spreading from a source.
-        p.setBrush(Qt::NoBrush);
-        const QPointF c(30, kArt / 2.0);
-        for (int i = 1; i <= 5; ++i) {
-            QColor ring = accent;
-            ring.setAlphaF(1.0 - i * 0.16);
-            p.setPen(QPen(ring, 2.5));
-            const qreal r = i * 19.0;
-            p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), -60 * 16, 120 * 16);
-        }
-        p.setPen(Qt::NoPen);
-        p.setBrush(accent);
-        p.drawEllipse(c, 6, 6);
-    } else if (art == Art::Cab) {
-        // Grille cloth with a speaker behind it.
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor("#202227"));
-        for (int y = 6; y < kArt; y += 7)
-            for (int x = (y / 7) % 2 ? 6 : 9; x < kArt; x += 7) p.drawEllipse(QPointF(x, y), 1.4, 1.4);
-        const QPointF c(kArt / 2.0, kArt / 2.0);
-        p.setBrush(Qt::NoBrush);
-        p.setPen(QPen(accent.darker(160), 3));
-        p.drawEllipse(c, 46, 46);
-        p.setPen(QPen(accent.darker(120), 2));
-        p.drawEllipse(c, 30, 30);
-        p.setBrush(accent.darker(130));
-        p.setPen(Qt::NoPen);
-        p.drawEllipse(c, 12, 12);
-    } else {
-        // Amp face: a control strip with knobs over a grille.
-        p.fillRect(QRectF(0, 0, kArt, 46), QColor("#1D1F24"));
-        p.fillRect(QRectF(0, 44, kArt, 3), accent);
-        for (int i = 0; i < 5; ++i) {
-            const QPointF k(18 + i * 24, 23);
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#0E0F11"));
-            p.drawEllipse(k, 8, 8);
-            p.setPen(QPen(accent.lighter(130), 2));
-            p.drawLine(k, k + QPointF(std::cos(-2.2 + i * 0.9) * 6, std::sin(-2.2 + i * 0.9) * 6));
-        }
-        p.setPen(Qt::NoPen);
-        p.setBrush(QColor("#202227"));
-        for (int y = 56; y < kArt; y += 7)
-            for (int x = (y / 7) % 2 ? 6 : 9; x < kArt; x += 7) p.drawEllipse(QPointF(x, y), 1.4, 1.4);
-    }
-    return pm;
+bool irOn(CaptureNode& node) {
+    for (const auto& p : node.getControlPorts())
+        if (p.index == CaptureNode::CabEnabled) return p.value >= 0.5f;
+    return true;
 }
 
-QLabel* artLabel(QWidget* parent, const std::string& imageUrl, Art kind, const QColor& accent) {
-    auto* art = new QLabel(parent);
-    art->setFixedSize(kArt, kArt);
-    art->setAlignment(Qt::AlignCenter);
-    art->setStyleSheet("QLabel { background: #141518; border-radius: 8px; border: none; }");
-    art->setPixmap(placeholderArt(kind, accent, art->devicePixelRatioF()));
-    if (!imageUrl.empty()) Tone3000ImageLoader::instance()->load(art, QString::fromStdString(imageUrl));
-    return art;
+// The picture, or drawn artwork until (or instead of) it.
+QLabel* art(QWidget* parent, const std::string& imageUrl, Type type, int size) {
+    auto* label = new QLabel(parent);
+    label->setFixedSize(size, size);
+    label->setAlignment(Qt::AlignCenter);
+    label->setStyleSheet("QLabel { background: #111215; border-radius: 8px; border: none; }");
+    label->setPixmap(artwork(type, QSize(size, size), label->devicePixelRatioF()));
+    if (!imageUrl.empty()) Tone3000ImageLoader::instance()->load(label, QString::fromStdString(imageUrl));
+    return label;
 }
 
 QLabel* chip(QWidget* parent, const QString& text, const QColor& accent) {
@@ -137,134 +50,289 @@ QLabel* chip(QWidget* parent, const QString& text, const QColor& accent) {
     return label;
 }
 
-QPushButton* flatButton(QWidget* parent, const QString& text, const QString& tip) {
+QPushButton* button(QWidget* parent, const QString& text, const QString& tip, const QColor& accent = QColor()) {
     auto* b = new QPushButton(text, parent);
     b->setCursor(Qt::PointingHandCursor);
     b->setToolTip(tip);
-    b->setStyleSheet("QPushButton { background: #24262B; color: #D6DAE0; border: 1px solid #34373E; border-radius: 5px;"
-                     " padding: 4px 10px; font-size: 11px; }"
-                     "QPushButton:hover { background: #2E3137; color: white; }");
+    b->setStyleSheet(accent.isValid()
+        ? QString("QPushButton { background: %1; color: %2; border: 1px solid %3; border-radius: 6px; padding: 5px 12px; font-size: 11px; font-weight: bold; }"
+                  "QPushButton:hover { background: %4; }").arg(rgba(accent, 0.16), hex(accent.lighter(135)), rgba(accent, 0.5), rgba(accent, 0.28))
+        : QString("QPushButton { background: #24262B; color: #D6DAE0; border: 1px solid #34373E; border-radius: 6px; padding: 5px 12px; font-size: 11px; }"
+                  "QPushButton:hover { background: #2E3137; color: white; }"));
     return b;
 }
 
-QFrame* card(QWidget* parent, const QColor& accent, bool dim) {
-    auto* frame = new QFrame(parent);
-    frame->setObjectName("captureCard");
-    frame->setStyleSheet(QString(
-        "QFrame#captureCard { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 %1, stop:1 %2);"
-        " border: 1px solid #30333A; border-top: 3px solid %3; border-radius: 10px; }"
-        "QLabel { border: none; background: transparent; }")
-        .arg(dim ? "#1A1B1E" : "#23252A", dim ? "#141517" : "#17181B", dim ? rgba(accent, 0.35) : hex(accent)));
-    return frame;
+QLabel* text(QWidget* parent, const QString& value, const QString& style, int width) {
+    auto* label = new QLabel(parent);
+    label->setStyleSheet(style + " background: transparent; border: none;");
+    label->setText(QFontMetrics(label->font()).elidedText(value, Qt::ElideRight, width));
+    label->setToolTip(value);
+    return label;
 }
 
-QLabel* elided(QWidget* parent, const QString& text, const QString& style, int width) {
-    auto* label = new QLabel(parent);
-    label->setStyleSheet(style);
-    label->setText(QFontMetrics(label->font()).elidedText(text, Qt::ElideRight, width));
-    label->setToolTip(text);
-    return label;
+QString modelName(const CaptureNode& node) {
+    return !node.getModelDisplayName().empty() ? QString::fromStdString(node.getModelDisplayName())
+                                               : QFileInfo(QString::fromStdString(node.modelPath())).completeBaseName();
+}
+
+QString irName(const CaptureNode& node) {
+    return !node.irInfo().name.empty() ? QString::fromStdString(node.irInfo().name)
+                                       : QFileInfo(QString::fromStdString(node.irPath())).completeBaseName();
 }
 } // namespace
 
-CapturePanel::Kind CapturePanel::kindOf(const CaptureNode& node) {
+QString CapturePanel::blockLabel(const CaptureNode& node) {
     const bool model = !node.modelPath().empty();
     const bool ir = !node.irPath().empty();
-    if (!model) return ir ? Kind::IrOnly : Kind::Empty;
-    const QString gear = gearOf(node.getModelMetadata().gearType);
-    if (gear == "amp") return Kind::Amp;
-    if (gear == "amp-cab") return Kind::AmpCab;
-    if (gear == "pedal") return Kind::Pedal;
-    if (gear == "outboard") return Kind::Outboard;
-    return Kind::Capture;
-}
-
-QString CapturePanel::modelTypeLabel(const CaptureNode& node) {
-    switch (kindOf(node)) {
-    case Kind::Amp: return "Amp";
-    case Kind::AmpCab: return "Amp + Cab";
-    case Kind::Pedal: return "Pedal";
-    case Kind::Outboard: return "Outboard";
-    default: return "Capture";
-    }
-}
-
-QString CapturePanel::irTypeLabel(const CaptureNode& node) {
-    const QString gear = irGearOf(node.irInfo().gearType);
-    if (gear == "space") return "Room";
-    if (gear == "pedal") return "Pedal IR";
-    if (gear == "outboard") return "Outboard IR";
-    return "Cab";
-}
-
-QColor CapturePanel::modelAccent(const CaptureNode& node) {
-    switch (kindOf(node)) {
-    case Kind::Amp: return QColor("#E0913A");
-    case Kind::AmpCab: return QColor("#E06A3A");
-    case Kind::Pedal: return QColor("#4CC38A");
-    case Kind::Outboard: return QColor("#9C7BE0");
-    default: return QColor("#6FA8DC");
-    }
-}
-
-QColor CapturePanel::irAccent(const CaptureNode& node) {
-    const QString gear = irGearOf(node.irInfo().gearType);
-    if (gear == "space") return QColor("#7E6BD9");
-    if (gear == "pedal") return QColor("#4CC38A");
-    if (gear == "outboard") return QColor("#9C7BE0");
-    return QColor("#8FA3B8");
-}
-
-QString CapturePanel::blockLabel(const CaptureNode& node) {
-    const Kind kind = kindOf(node);
-    if (kind == Kind::Empty) return "EMPTY";
-    if (kind == Kind::IrOnly) return irTypeLabel(node).toUpper();
-    bool irOn = !node.irPath().empty();
-    for (const auto& p : const_cast<CaptureNode&>(node).getControlPorts()) {
-        if (p.index == CaptureNode::CabEnabled && p.value < 0.5f) irOn = false;
-    }
-    QString label = modelTypeLabel(node);
-    if (irOn) label += " + " + irTypeLabel(node);
+    if (!model && !ir) return "EMPTY";
+    if (!model) return typeLabel(irType(node)).toUpper();
+    QString label = typeLabel(modelType(node));
+    if (ir && irOn(const_cast<CaptureNode&>(node))) label += " + " + typeLabel(irType(node));
     return label.toUpper();
 }
 
 QColor CapturePanel::blockAccent(const CaptureNode& node) {
-    return kindOf(node) == Kind::IrOnly ? irAccent(node) : modelAccent(node);
+    return node.modelPath().empty() && !node.irPath().empty() ? typeColor(irType(node)) : typeColor(modelType(node));
+}
+
+Category CapturePanel::changeCategory(const CaptureNode& node, bool ir) {
+    if (ir) return irType(node) == Type::Room ? Category::Room : Category::Cab;
+    switch (modelType(node)) {
+    case Type::Pedal:
+    case Type::Outboard: return Category::Pedal;
+    case Type::FullRig: return Category::AmpCab;
+    default: return node.irPath().empty() ? Category::AmpCab : Category::Amp;
+    }
 }
 
 CapturePanel::CapturePanel(std::shared_ptr<CaptureNode> node, QWidget* parent)
     : QWidget(parent), m_node(std::move(node)) {
-    auto* row = new QHBoxLayout(this);
+    setFixedHeight(kHeight);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    const bool model = !m_node->modelPath().empty();
+    const bool ir = !m_node->irPath().empty();
+    const Type type = model ? modelType(*m_node) : irType(*m_node);
+    const QColor accent = blockAccent(*m_node);
+
+    auto* frame = new QFrame(this);
+    frame->setObjectName("captureDevice");
+    frame->setStyleSheet(QString(
+        "QFrame#captureDevice { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #22242A, stop:1 #17181C);"
+        " border: 1px solid #2E3137; border-top: 3px solid %1; border-radius: 10px; }"
+        "QLabel { background: transparent; border: none; }").arg(hex(accent)));
+    auto* outer = new QHBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->addWidget(frame);
+    auto* row = new QHBoxLayout(frame);
+    row->setContentsMargins(12, 10, 14, 10);
+    row->setSpacing(14);
+
+    if (!model && !ir) {
+        // Normally the gallery fills the block; this is for an emptied one.
+        auto* choose = button(frame, "Choose a sound...", "Pick an amp, pedal, cab or room", QColor("#E0913A"));
+        connect(choose, &QPushButton::clicked, this, [this]() { emit galleryRequested(Category::AmpCab); });
+        row->addStretch();
+        row->addWidget(choose);
+        row->addStretch();
+        return;
+    }
+
+    row->addWidget(buildSound(!model), 1);
+    if (model && (ir || type == Type::Amp || type == Type::Other)) {
+        auto* divider = new QFrame(frame);
+        divider->setFixedWidth(1);
+        divider->setStyleSheet("background: #2E3137; border: none;");
+        row->addWidget(divider);
+        row->addWidget(ir ? buildCab() : buildNoCab());
+    }
+}
+
+QWidget* CapturePanel::buildSound(bool irIsMain) {
+    auto* section = new QWidget(this);
+    auto* row = new QHBoxLayout(section);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(14);
+    const Type type = irIsMain ? irType(*m_node) : modelType(*m_node);
+    const QColor accent = typeColor(type);
+    const std::string imageUrl = irIsMain ? m_node->irInfo().imageUrl : m_node->getModelMetadata().imageUrl;
+    row->addWidget(art(section, imageUrl, type, 148), 0, Qt::AlignVCenter);
+
+    auto* info = new QVBoxLayout();
+    info->setSpacing(3);
+    auto* chips = new QHBoxLayout();
+    chips->setSpacing(6);
+    chips->addWidget(chip(section, typeLabel(type), accent));
+    const bool fromTone3000 = irIsMain ? !m_node->irInfo().sourceUrl.empty() : !m_node->getModelMetadata().toneId.empty();
+    if (fromTone3000) chips->addWidget(chip(section, "TONE3000", QColor("#55B8E8")));
+    chips->addStretch();
+    if (irIsMain) {
+        // The whole block is the IR: its on/off sits with its name.
+        auto* power = new QPushButton(irOn(*m_node) ? "ON" : "OFF", section);
+        power->setCheckable(true);
+        power->setChecked(irOn(*m_node));
+        power->setCursor(Qt::PointingHandCursor);
+        power->setFixedSize(46, 22);
+        power->setStyleSheet(QString(
+            "QPushButton { background: #2A2C31; color: #8A8F98; border: 1px solid #3A3D44; border-radius: 11px; font-size: 10px; font-weight: bold; }"
+            "QPushButton:checked { background: %1; color: #101114; border-color: %1; }").arg(hex(accent)));
+        connect(power, &QPushButton::toggled, this, [this, power](bool on) {
+            m_node->setParameter(CaptureNode::CabEnabled, on ? 1.0f : 0.0f);
+            power->setText(on ? "ON" : "OFF");
+            emit edited();
+        });
+        chips->addWidget(power);
+    }
+    info->addLayout(chips);
+    info->addSpacing(2);
+    info->addWidget(text(section, irIsMain ? irName(*m_node) : modelName(*m_node), "color: #F2F3F5; font-size: 18px; font-weight: bold;", 360));
+
+    QStringList by;
+    const auto& meta = m_node->getModelMetadata();
+    if (!irIsMain) {
+        if (!meta.author.empty()) by << "by " + QString::fromStdString(meta.author);
+        const QString gear = gearText(QString::fromStdString(meta.gearMake), QString::fromStdString(meta.gearModel));
+        if (!gear.isEmpty()) by << gear;
+    }
+    if (!by.isEmpty()) info->addWidget(text(section, by.join(QString::fromUtf8("  ·  ")), "color: #9AA3AE; font-size: 12px;", 360));
+    if (!irIsMain && m_node->modelIsResampled()) {
+        info->addWidget(text(section, QString("%1 kHz capture, resampled to the session rate").arg(m_node->modelSampleRate() / 1000.0, 0, 'g', 3),
+                             "color: #C9A15A; font-size: 11px;", 360));
+    }
+    info->addStretch();
+    auto* buttons = new QHBoxLayout();
+    buttons->setSpacing(6);
+    auto* change = button(section, QString::fromUtf8("⇄  Change"), "Pick another one: click to hear, Enter to keep", accent);
+    connect(change, &QPushButton::clicked, this, [this, irIsMain]() { emit galleryRequested(changeCategory(*m_node, irIsMain)); });
+    buttons->addWidget(change);
+    if (!irIsMain && (!meta.toneId.empty() || !m_node->getModelVariants().empty())) {
+        auto* details = button(section, "Details", "Variants, description and the TONE3000 page");
+        connect(details, &QPushButton::clicked, this, [this]() { emit detailsRequested(); });
+        buttons->addWidget(details);
+    }
+    // Pedals and full rigs need no cab, but an IR after them is one click away.
+    if (!irIsMain && m_node->irPath().empty() && type != Type::Amp && type != Type::Other) {
+        auto* addIr = cabMenuButton(section, "+ IR");
+        addIr->setToolTip("Add a cab or room IR after it");
+        buttons->addWidget(addIr);
+    }
+    buttons->addStretch();
+    info->addLayout(buttons);
+    row->addLayout(info, 1);
+
+    auto* knobs = new QHBoxLayout();
+    knobs->setSpacing(10);
+    if (irIsMain) {
+        if (irType(*m_node) == Type::Room) knobs->addWidget(knob(section, "Mix", CaptureNode::IrMix, 0, 1, " %", 0, 100, accent));
+    } else {
+        knobs->addWidget(knob(section, "Input", CaptureNode::InputGainDb, -24, 24, " dB", 1, 1, accent));
+    }
+    knobs->addWidget(knob(section, "Output", CaptureNode::OutputGainDb, -40, 24, " dB", 1, 1, accent));
+    row->addLayout(knobs);
+    return section;
+}
+
+QWidget* CapturePanel::buildCab() {
+    const Type type = irType(*m_node);
+    const QColor accent = typeColor(type);
+    const bool on = irOn(*m_node);
+    auto* section = new QWidget(this);
+    section->setFixedWidth(type == Type::Room ? 380 : 320);
+    auto* row = new QHBoxLayout(section);
     row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(12);
+    QLabel* picture = art(section, m_node->irInfo().imageUrl, type, 96);
+    if (!on) picture->setEnabled(false);
+    row->addWidget(picture, 0, Qt::AlignVCenter);
 
-    switch (kindOf(*m_node)) {
-    case Kind::Empty:
-        row->addWidget(buildGhost("Amp, pedal or capture", "Pick a NAM capture from your library or TONE3000", false, true), 1);
-        row->addWidget(buildGhost("Cab, room or effect IR", "Pick an impulse response", true, true), 1);
-        break;
-    case Kind::IrOnly:
-        row->addWidget(buildIrCard(true), 1);
-        row->addWidget(buildGhost("+ Capture", "Put an amp or pedal capture in front of this IR", false, false));
-        break;
-    case Kind::Amp:
-        // An amp needs a cab: the cab card is always there, asking if empty.
-        row->addWidget(buildModelCard(), 3);
-        row->addWidget(m_node->irPath().empty()
-                           ? buildGhost("No cab yet", "An amp capture needs a cab IR after it. Choose one", true, true)
-                           : buildIrCard(false), 2);
-        break;
-    default:
-        row->addWidget(buildModelCard(), 3);
-        if (m_node->irPath().empty()) {
-            row->addWidget(buildGhost("+ IR", kindOf(*m_node) == Kind::AmpCab
-                                                  ? "The cab is already in this capture. Add an IR anyway"
-                                                  : "Add a cab, room or effect IR after it", true, false));
-        } else {
-            row->addWidget(buildIrCard(false), 2);
+    auto* info = new QVBoxLayout();
+    info->setSpacing(4);
+    auto* top = new QHBoxLayout();
+    top->addWidget(chip(section, typeLabel(type), accent));
+    top->addStretch();
+    auto* power = new QPushButton(on ? "ON" : "OFF", section);
+    power->setCheckable(true);
+    power->setChecked(on);
+    power->setCursor(Qt::PointingHandCursor);
+    power->setFixedSize(46, 22);
+    power->setToolTip("Cab on / off");
+    power->setStyleSheet(QString(
+        "QPushButton { background: #2A2C31; color: #8A8F98; border: 1px solid #3A3D44; border-radius: 11px; font-size: 10px; font-weight: bold; }"
+        "QPushButton:checked { background: %1; color: #101114; border-color: %1; }").arg(hex(accent)));
+    connect(power, &QPushButton::toggled, this, [this, power](bool checked) {
+        m_node->setParameter(CaptureNode::CabEnabled, checked ? 1.0f : 0.0f);
+        power->setText(checked ? "ON" : "OFF");
+        emit changed(); // restyles the panel and the block in the chain
+    });
+    top->addWidget(power);
+    info->addLayout(top);
+    info->addWidget(text(section, irName(*m_node), QString("color: %1; font-size: 14px; font-weight: bold;").arg(on ? "#F2F3F5" : "#7A7F88"), 190));
+    info->addStretch();
+    info->addWidget(cabMenuButton(section, type == Type::Room ? QString::fromUtf8("Change room  ▾") : QString::fromUtf8("Change cab  ▾")),
+                    0, Qt::AlignLeft);
+    row->addLayout(info, 1);
+    if (type == Type::Room) row->addWidget(knob(section, "Mix", CaptureNode::IrMix, 0, 1, " %", 0, 100, accent));
+    return section;
+}
+
+QWidget* CapturePanel::buildNoCab() {
+    // An amp without a cab sounds harsh: say so and offer the cab menu.
+    auto* section = new QWidget(this);
+    section->setFixedWidth(320);
+    auto* layout = new QVBoxLayout(section);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+    layout->addStretch();
+    auto* head = new QLabel("No cab", section);
+    head->setStyleSheet("color: #E0913A; font-size: 15px; font-weight: bold;");
+    auto* body = new QLabel("An amp capture needs a cab after it.", section);
+    body->setStyleSheet("color: #9AA3AE; font-size: 12px;");
+    layout->addWidget(head);
+    layout->addWidget(body);
+    layout->addWidget(cabMenuButton(section, QString::fromUtf8("Choose cab  ▾")), 0, Qt::AlignLeft);
+    layout->addStretch();
+    return section;
+}
+
+QPushButton* CapturePanel::cabMenuButton(QWidget* parent, const QString& label) {
+    auto* b = button(parent, label, "Your recent cabs, or browse all of them");
+    connect(b, &QPushButton::clicked, this, [this, b]() {
+        QMenu menu(this);
+        menu.setStyleSheet(
+            "QMenu { background: #1E1F23; color: #E0E0E0; border: 1px solid #34373E; padding: 4px; }"
+            "QMenu::item { padding: 6px 14px 6px 8px; border-radius: 4px; }"
+            "QMenu::item:selected { background: #00897B; color: white; }"
+            "QMenu::separator { height: 1px; background: #34373E; margin: 4px 6px; }");
+        const bool room = !m_node->irPath().empty() && irType(*m_node) == Type::Room;
+        const QList<Item> recent = itemsIn(room ? Category::Room : Category::Cab).mid(0, 8);
+        const qreal dpr = devicePixelRatioF();
+        for (const Item& item : recent) {
+            QPixmap icon = item.imageUrl.isEmpty() ? QPixmap()
+                         : Tone3000ImageLoader::instance()->thumbnail(item.imageUrl, QSize(32, 32) * dpr);
+            if (icon.isNull()) icon = artwork(item.type, QSize(32, 32), dpr);
+            else icon.setDevicePixelRatio(dpr);
+            QAction* action = menu.addAction(QIcon(icon), item.name);
+            action->setCheckable(true);
+            action->setChecked(item.path.toStdString() == m_node->irPath());
+            connect(action, &QAction::triggered, this, [this, item]() {
+                QString error;
+                if (apply(*m_node, item, &error)) markUsed(item);
+                emit changed();
+            });
         }
-        break;
-    }
+        if (!recent.isEmpty()) menu.addSeparator();
+        QAction* more = menu.addAction(room ? "All rooms..." : "All cabs...");
+        connect(more, &QAction::triggered, this, [this, room]() { emit galleryRequested(room ? Category::Room : Category::Cab); });
+        if (!m_node->irPath().empty()) {
+            QAction* none = menu.addAction(room ? "No room" : "No cab");
+            connect(none, &QAction::triggered, this, [this]() {
+                m_node->loadIr("");
+                m_node->setIrInfo({});
+                emit changed();
+            });
+        }
+        menu.exec(b->mapToGlobal(QPoint(0, b->height() + 2)));
+    });
+    return b;
 }
 
 QWidget* CapturePanel::knob(QWidget* parent, const QString& name, uint32_t param, double min, double max,
@@ -281,12 +349,13 @@ QWidget* CapturePanel::knob(QWidget* parent, const QString& name, uint32_t param
     auto* cell = new QWidget(parent);
     cell->setStyleSheet("background: transparent; border: none;");
     auto* layout = new QVBoxLayout(cell);
-    layout->setContentsMargins(2, 0, 2, 0);
-    layout->setSpacing(2);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(3);
     auto* title = new QLabel(name.toUpper(), cell);
     title->setAlignment(Qt::AlignCenter);
-    title->setStyleSheet("color: #9AA3AE; font-size: 9px; font-weight: bold; letter-spacing: 1px;");
+    title->setStyleSheet("color: #9AA3AE; font-size: 10px; font-weight: bold; letter-spacing: 1px;");
     auto* dial = new InspectorKnob(cell);
+    dial->setFixedSize(62, 62);
     dial->setRange(qRound(min * scale), qRound(max * scale));
     dial->setDefaultValue(qRound(def * scale));
     dial->setValue(qRound(value * scale));
@@ -295,11 +364,11 @@ QWidget* CapturePanel::knob(QWidget* parent, const QString& name, uint32_t param
     dial->setToolTip(name + "\nDrag to adjust. Double-click to reset.");
     auto* valueLabel = new InspectorValueLabel(cell);
     valueLabel->setAlignment(Qt::AlignCenter);
-    valueLabel->setStyleSheet(QString("color: %1; font-size: 11px; font-weight: bold;").arg(hex(accent.lighter(125))));
+    valueLabel->setStyleSheet(QString("color: %1; font-size: 12px; font-weight: bold;").arg(hex(accent.lighter(125))));
     auto show = [dial, valueLabel, scale, display, decimals, unit](int v) {
-        const QString text = QString::number(v / scale * display, 'f', decimals) + unit;
-        valueLabel->setText(text);
-        dial->setAccessibleValueText(text);
+        const QString shown = QString::number(v / scale * display, 'f', decimals) + unit;
+        valueLabel->setText(shown);
+        dial->setAccessibleValueText(shown);
     };
     show(dial->value());
     valueLabel->setEditor("Set " + name, min * display, max * display, decimals,
@@ -310,162 +379,10 @@ QWidget* CapturePanel::knob(QWidget* parent, const QString& name, uint32_t param
         show(v);
         emit edited();
     });
+    layout->addStretch();
     layout->addWidget(title);
     layout->addWidget(dial, 0, Qt::AlignHCenter);
     layout->addWidget(valueLabel);
+    layout->addStretch();
     return cell;
-}
-
-QWidget* CapturePanel::buildModelCard() {
-    const QColor accent = modelAccent(*m_node);
-    const auto& meta = m_node->getModelMetadata();
-    auto* frame = card(this, accent, false);
-    auto* row = new QHBoxLayout(frame);
-    row->setContentsMargins(12, 12, 12, 12);
-    row->setSpacing(14);
-    const Art art = kindOf(*m_node) == Kind::Pedal ? Art::Pedal : Art::Amp;
-    row->addWidget(artLabel(frame, meta.imageUrl, art, accent), 0, Qt::AlignTop);
-
-    auto* info = new QVBoxLayout();
-    info->setSpacing(4);
-    auto* chips = new QHBoxLayout();
-    chips->setSpacing(6);
-    chips->addWidget(chip(frame, modelTypeLabel(*m_node), accent));
-    if (!meta.toneId.empty()) chips->addWidget(chip(frame, "TONE3000", QColor("#55B8E8")));
-    chips->addStretch();
-    info->addLayout(chips);
-
-    const QString title = !m_node->getModelDisplayName().empty() ? QString::fromStdString(m_node->getModelDisplayName())
-                        : QFileInfo(QString::fromStdString(m_node->modelPath())).completeBaseName();
-    info->addWidget(elided(frame, title, "color: #F2F3F5; font-size: 16px; font-weight: bold;", 300));
-    QStringList details;
-    if (!meta.author.empty()) details << "by " + QString::fromStdString(meta.author);
-    const QString gear = QString::fromStdString(meta.gearMake + " " + meta.gearModel).trimmed();
-    if (!gear.isEmpty()) details << gear;
-    if (m_node->modelIsResampled()) {
-        details << QString("%1 kHz model, resampled").arg(m_node->modelSampleRate() / 1000.0, 0, 'g', 3);
-    }
-    if (!details.isEmpty()) {
-        info->addWidget(elided(frame, details.join(QString::fromUtf8("  ·  ")), "color: #9AA3AE; font-size: 11px;", 300));
-    }
-    info->addStretch();
-
-    auto* buttons = new QHBoxLayout();
-    buttons->setSpacing(6);
-    auto* change = flatButton(frame, "Change...", "Pick another capture (Captures or IRs)");
-    connect(change, &QPushButton::clicked, this, [this]() { emit browseRequested(false); });
-    buttons->addWidget(change);
-    if (!meta.toneId.empty() || !m_node->getModelVariants().empty()) {
-        auto* details = flatButton(frame, "Details", "Variants, description and the TONE3000 page");
-        connect(details, &QPushButton::clicked, this, [this]() { emit detailsRequested(); });
-        buttons->addWidget(details);
-    }
-    auto* remove = flatButton(frame, QString::fromUtf8("✕"), "Remove the capture from this block");
-    remove->setFixedWidth(30);
-    connect(remove, &QPushButton::clicked, this, [this]() { emit removeRequested(false); });
-    buttons->addWidget(remove);
-    buttons->addStretch();
-    info->addLayout(buttons);
-    row->addLayout(info, 1);
-
-    auto* knobs = new QHBoxLayout();
-    knobs->setSpacing(6);
-    knobs->addWidget(knob(frame, "Input", CaptureNode::InputGainDb, -24, 24, " dB", 1, 1, accent));
-    knobs->addWidget(knob(frame, "Output", CaptureNode::OutputGainDb, -40, 24, " dB", 1, 1, accent));
-    row->addLayout(knobs);
-    return frame;
-}
-
-QWidget* CapturePanel::buildIrCard(bool alone) {
-    const QColor accent = irAccent(*m_node);
-    const auto& ir = m_node->irInfo();
-    bool on = true;
-    for (const auto& p : m_node->getControlPorts()) {
-        if (p.index == CaptureNode::CabEnabled) on = p.value >= 0.5f;
-    }
-    auto* frame = card(this, accent, !on);
-    auto* row = new QHBoxLayout(frame);
-    row->setContentsMargins(12, 12, 12, 12);
-    row->setSpacing(12);
-    QLabel* art = artLabel(frame, ir.imageUrl, irTypeLabel(*m_node) == "Room" ? Art::Room : Art::Cab, accent);
-    if (!alone) art->setFixedSize(96, 96), art->setScaledContents(true);
-    row->addWidget(art, 0, Qt::AlignTop);
-
-    auto* info = new QVBoxLayout();
-    info->setSpacing(4);
-    auto* top = new QHBoxLayout();
-    top->setSpacing(6);
-    top->addWidget(chip(frame, irTypeLabel(*m_node), accent));
-    top->addStretch();
-    // On/off for the IR stage (the cab of an amp, or the whole IR block).
-    auto* power = new QPushButton(on ? "ON" : "OFF", frame);
-    power->setCheckable(true);
-    power->setChecked(on);
-    power->setCursor(Qt::PointingHandCursor);
-    power->setFixedSize(46, 22);
-    power->setToolTip(on ? "Turn the IR off" : "Turn the IR on");
-    power->setStyleSheet(QString(
-        "QPushButton { background: #2A2C31; color: #8A8F98; border: 1px solid #3A3D44; border-radius: 11px; font-size: 10px; font-weight: bold; }"
-        "QPushButton:checked { background: %1; color: #101114; border-color: %1; }").arg(hex(accent)));
-    connect(power, &QPushButton::toggled, this, [this](bool checked) {
-        m_node->setParameter(CaptureNode::CabEnabled, checked ? 1.0f : 0.0f);
-        emit edited();
-    });
-    top->addWidget(power);
-    info->addLayout(top);
-
-    const QString name = !ir.name.empty() ? QString::fromStdString(ir.name)
-                       : QFileInfo(QString::fromStdString(m_node->irPath())).completeBaseName();
-    info->addWidget(elided(frame, name, QString("color: %1; font-size: %2px; font-weight: bold;")
-                                            .arg(on ? "#F2F3F5" : "#8A8F98").arg(alone ? 16 : 13), alone ? 300 : 200));
-    info->addStretch();
-    auto* buttons = new QHBoxLayout();
-    buttons->setSpacing(6);
-    auto* change = flatButton(frame, "Change...", "Pick another IR");
-    connect(change, &QPushButton::clicked, this, [this]() { emit browseRequested(true); });
-    buttons->addWidget(change);
-    auto* remove = flatButton(frame, QString::fromUtf8("✕"), "Remove the IR from this block");
-    remove->setFixedWidth(30);
-    connect(remove, &QPushButton::clicked, this, [this]() { emit removeRequested(true); });
-    buttons->addWidget(remove);
-    buttons->addStretch();
-    info->addLayout(buttons);
-    row->addLayout(info, 1);
-
-    // A cab runs fully wet; rooms and effect IRs blend with the dry signal.
-    auto* knobs = new QHBoxLayout();
-    knobs->setSpacing(6);
-    if (irTypeLabel(*m_node) != "Cab") knobs->addWidget(knob(frame, "Mix", CaptureNode::IrMix, 0, 1, " %", 0, 100, accent));
-    if (alone) knobs->addWidget(knob(frame, "Output", CaptureNode::OutputGainDb, -40, 24, " dB", 1, 1, accent));
-    if (knobs->count() > 0) row->addLayout(knobs);
-    else delete knobs;
-    return frame;
-}
-
-QWidget* CapturePanel::buildGhost(const QString& title, const QString& text, bool ir, bool wide) {
-    auto* button = new QPushButton(this);
-    button->setCursor(Qt::PointingHandCursor);
-    button->setToolTip(text);
-    button->setMinimumHeight(156);
-    if (!wide) button->setFixedWidth(150);
-    const QColor accent = ir ? QColor("#8FA3B8") : QColor("#E0913A");
-    button->setStyleSheet(QString(
-        "QPushButton { background: transparent; border: 2px dashed #34373E; border-radius: 10px; }"
-        "QPushButton:hover { border-color: %1; background: %2; }").arg(hex(accent), rgba(accent, 0.06)));
-    auto* layout = new QVBoxLayout(button);
-    layout->setContentsMargins(14, 12, 14, 12);
-    layout->addStretch();
-    auto* head = new QLabel(title, button);
-    head->setAlignment(Qt::AlignCenter);
-    head->setStyleSheet(QString("color: %1; font-size: 14px; font-weight: bold; background: transparent; border: none;").arg(hex(accent)));
-    auto* body = new QLabel(text, button);
-    body->setAlignment(Qt::AlignCenter);
-    body->setWordWrap(true);
-    body->setStyleSheet("color: #8A8F98; font-size: 11px; background: transparent; border: none;");
-    for (QLabel* l : {head, body}) l->setAttribute(Qt::WA_TransparentForMouseEvents);
-    layout->addWidget(head);
-    layout->addWidget(body);
-    layout->addStretch();
-    connect(button, &QPushButton::clicked, this, [this, ir]() { emit browseRequested(ir); });
-    return button;
 }

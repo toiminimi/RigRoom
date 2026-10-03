@@ -1,7 +1,9 @@
 #include "CaptureNode.h"
 #include "NAM/dsp.h"
 #include "NAM/get_dsp.h"
-#include "dsp/ImpulseResponse.h"
+#include "dsp/Resample.h"
+#include "dsp/wav.h"
+#include "TwoStageFFTConvolver.h"
 // The resampler comes from iPlug2 and expects two of its constants.
 namespace iplug { constexpr double PI = 3.14159265358979323846; }
 #ifndef DEFAULT_BLOCK_SIZE
@@ -28,10 +30,11 @@ struct CaptureNode::Model {
     float normalize = 1.0f;
 };
 
-// A cab IR, loaded and resampled to the engine rate. Processes in double.
+// An IR, loaded and resampled to the engine rate, convolved by partitioned
+// FFT so long room / reverb IRs keep their whole tail.
 struct CaptureNode::Ir {
-    std::unique_ptr<dsp::ImpulseResponse> ir;
-    std::vector<double> in;
+    fftconvolver::TwoStageFFTConvolver convolver;
+    size_t length = 0;
 };
 
 // What the audio thread runs. Immutable once published, apart from the DSP
@@ -105,21 +108,44 @@ std::shared_ptr<CaptureNode::Model> loadModelFor(const std::string& path, double
 }
 
 std::shared_ptr<CaptureNode::Ir> loadIrFor(const std::string& path, double rate, int maxBlock, std::string* error) {
-    auto ir = std::make_shared<CaptureNode::Ir>();
+    // Loading and resampling as NAM's own IR stage does (AudioDSPTools), so a
+    // cab sounds the same as in the NAM plugin.
+    std::vector<float> raw;
+    double rawRate = 0.0;
+    dsp::wav::LoadReturnCode code = dsp::wav::LoadReturnCode::ERROR_OTHER;
     try {
-        ir->ir = std::make_unique<dsp::ImpulseResponse>(path.c_str(), rate);
+        code = dsp::wav::Load(path.c_str(), raw, rawRate);
     } catch (const std::exception& e) {
         if (error) *error = e.what();
         return nullptr;
     }
-    if (ir->ir->GetWavState() != dsp::wav::LoadReturnCode::SUCCESS) {
-        if (error) *error = "Could not read the IR (WAV files only)";
+    if (code != dsp::wav::LoadReturnCode::SUCCESS || raw.empty()) {
+        if (error) *error = code == dsp::wav::LoadReturnCode::ERROR_NOT_MONO ? "Only mono IRs can be used"
+                                                                             : "Could not read the IR (WAV files only)";
         return nullptr;
     }
-    ir->in.assign(maxBlock, 0.0);
-    // Size the IR's own buffers for this block size now, not on the audio thread.
-    double* ptr = ir->in.data();
-    ir->ir->Process(&ptr, 1, maxBlock);
+    std::vector<float> resampled;
+    if (rawRate == rate) {
+        resampled = std::move(raw);
+    } else {
+        std::vector<float> padded(raw.size() + 2, 0.0f);
+        std::copy(raw.begin(), raw.end(), padded.begin() + 1);
+        dsp::ResampleCubic<float>(padded, rawRate, rate, 0.0, resampled);
+    }
+    // Ten seconds is more than any room needs.
+    resampled.resize(std::min(resampled.size(), static_cast<size_t>(rate * 10.0)));
+    // NAM's trim: -18 dB, scaled with the rate so a resampled IR keeps its level.
+    const float gain = static_cast<float>(std::pow(10.0, -18.0 * 0.05) * 48000.0 / rate);
+    for (float& v : resampled) v *= gain;
+
+    auto ir = std::make_shared<CaptureNode::Ir>();
+    ir->length = resampled.size();
+    size_t head = 64;
+    while (head < static_cast<size_t>(maxBlock) && head < 1024) head *= 2;
+    if (!ir->convolver.init(head, std::max<size_t>(head * 16, 4096), resampled.data(), resampled.size())) {
+        if (error) *error = "Could not set up the IR";
+        return nullptr;
+    }
     return ir;
 }
 } // namespace
@@ -238,17 +264,13 @@ void CaptureNode::process(int numFrames) {
             for (int i = 0; i < numFrames; ++i) out[i] *= model.normalize;
         }
     }
-    if (cabOn && chain && chain->ir && chain->ir->ir) {
+    if (cabOn && chain && chain->ir) {
         Ir& ir = *chain->ir;
         const float mix = std::clamp(controlValue(IrMix), 0.0f, 1.0f);
-        for (int i = 0; i < numFrames; ++i) {
-            ir.in[i] = out[i];
-            m_dry[i] = out[i];
-        }
-        double* ptr = ir.in.data();
-        double** result = ir.ir->Process(&ptr, 1, numFrames);
-        for (int i = 0; i < numFrames; ++i) {
-            out[i] = static_cast<float>(result[0][i]) * mix + m_dry[i] * (1.0f - mix);
+        std::copy(out, out + numFrames, m_dry.begin());
+        ir.convolver.process(m_dry.data(), out, numFrames);
+        if (mix < 1.0f) {
+            for (int i = 0; i < numFrames; ++i) out[i] = out[i] * mix + m_dry[i] * (1.0f - mix);
         }
     }
     for (int i = 0; i < numFrames; ++i) out[i] *= outGain;

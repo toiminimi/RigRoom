@@ -33,12 +33,11 @@ static EffectIcon effectIconFor(const std::shared_ptr<AudioNode>& node) {
     if (node->getType() == NodeType::SystemInput) return EffectIcon::Input;
 #ifdef RIGROOM_CAPTURE_BLOCK
     if (auto* capture = dynamic_cast<const CaptureNode*>(node.get())) {
-        switch (CapturePanel::kindOf(*capture)) {
-        case CapturePanel::Kind::Pedal: return EffectIcon::Drive;
-        case CapturePanel::Kind::IrOnly:
-            return CapturePanel::irTypeLabel(*capture) == "Room" ? EffectIcon::Reverb : EffectIcon::Cabinet;
-        default: return EffectIcon::Amp;
+        if (capture->modelPath().empty() && !capture->irPath().empty()) {
+            return CaptureSounds::irType(*capture) == CaptureSounds::Type::Room ? EffectIcon::Reverb : EffectIcon::Cabinet;
         }
+        const auto type = CaptureSounds::modelType(*capture);
+        return type == CaptureSounds::Type::Pedal || type == CaptureSounds::Type::Outboard ? EffectIcon::Drive : EffectIcon::Amp;
     }
 #endif
     if (node->getType() == NodeType::SystemOutput) return EffectIcon::Output;

@@ -1,4 +1,5 @@
 #pragma once
+#include "CaptureSounds.h"
 #include <QMainWindow>
 #include <QComboBox>
 #include <QProgressBar>
@@ -161,8 +162,12 @@ private:
     // switch between the two. False if nothing was chosen.
     bool browseCaptureFor(const std::shared_ptr<AudioNode>& node, bool ir);
     void removeCaptureStage(const std::shared_ptr<AudioNode>& node, bool ir);
-    // "+ Sound": a capture block at the end of the chain, browser opened on it.
-    void addSoundBlock();
+    // "+ Add" and the canvas + slots: category first, then a gallery or a plugin.
+    // row < 0 appends to the main chain.
+    void showAddMenu(const QPoint& globalPos, int row = -1, int col = -1, int insert = 0);
+    void addSoundBlock(CaptureSounds::Category category, int row, int col, int insert);
+    // The sound gallery on a capture block; a new block that stays empty is removed.
+    void openSoundGallery(const std::shared_ptr<AudioNode>& node, CaptureSounds::Category category, bool isNew);
     // Adds after the last block of the main lane.
     bool appendPluginToChain(const QString& uri);
     void togglePluginLibrary();

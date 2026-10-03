@@ -1,41 +1,39 @@
 #pragma once
+#include "CaptureSounds.h"
 #include <QWidget>
 #include <memory>
 
 class CaptureNode;
 class QHBoxLayout;
+class QPushButton;
 
-// Inspector for the built-in capture block: an amp / pedal / capture card for
-// the NAM model and a cab / room / effect card for the IR, each shaped by what
-// is loaded. Choosing files and saving is left to MainWindow (signals).
+// Inspector for the built-in capture block, drawn as one device at a fixed
+// height: the sound (amp, pedal, full rig, or the IR of a cab / room block)
+// with its controls, and for amps a cab section with a quick cab menu.
 class CapturePanel : public QWidget {
     Q_OBJECT
 public:
     explicit CapturePanel(std::shared_ptr<CaptureNode> node, QWidget* parent = nullptr);
 
-    // What the block holds, from the capture's and the IR's gear types.
-    enum class Kind { Empty, Amp, AmpCab, Pedal, Outboard, Capture, IrOnly };
-    static Kind kindOf(const CaptureNode& node);
-    // "Amp", "Amp + Cab", "Pedal", "Cab", "Room"... for chips and the chain.
-    static QString modelTypeLabel(const CaptureNode& node);
-    static QString irTypeLabel(const CaptureNode& node);
-    static QColor modelAccent(const CaptureNode& node);
-    static QColor irAccent(const CaptureNode& node);
     // For the block in the chain: "AMP + CAB", "PEDAL", "ROOM"... and its colour.
     static QString blockLabel(const CaptureNode& node);
     static QColor blockAccent(const CaptureNode& node);
+    // Which gallery "Change" opens for what the block holds.
+    static CaptureSounds::Category changeCategory(const CaptureNode& node, bool ir);
 
 signals:
-    void browseRequested(bool ir);
-    void removeRequested(bool ir);
+    void galleryRequested(CaptureSounds::Category category);
     void detailsRequested();
+    // Something the panel changed itself (cab picked from the menu, cab removed).
+    void changed();
+    // A knob or switch moved.
     void edited();
 
 private:
-    QWidget* buildModelCard();
-    QWidget* buildIrCard(bool alone);
-    QWidget* buildGhost(const QString& title, const QString& text, bool ir, bool wide);
-    // min/max in parameter units; `display` scales the shown value (100 for %).
+    QWidget* buildSound(bool irIsMain);
+    QWidget* buildCab();
+    QWidget* buildNoCab();
+    QPushButton* cabMenuButton(QWidget* parent, const QString& text);
     QWidget* knob(QWidget* parent, const QString& name, uint32_t param, double min, double max,
                   const QString& unit, int decimals, double display, const QColor& accent);
 

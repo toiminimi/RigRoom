@@ -142,6 +142,34 @@ void testIrConvolvesAndCabToggles() {
     std::cout << "IR stage: ok\n";
 }
 
+// Room / reverb IRs are long: a 1.5 s echo in a 2 s IR must survive (NAM's own
+// IR stage stops at 8192 samples).
+void testLongIrKeepsItsTail() {
+    const auto dir = std::filesystem::temp_directory_path() / "rigroom-capture-long-ir";
+    std::filesystem::create_directories(dir);
+    const std::string irPath = (dir / "room.wav").string();
+    std::vector<float> ir(96000, 0.0f);
+    ir[0] = 1.0f;
+    ir[72000] = 0.5f;
+    writeMonoFloatWav(irPath, ir, 48000);
+
+    CaptureNode node;
+    node.prepareBlock(kRate, kBlock);
+    assert(node.loadIr(irPath));
+    std::vector<float> click(kBlock * 300, 0.0f);
+    click[0] = 1.0f;
+    double seconds = 0;
+    const auto out = run(node, click, &seconds);
+    const float gain = std::pow(10.0f, -18.0f / 20.0f);
+    assert(std::abs(out[0] - gain) < 1e-4f);
+    assert(std::abs(out[72000] - 0.5f * gain) < 1e-4f);
+    for (size_t i = 1; i < out.size(); ++i) {
+        if (i != 72000) assert(std::abs(out[i]) < 1e-4f);
+    }
+    std::cout << "2 s IR: echo at 1.5 s kept; " << 100.0 * seconds / (click.size() / kRate) << " % of realtime\n";
+    std::filesystem::remove_all(dir);
+}
+
 void testResamplesForeignRate() {
     CaptureNode node;
     node.prepareBlock(44100.0, kBlock);
@@ -222,6 +250,7 @@ int main() {
     testWrapperMatchesNamCore();
     testIrConvolvesAndCabToggles();
     testResamplesForeignRate();
+    testLongIrKeepsItsTail();
     testAgainstLv2Plugin();
     std::cout << "Capture tests passed" << std::endl;
     return 0;
