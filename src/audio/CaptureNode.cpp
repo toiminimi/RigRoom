@@ -2,7 +2,8 @@
 #include "NAM/dsp.h"
 #include "NAM/get_dsp.h"
 #include "dsp/Resample.h"
-#include "dsp/wav.h"
+#include <cstring>
+#include <fstream>
 #include "TwoStageFFTConvolver.h"
 // The resampler comes from iPlug2 and expects two of its constants.
 namespace iplug { constexpr double PI = 3.14159265358979323846; }
@@ -107,21 +108,97 @@ std::shared_ptr<CaptureNode::Model> loadModelFor(const std::string& path, double
     return model;
 }
 
+// Reads a WAV file of any channel count as mono (channels averaged): PCM
+// 8/16/24/32-bit, float 32/64, plain or WAVE_EXTENSIBLE, extra fmt bytes and
+// unknown chunks skipped. Integer scaling matches NAM's own reader, so cabs
+// load to the same values.
+bool readWavMono(const std::string& path, std::vector<float>& out, double& rate, std::string& error) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        error = "Could not open the file";
+        return false;
+    }
+    auto u32 = [&]() { uint32_t v = 0; f.read(reinterpret_cast<char*>(&v), 4); return v; };
+    auto u16 = [&]() { uint16_t v = 0; f.read(reinterpret_cast<char*>(&v), 2); return v; };
+    char id[4];
+    f.read(id, 4);
+    u32();
+    char wave[4];
+    f.read(wave, 4);
+    if (!f || std::memcmp(id, "RIFF", 4) != 0 || std::memcmp(wave, "WAVE", 4) != 0) {
+        error = "Not a WAV file";
+        return false;
+    }
+    uint16_t format = 0, channels = 0, bits = 0;
+    uint32_t sampleRate = 0;
+    bool haveFmt = false;
+    while (f.read(id, 4)) {
+        const uint32_t size = u32();
+        const std::streampos next = f.tellg() + std::streamoff(size + (size & 1));
+        if (std::memcmp(id, "fmt ", 4) == 0) {
+            format = u16();
+            channels = u16();
+            sampleRate = u32();
+            u32();
+            u16();
+            bits = u16();
+            if (format == 0xFFFE && size >= 40) { // WAVE_EXTENSIBLE: the real format leads the sub-format GUID
+                u16();
+                u16();
+                u32();
+                format = u16();
+            }
+            haveFmt = true;
+        } else if (std::memcmp(id, "data", 4) == 0) {
+            if (!haveFmt || channels == 0 || sampleRate == 0) {
+                error = "WAV file without a usable format";
+                return false;
+            }
+            const int bytes = bits / 8;
+            const bool isFloat = format == 3;
+            if (!(format == 1 || isFloat) || bytes == 0 || (isFloat && bytes != 4 && bytes != 8)) {
+                error = "Unsupported WAV sample format";
+                return false;
+            }
+            std::vector<char> data(size);
+            f.read(data.data(), size);
+            const size_t frames = static_cast<size_t>(f.gcount()) / (bytes * channels);
+            out.assign(frames, 0.0f);
+            const char* p = data.data();
+            for (size_t i = 0; i < frames; ++i) {
+                double sum = 0.0;
+                for (int c = 0; c < channels; ++c, p += bytes) {
+                    double v = 0.0;
+                    if (isFloat && bytes == 4) { float x; std::memcpy(&x, p, 4); v = x; }
+                    else if (isFloat) { double x; std::memcpy(&x, p, 8); v = x; }
+                    else if (bytes == 1) v = (static_cast<uint8_t>(*p) - 128) / 128.0;
+                    else if (bytes == 2) { int16_t x; std::memcpy(&x, p, 2); v = x / 32768.0; }
+                    else if (bytes == 3) {
+                        int32_t x = (static_cast<uint8_t>(p[0])) | (static_cast<uint8_t>(p[1]) << 8) | (static_cast<int8_t>(p[2]) * 65536);
+                        v = x / 8388608.0;
+                    } else { int32_t x; std::memcpy(&x, p, 4); v = x / 2147483648.0; }
+                    sum += v;
+                }
+                out[i] = static_cast<float>(sum / channels);
+            }
+            rate = sampleRate;
+            return !out.empty();
+        }
+        f.seekg(next);
+    }
+    error = "WAV file without audio data";
+    return false;
+}
+
 std::shared_ptr<CaptureNode::Ir> loadIrFor(const std::string& path, double rate, int maxBlock, std::string* error) {
-    // Loading and resampling as NAM's own IR stage does (AudioDSPTools), so a
-    // cab sounds the same as in the NAM plugin.
+    // Resampled as NAM's own IR stage does (AudioDSPTools), so a cab sounds the
+    // same as in the NAM plugin. Stereo IRs (most rooms and reverbs) are mixed
+    // to mono, as the block is mono.
     std::vector<float> raw;
     double rawRate = 0.0;
-    dsp::wav::LoadReturnCode code = dsp::wav::LoadReturnCode::ERROR_OTHER;
-    try {
-        code = dsp::wav::Load(path.c_str(), raw, rawRate);
-    } catch (const std::exception& e) {
-        if (error) *error = e.what();
-        return nullptr;
-    }
-    if (code != dsp::wav::LoadReturnCode::SUCCESS || raw.empty()) {
-        if (error) *error = code == dsp::wav::LoadReturnCode::ERROR_NOT_MONO ? "Only mono IRs can be used"
-                                                                             : "Could not read the IR (WAV files only)";
+    std::string message;
+    if (!readWavMono(path, raw, rawRate, message)) {
+        if (error) *error = message;
         return nullptr;
     }
     std::vector<float> resampled;

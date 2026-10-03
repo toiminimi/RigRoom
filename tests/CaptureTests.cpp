@@ -170,6 +170,47 @@ void testLongIrKeepsItsTail() {
     std::filesystem::remove_all(dir);
 }
 
+// Reverb IRs are usually stereo, 24-bit, WAVE_EXTENSIBLE with extra fmt bytes.
+void testStereoExtensibleIr() {
+    const auto dir = std::filesystem::temp_directory_path() / "rigroom-capture-stereo-ir";
+    std::filesystem::create_directories(dir);
+    const std::string irPath = (dir / "hall.wav").string();
+    {
+        std::ofstream f(irPath, std::ios::binary);
+        auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+        auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+        const uint32_t frames = 100, dataBytes = frames * 2 * 3;
+        f.write("RIFF", 4); u32(4 + 8 + 40 + 8 + 12 + 8 + dataBytes); f.write("WAVE", 4);
+        f.write("fmt ", 4); u32(40); u16(0xFFFE); u16(2); u32(48000); u32(48000 * 6); u16(6); u16(24);
+        u16(22); u16(24); u32(3); u16(1); // extensible: valid bits, channel mask, PCM sub-format
+        const char guidRest[14] = {0, 0, 0, 0, 0x10, 0, (char)0x80, 0, 0, (char)0xAA, 0, 0x38, (char)0x9B, 0x71};
+        f.write(guidRest, 14);
+        f.write("LIST", 4); u32(4); f.write("INFO", 4); // an unknown chunk to skip
+        f.write("data", 4); u32(dataBytes);
+        for (uint32_t i = 0; i < frames; ++i) {
+            const int32_t left = i == 0 ? 8388607 : 0, right = i == 0 ? 0 : 0; // impulse on the left only
+            for (int32_t v : {left, right}) {
+                const char b[3] = {char(v & 0xFF), char((v >> 8) & 0xFF), char((v >> 16) & 0xFF)};
+                f.write(b, 3);
+            }
+        }
+    }
+    CaptureNode node;
+    node.prepareBlock(kRate, kBlock);
+    std::string error;
+    const bool loaded = node.loadIr(irPath, &error);
+    if (!loaded) std::cerr << "stereo IR: " << error << "\n";
+    assert(loaded);
+    std::vector<float> click(kBlock * 4, 0.0f);
+    click[0] = 1.0f;
+    const auto out = run(node, click);
+    // Mixed to mono: half the left channel's impulse, NAM's -18 dB trim.
+    const float expected = 0.5f * std::pow(10.0f, -18.0f / 20.0f);
+    assert(std::abs(out[0] - expected) < 1e-4f);
+    std::cout << "stereo 24-bit extensible IR: loaded and mixed to mono\n";
+    std::filesystem::remove_all(dir);
+}
+
 void testResamplesForeignRate() {
     CaptureNode node;
     node.prepareBlock(44100.0, kBlock);
@@ -251,6 +292,7 @@ int main() {
     testIrConvolvesAndCabToggles();
     testResamplesForeignRate();
     testLongIrKeepsItsTail();
+    testStereoExtensibleIr();
     testAgainstLv2Plugin();
     std::cout << "Capture tests passed" << std::endl;
     return 0;
