@@ -76,9 +76,10 @@ git switch master && git merge --ff-only dev && git push && git switch dev
    git push origin v0.11.1
    ```
    Pushing the tag is what publishes: `.github/workflows/release.yml` builds the
-   AppImage and creates the GitHub Release with both assets attached. Release
-   notes are generated from the commits, so the changelog text is not copied
-   there automatically.
+   AppImage and creates the GitHub Release with both assets attached. The
+   release text is the version's `CHANGELOG.md` section (everything that was
+   collected under `## Unreleased`), followed by GitHub's compare link; write
+   the changelog entries for users, since they are published as is.
 
 A local `./packaging/build-appimage.sh` run is useful for testing the artifact
 before tagging, but its output is not what gets published.

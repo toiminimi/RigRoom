@@ -20,9 +20,18 @@ jobs:
         run: ./packaging/build-appimage.sh
       - name: Check AppImage
         run: for f in dist/RigRoom-*.AppImage; do ./packaging/check-appimage.sh "$f"; done
+      # The release text is the version's CHANGELOG.md section; the generated
+      # notes after it add the compare link.
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v h="## ${version} " 'index($0,h)==1{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md \
+            | sed '/./,$!d' > release-notes.md
+          test -s release-notes.md
       - name: Publish release assets
         uses: softprops/action-gh-release@v3
         with:
+          body_path: release-notes.md
           generate_release_notes: true
           files: |
             dist/RigRoom-*.AppImage
