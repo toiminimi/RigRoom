@@ -156,7 +156,8 @@ add_executable(RigRoom
 
 target_include_directories(RigRoom PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
 if(RIGROOM_CAPTURE_BLOCK)
-    target_sources(RigRoom PRIVATE src/audio/CaptureNode.cpp src/audio/CaptureNode.h)
+    target_sources(RigRoom PRIVATE src/audio/CaptureNode.cpp src/audio/CaptureNode.h
+        src/ui/CapturePanel.cpp src/ui/CapturePanel.h)
     # Its NAM template instantiations must stay hidden too (see rigroom_nam).
     # -fpermissive: GCC 11 (CI, AppImage) rejects a name reuse in the iPlug2
     # resampler header that newer GCC accepts.

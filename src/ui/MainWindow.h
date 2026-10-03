@@ -157,7 +157,12 @@ private:
     // canvas, and what happens after a capture is chosen. No-ops otherwise.
     void addCaptureFromFiles(const QStringList& paths, int row, int col, int insert);
     void afterCaptureModelLoaded(const std::shared_ptr<AudioNode>& node, bool askForCab);
-    void browseCaptureFor(const std::shared_ptr<AudioNode>& node, bool ir);
+    // Opens the capture (or IR) browser for a capture block; the browser can
+    // switch between the two. False if nothing was chosen.
+    bool browseCaptureFor(const std::shared_ptr<AudioNode>& node, bool ir);
+    void removeCaptureStage(const std::shared_ptr<AudioNode>& node, bool ir);
+    // "+ Sound": a capture block at the end of the chain, browser opened on it.
+    void addSoundBlock();
     // Adds after the last block of the main lane.
     bool appendPluginToChain(const QString& uri);
     void togglePluginLibrary();

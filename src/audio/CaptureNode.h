@@ -24,12 +24,22 @@ public:
     static constexpr const char* kUri = "builtin:capture";
     static constexpr const char* kModelProperty = "builtin:capture#model";
     static constexpr const char* kIrProperty = "builtin:capture#ir";
-    enum Param : uint32_t { InputGainDb = 0, OutputGainDb = 1, CabEnabled = 2 };
+    enum Param : uint32_t { InputGainDb = 0, OutputGainDb = 1, CabEnabled = 2, IrMix = 3 };
+
+    // What the IR slot holds, for display (the model's details live in
+    // AudioNode::ModelMetadata). Saved with presets through saveState().
+    struct IrInfo {
+        std::string name;
+        std::string imageUrl;
+        std::string gearType; // cab, pedal, outboard, space...
+        std::string sourceUrl;
+    };
 
     CaptureNode();
     ~CaptureNode() override;
 
-    std::string getName() const override { return "Capture"; }
+    // The capture's name, else the IR's, so the chain shows what is loaded.
+    std::string getName() const override;
     std::string getPluginURI() const override { return kUri; }
     // Saved as LV2 so older builds fall back to a passthrough that keeps the data.
     NodeType getType() const override { return NodeType::LV2Plugin; }
@@ -54,6 +64,11 @@ public:
     void loadModelFile(const std::string& path) override { loadModel(path); }
     const std::string& getModelFilePath() const override { return m_modelPath; }
 
+    const IrInfo& irInfo() const { return m_irInfo; }
+    void setIrInfo(const IrInfo& info) { m_irInfo = info; }
+    std::string saveState() override;
+    bool restoreState(const std::string& state) override;
+
     // Processing stages (defined in the .cpp).
     struct Model;
     struct Ir;
@@ -74,6 +89,8 @@ private:
     std::vector<float> m_inBuffer;
     std::vector<float> m_outBuffer;
     std::vector<float> m_scratch;
+    std::vector<float> m_dry;
+    IrInfo m_irInfo;
 
     std::mutex m_guiMutex; // GUI/worker side only; never taken by the audio thread
     std::shared_ptr<Model> m_model;

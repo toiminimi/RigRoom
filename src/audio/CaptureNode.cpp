@@ -8,6 +8,7 @@ namespace iplug { constexpr double PI = 3.14159265358979323846; }
 #define DEFAULT_BLOCK_SIZE 512
 #endif
 #include "dsp/ResamplingContainer/ResamplingContainer.h"
+#include "json.hpp"
 #include <cmath>
 #include <filesystem>
 
@@ -53,6 +54,8 @@ CaptureNode::CaptureNode() {
         {"Input", InputGainDb, 0.0f, -24.0f, 24.0f, 0.0f, false},
         {"Output", OutputGainDb, 0.0f, -40.0f, 24.0f, 0.0f, false},
         {"Cab", CabEnabled, 1.0f, 0.0f, 1.0f, 1.0f, false, true},
+        // Wet share of the IR stage; cabs run at 1, room / effect IRs lower.
+        {"IR Mix", IrMix, 1.0f, 0.0f, 1.0f, 1.0f, false},
     };
 }
 
@@ -128,6 +131,7 @@ void CaptureNode::prepare(double sampleRate, int maxBlockSize) {
     m_inBuffer.assign(m_maxBlockSize, 0.0f);
     m_outBuffer.assign(m_maxBlockSize, 0.0f);
     m_scratch.assign(m_maxBlockSize, 0.0f);
+    m_dry.assign(m_maxBlockSize, 0.0f);
     m_ports[0].buffer = m_inBuffer.data();
     m_ports[1].buffer = m_outBuffer.data();
 
@@ -236,10 +240,16 @@ void CaptureNode::process(int numFrames) {
     }
     if (cabOn && chain && chain->ir && chain->ir->ir) {
         Ir& ir = *chain->ir;
-        for (int i = 0; i < numFrames; ++i) ir.in[i] = out[i];
+        const float mix = std::clamp(controlValue(IrMix), 0.0f, 1.0f);
+        for (int i = 0; i < numFrames; ++i) {
+            ir.in[i] = out[i];
+            m_dry[i] = out[i];
+        }
         double* ptr = ir.in.data();
         double** result = ir.ir->Process(&ptr, 1, numFrames);
-        for (int i = 0; i < numFrames; ++i) out[i] = static_cast<float>(result[0][i]);
+        for (int i = 0; i < numFrames; ++i) {
+            out[i] = static_cast<float>(result[0][i]) * mix + m_dry[i] * (1.0f - mix);
+        }
     }
     for (int i = 0; i < numFrames; ++i) out[i] *= outGain;
 
@@ -264,6 +274,35 @@ bool CaptureNode::modelLoudness(double& db) const {
     if (!m_model || !m_model->hasLoudness) return false;
     db = m_model->loudness;
     return true;
+}
+
+std::string CaptureNode::getName() const {
+    if (!getModelDisplayName().empty() && !m_modelPath.empty()) return getModelDisplayName();
+    if (!m_irInfo.name.empty() && !m_irPath.empty()) return m_irInfo.name;
+    if (!m_irPath.empty()) return std::filesystem::path(m_irPath).stem().string();
+    return "Capture";
+}
+
+std::string CaptureNode::saveState() {
+    nlohmann::json state;
+    state["irName"] = m_irInfo.name;
+    state["irImageUrl"] = m_irInfo.imageUrl;
+    state["irGear"] = m_irInfo.gearType;
+    state["irSourceUrl"] = m_irInfo.sourceUrl;
+    return state.dump();
+}
+
+bool CaptureNode::restoreState(const std::string& state) {
+    try {
+        const auto json = nlohmann::json::parse(state);
+        m_irInfo.name = json.value("irName", "");
+        m_irInfo.imageUrl = json.value("irImageUrl", "");
+        m_irInfo.gearType = json.value("irGear", "");
+        m_irInfo.sourceUrl = json.value("irSourceUrl", "");
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 std::vector<AudioNode::FileProperty> CaptureNode::getFileProperties() const {

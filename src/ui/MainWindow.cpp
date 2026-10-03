@@ -11,6 +11,7 @@
 #include "../audio/BypassNode.h"
 #ifdef RIGROOM_CAPTURE_BLOCK
 #include "../audio/CaptureNode.h"
+#include "CapturePanel.h"
 #endif
 #include "CaptureLibrary.h"
 #include "NamMetadata.h"
@@ -669,6 +670,17 @@ void MainWindow::setupUI() {
         "QPushButton:hover { background-color: #23739A; }");
     connect(pluginsBtn, &QPushButton::clicked, this, &MainWindow::togglePluginLibrary);
     topBar->addWidget(pluginsBtn);
+#ifdef RIGROOM_CAPTURE_BLOCK
+    auto* soundBtn = new QPushButton("＋  Sound", this);
+    soundBtn->setToolTip("Add an amp, pedal or cab: pick a NAM capture or an IR from your library or TONE3000.\n"
+                         "It becomes one block at the end of the chain, no plugin needed.");
+    soundBtn->setCursor(Qt::PointingHandCursor);
+    soundBtn->setStyleSheet(
+        "QPushButton { background-color: #7A4A1E; color: white; font-weight: bold; border-radius: 4px; padding: 6px 14px; font-size: 12px; border: none; }"
+        "QPushButton:hover { background-color: #94591F; }");
+    connect(soundBtn, &QPushButton::clicked, this, &MainWindow::addSoundBlock);
+    topBar->addWidget(soundBtn);
+#endif
     auto* pluginsSc = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_B), this);
     connect(pluginsSc, &QShortcut::activated, this, &MainWindow::togglePluginLibrary);
     
@@ -1966,21 +1978,15 @@ void MainWindow::scanPlugins(bool fullRescan) {
     // RigRoom's own capture block, listed like a plugin. Adding one opens the
     // capture browser; the IR entry makes a cab-only block.
     PluginInfo captureInfo;
-    captureInfo.name = "Capture (NAM)";
+    captureInfo.name = "NAM Capture / IR";
     captureInfo.uri = CaptureNode::kUri;
     captureInfo.category = "Amplifiers";
     captureInfo.brand = "RigRoom";
     captureInfo.audioInputs = 1;
     captureInfo.audioOutputs = 1;
     captureInfo.controlPorts = 3;
-    captureInfo.description = "Neural Amp Modeler capture with an optional cab IR, built in: no plugin needed.";
+    captureInfo.description = "An amp, pedal or cab: a NAM capture and/or an IR in one block, built in, no plugin needed.";
     m_availablePlugins.push_back(captureInfo);
-    PluginInfo cabInfo = captureInfo;
-    cabInfo.name = "Cab (IR)";
-    cabInfo.uri = std::string(CaptureNode::kUri) + "#cab";
-    cabInfo.category = "Simulators";
-    cabInfo.description = "Cabinet impulse response, built in: no plugin needed.";
-    m_availablePlugins.push_back(cabInfo);
 #endif
 }
 
@@ -2338,7 +2344,17 @@ bool MainWindow::addPluginAt(const QString& uri, int row, int col, int insert) {
     // The built-in entries are empty blocks: go straight to choosing what goes in.
     if (uri.startsWith(CaptureNode::kUri)) {
         const bool cabOnly = uri.endsWith("#cab");
-        QTimer::singleShot(0, this, [this, newNode, cabOnly]() { browseCaptureFor(newNode, cabOnly); });
+        QTimer::singleShot(0, this, [this, newNode, cabOnly]() {
+            if (browseCaptureFor(newNode, cabOnly)) return;
+            // Nothing chosen: an empty block would only be in the way.
+            auto* capture = dynamic_cast<CaptureNode*>(newNode.get());
+            if (capture && capture->modelPath().empty() && capture->irPath().empty()) {
+                for (int r = 0; r < NodeCanvas::NUM_ROWS; ++r)
+                    for (int c = 0; c < NodeCanvas::NUM_COLS; ++c)
+                        if (m_canvas->getPluginAt(r, c) == newNode) m_canvas->removePluginAt(r, c);
+                showPluginControls(nullptr);
+            }
+        });
     }
 #endif
     return true;
@@ -6132,6 +6148,29 @@ void MainWindow::showPluginControls(std::shared_ptr<AudioNode> node) {
 
     m_noParamLabel->hide();
 
+#ifdef RIGROOM_CAPTURE_BLOCK
+    if (auto capture = std::dynamic_pointer_cast<CaptureNode>(node)) {
+        auto* panel = new CapturePanel(capture, m_paramContainer);
+        connect(panel, &CapturePanel::browseRequested, this, [this, node](bool ir) {
+            QTimer::singleShot(0, this, [this, node, ir]() { browseCaptureFor(node, ir); });
+        });
+        connect(panel, &CapturePanel::removeRequested, this, [this, node](bool ir) {
+            QTimer::singleShot(0, this, [this, node, ir]() { removeCaptureStage(node, ir); });
+        });
+        connect(panel, &CapturePanel::detailsRequested, this, [this, node]() {
+            ModelDetailsDialog dialog(node, &m_engine, this);
+            dialog.exec();
+            QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+        });
+        connect(panel, &CapturePanel::edited, this, [this]() {
+            setUnsavedChanges(true);
+            if (m_canvas) m_canvas->viewport()->update();
+        });
+        m_paramLayout->addWidget(panel);
+        return;
+    }
+#endif
+
     if (node->getType() == NodeType::SystemOutput) {
         auto* outputCard = new InspectorCard(m_paramContainer);
         auto* outputLayout = new QVBoxLayout(outputCard);
@@ -7640,39 +7679,91 @@ void MainWindow::downloadVariant(std::shared_ptr<AudioNode> node, int variantIdx
 
 // ─── Built-in capture block ──────────────────────────────────────────────────
 
-void MainWindow::browseCaptureFor(const std::shared_ptr<AudioNode>& node, bool ir) {
+bool MainWindow::browseCaptureFor(const std::shared_ptr<AudioNode>& node, bool ir) {
+#ifdef RIGROOM_CAPTURE_BLOCK
+    auto* capture = dynamic_cast<CaptureNode*>(node.get());
+    if (!capture) return false;
+    // The browser previews in this block; switching between captures and IRs
+    // reopens it in the other mode.
+    for (;;) {
+        float cabBefore = 1.0f;
+        for (const auto& p : capture->getControlPorts())
+            if (p.index == CaptureNode::CabEnabled) cabBefore = p.value;
+        if (ir) capture->setParameter(CaptureNode::CabEnabled, 1.0f); // hear the previews
+        Tone3000Dialog dialog(node.get(), &m_engine, this, ir ? Tone3000Dialog::Mode::Ir : Tone3000Dialog::Mode::Nam,
+                              ir ? CaptureNode::kIrProperty : "");
+        dialog.enableModeSwitch();
+        const int result = dialog.exec();
+        if (ir && result != QDialog::Accepted) capture->setParameter(CaptureNode::CabEnabled, cabBefore);
+        if (dialog.modeSwitchRequested()) {
+            ir = !ir;
+            continue;
+        }
+        if (result != QDialog::Accepted) return false;
+        const std::string filePath = dialog.getDownloadedModelPath();
+        if (filePath.empty()) return false;
+        if (ir) {
+            node->setFileProperty(CaptureNode::kIrProperty, filePath);
+            const AudioNode::ModelMetadata meta = dialog.getDownloadedMetadata();
+            CaptureNode::IrInfo info;
+            info.name = dialog.getDownloadedToneName().toStdString();
+            if (info.name.empty()) info.name = QFileInfo(QString::fromStdString(filePath)).completeBaseName().toStdString();
+            info.imageUrl = meta.imageUrl;
+            info.gearType = meta.gearType;
+            info.sourceUrl = dialog.getDownloadedToneUrl().toStdString();
+            capture->setIrInfo(info);
+            capture->setParameter(CaptureNode::CabEnabled, 1.0f);
+            // A cab is the sound itself; a room or effect IR starts as a blend.
+            capture->setParameter(CaptureNode::IrMix, CapturePanel::irTypeLabel(*capture) == "Cab" ? 1.0f : 0.3f);
+            if (m_statusLabel) m_statusLabel->setText(QString("IR: \"%1\"").arg(QString::fromStdString(info.name)));
+        } else {
+            node->setFileProperty(CaptureNode::kModelProperty, filePath);
+            AudioNode::ModelMetadata metadata = dialog.getDownloadedMetadata();
+            parseNamFileMetadata(QString::fromStdString(filePath), metadata);
+            node->setModelMetadata(metadata);
+            node->setModelVariants(dialog.getDownloadedVariants());
+            const QString toneName = dialog.getDownloadedToneName();
+            node->setModelDisplayName((toneName.isEmpty() ? QFileInfo(QString::fromStdString(filePath)).completeBaseName() : toneName).toStdString());
+            node->setModelSourceUrl(dialog.getDownloadedToneUrl().toStdString());
+            afterCaptureModelLoaded(node, true);
+        }
+        break;
+    }
+    setUnsavedChanges(true);
+    saveConfigSettings();
+    if (m_canvas) m_canvas->viewport()->update();
+    QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+    return true;
+#else
+    Q_UNUSED(node);
+    Q_UNUSED(ir);
+    return false;
+#endif
+}
+
+void MainWindow::removeCaptureStage(const std::shared_ptr<AudioNode>& node, bool ir) {
 #ifdef RIGROOM_CAPTURE_BLOCK
     auto* capture = dynamic_cast<CaptureNode*>(node.get());
     if (!capture) return;
     if (ir) {
-        Tone3000Dialog dialog(node.get(), &m_engine, this, Tone3000Dialog::Mode::Ir, CaptureNode::kIrProperty);
-        if (dialog.exec() != QDialog::Accepted) return;
-        const std::string filePath = dialog.getDownloadedModelPath();
-        if (filePath.empty()) return;
-        node->setFileProperty(CaptureNode::kIrProperty, filePath);
-        capture->setParameter(CaptureNode::CabEnabled, 1.0f);
-        if (m_statusLabel) m_statusLabel->setText(QString("Cab: \"%1\"").arg(dialog.getDownloadedToneName()));
+        capture->loadIr("");
+        capture->setIrInfo({});
     } else {
-        Tone3000Dialog dialog(node.get(), &m_engine, this);
-        if (dialog.exec() != QDialog::Accepted) return;
-        const std::string filePath = dialog.getDownloadedModelPath();
-        if (filePath.empty()) return;
-        node->setFileProperty(CaptureNode::kModelProperty, filePath);
-        AudioNode::ModelMetadata metadata = dialog.getDownloadedMetadata();
-        parseNamFileMetadata(QString::fromStdString(filePath), metadata);
-        node->setModelMetadata(metadata);
-        node->setModelVariants(dialog.getDownloadedVariants());
-        const QString toneName = dialog.getDownloadedToneName();
-        node->setModelDisplayName((toneName.isEmpty() ? QFileInfo(QString::fromStdString(filePath)).fileName() : toneName).toStdString());
-        node->setModelSourceUrl(dialog.getDownloadedToneUrl().toStdString());
-        afterCaptureModelLoaded(node, true);
+        capture->loadModel("");
+        node->clearModelPresentation();
     }
     setUnsavedChanges(true);
-    saveConfigSettings();
-    QMetaObject::invokeMethod(this, [this, node]() { showPluginControls(node); }, Qt::QueuedConnection);
+    if (m_canvas) m_canvas->viewport()->update();
+    showPluginControls(node);
 #else
     Q_UNUSED(node);
     Q_UNUSED(ir);
+#endif
+}
+
+void MainWindow::addSoundBlock() {
+#ifdef RIGROOM_CAPTURE_BLOCK
+    appendPluginToChain(QString::fromUtf8(CaptureNode::kUri));
 #endif
 }
 
@@ -7743,6 +7834,9 @@ void MainWindow::addCaptureFromFiles(const QStringList& paths, int row, int col,
     if (!irPath.isEmpty()) {
         if (node->loadIr(irPath.toStdString(), &error)) {
             node->setParameter(CaptureNode::CabEnabled, 1.0f);
+            CaptureNode::IrInfo info;
+            info.name = QFileInfo(irPath).completeBaseName().toStdString();
+            node->setIrInfo(info);
         } else {
             problems << QString("%1: %2").arg(QFileInfo(irPath).fileName(), QString::fromStdString(error));
         }

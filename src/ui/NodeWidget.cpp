@@ -1,4 +1,8 @@
 #include "NodeWidget.h"
+#ifdef RIGROOM_CAPTURE_BLOCK
+#include "../audio/CaptureNode.h"
+#include "CapturePanel.h"
+#endif
 #include "PortWidget.h"
 #include "../audio/AudioEngine.h"
 #include "NodeCanvas.h"
@@ -27,6 +31,16 @@ static QRectF bypassHitRect(qreal width) {
 
 static EffectIcon effectIconFor(const std::shared_ptr<AudioNode>& node) {
     if (node->getType() == NodeType::SystemInput) return EffectIcon::Input;
+#ifdef RIGROOM_CAPTURE_BLOCK
+    if (auto* capture = dynamic_cast<const CaptureNode*>(node.get())) {
+        switch (CapturePanel::kindOf(*capture)) {
+        case CapturePanel::Kind::Pedal: return EffectIcon::Drive;
+        case CapturePanel::Kind::IrOnly:
+            return CapturePanel::irTypeLabel(*capture) == "Room" ? EffectIcon::Reverb : EffectIcon::Cabinet;
+        default: return EffectIcon::Amp;
+        }
+    }
+#endif
     if (node->getType() == NodeType::SystemOutput) return EffectIcon::Output;
 
     const QString description = QString::fromStdString(node->getName() + " " + node->getPluginURI()).toLower();
@@ -270,6 +284,9 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     // 2. Narrow category rail: semantic colour without a saturated header.
     EffectIcon iconType = effectIconFor(m_audioNode);
     QColor headerColor = categoryColor(iconType);
+#ifdef RIGROOM_CAPTURE_BLOCK
+    if (auto* capture = dynamic_cast<const CaptureNode*>(m_audioNode.get())) headerColor = CapturePanel::blockAccent(*capture);
+#endif
     if (isMissing) headerColor = QColor(183, 28, 28); // Red
     else if (m_dragging) headerColor = QColor(0, 130, 160);
 
@@ -323,6 +340,10 @@ void NodeWidget::paint(QPainter* painter, const QStyleOptionGraphicsItem* option
     painter->restore();
 
     QString channelLabel = isMissing ? "MISSING" : (m_isStereo ? "STEREO" : "MONO");
+#ifdef RIGROOM_CAPTURE_BLOCK
+    // The capture block says what it holds instead of its channel count.
+    if (auto* capture = dynamic_cast<const CaptureNode*>(m_audioNode.get())) channelLabel = CapturePanel::blockLabel(*capture);
+#endif
     QFont badgeFont = painter->font();
     badgeFont.setBold(true);
     badgeFont.setPixelSize(6.5);

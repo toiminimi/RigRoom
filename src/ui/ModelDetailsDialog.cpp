@@ -271,7 +271,11 @@ void ModelDetailsDialog::onOpenTone3000Browser() {
         std::string filePath = dialog.getDownloadedModelPath();
         if (!filePath.empty() && m_node) {
             m_engine->suspendProcessing();
-            m_node->setFileProperty("http://github.com/mikeoliphant/neural-amp-modeler-lv2#model", filePath);
+            // The NAM plugin's model slot, or the built-in capture block's.
+            std::string slot = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model";
+            for (const auto& fp : m_node->getFileProperties())
+                if (fp.uri == "builtin:capture#model") slot = fp.uri;
+            m_node->setFileProperty(slot, filePath);
             m_engine->resumeProcessing();
 
             AudioNode::ModelMetadata meta = dialog.getDownloadedMetadata();

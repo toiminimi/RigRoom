@@ -52,6 +52,11 @@ public:
     void setInitialTone(const QString& sourceUrl, const QString& captureName);
     // Opens straight into one creator's tones.
     void showCreator(const QString& username);
+    // Shows a "switch to IRs / captures" button. Using it closes the dialog
+    // like Cancel, with modeSwitchRequested() set, so the caller can reopen it
+    // in the other mode for the same block.
+    void enableModeSwitch();
+    bool modeSwitchRequested() const { return m_modeSwitchRequested; }
     void reject() override;
     void done(int result) override;
 
@@ -59,6 +64,8 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    QPushButton* m_modeSwitch = nullptr;
+    bool m_modeSwitchRequested = false;
     // Library: what is on this computer. Online: TONE3000.
     enum class Tab { Library, Online };
     enum class View {
