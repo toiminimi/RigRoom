@@ -1,3 +1,6 @@
 [submodule "src/audio/pluginterfaces"]
 	path = src/audio/pluginterfaces
 	url = https://github.com/steinbergmedia/vst3_pluginterfaces.git
+[submodule "third_party/NeuralAmpModelerCore"]
+	path = third_party/NeuralAmpModelerCore
+	url = https://github.com/sdatkinson/NeuralAmpModelerCore.git

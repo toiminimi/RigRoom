@@ -3,6 +3,7 @@ project(RigRoom VERSION 0.13.0 LANGUAGES CXX)
 
 option(RIGROOM_DEV_BUILD "Append a development suffix to the application version" ON)
 option(RIGROOM_ENABLE_RT_METRICS "Collect realtime callback timing diagnostics" OFF)
+option(RIGROOM_CAPTURE_BLOCK "Built-in NAM capture + IR block (experimental)" ON)
 set(RIGROOM_VERSION_STRING "${PROJECT_VERSION}")
 set(RIGROOM_IS_DEV_BUILD false)
 if(RIGROOM_DEV_BUILD)
@@ -32,6 +33,37 @@ pkg_check_modules(LILV REQUIRED IMPORTED_TARGET lilv-0)
 pkg_check_modules(SUIL REQUIRED IMPORTED_TARGET suil-0)
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
 pkg_check_modules(SECRET REQUIRED IMPORTED_TARGET libsecret-1)
+
+# Built-in capture block: NeuralAmpModelerCore with its AudioDSPTools (IR, WAV,
+# resampling), Eigen and nlohmann/json, all from the git submodule.
+if(RIGROOM_CAPTURE_BLOCK)
+    set(NAM_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/NeuralAmpModelerCore)
+    set(NAM_DSP_TOOLS_DIR ${NAM_CORE_DIR}/Dependencies/AudioDSPTools)
+    if(NOT EXISTS ${NAM_CORE_DIR}/NAM/dsp.h)
+        message(FATAL_ERROR "third_party/NeuralAmpModelerCore is missing: run git submodule update --init --recursive, or configure with -DRIGROOM_CAPTURE_BLOCK=OFF")
+    endif()
+    file(GLOB NAM_CORE_SOURCES ${NAM_CORE_DIR}/NAM/*.cpp ${NAM_CORE_DIR}/NAM/wavenet/*.cpp)
+    # OBJECT, not STATIC: NAM registers its architectures from static
+    # initialisers, which a static archive would let the linker drop.
+    add_library(rigroom_nam OBJECT
+        ${NAM_CORE_SOURCES}
+        ${NAM_DSP_TOOLS_DIR}/dsp/dsp.cpp
+        ${NAM_DSP_TOOLS_DIR}/dsp/ImpulseResponse.cpp
+        ${NAM_DSP_TOOLS_DIR}/dsp/wav.cpp
+    )
+    target_include_directories(rigroom_nam SYSTEM PUBLIC
+        ${NAM_CORE_DIR}
+        ${NAM_DSP_TOOLS_DIR}
+        ${NAM_CORE_DIR}/Dependencies/eigen
+        ${NAM_CORE_DIR}/Dependencies/nlohmann
+    )
+    target_include_directories(rigroom_nam SYSTEM PRIVATE ${NAM_CORE_DIR}/NAM ${NAM_DSP_TOOLS_DIR}/dsp)
+    # Float all the way, like the NAM LV2 plugin.
+    target_compile_definitions(rigroom_nam PUBLIC NAM_SAMPLE_FLOAT)
+    # Hidden: RigRoom links with -rdynamic, and exported nam:: symbols would
+    # interpose on the NAM LV2 plugin's own (older) copy of the same code.
+    target_compile_options(rigroom_nam PRIVATE -O3 -w -fvisibility=hidden -fvisibility-inlines-hidden)
+endif()
 
 # Main executable target
 add_executable(RigRoom
@@ -123,6 +155,16 @@ add_executable(RigRoom
 )
 
 target_include_directories(RigRoom PRIVATE src src/audio ${CMAKE_CURRENT_BINARY_DIR})
+if(RIGROOM_CAPTURE_BLOCK)
+    target_sources(RigRoom PRIVATE src/audio/CaptureNode.cpp src/audio/CaptureNode.h)
+    # Its NAM template instantiations must stay hidden too (see rigroom_nam).
+    # -fpermissive: GCC 11 (CI, AppImage) rejects a name reuse in the iPlug2
+    # resampler header that newer GCC accepts.
+    set_source_files_properties(src/audio/CaptureNode.cpp PROPERTIES
+        COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden;-fpermissive")
+    target_compile_definitions(RigRoom PRIVATE RIGROOM_CAPTURE_BLOCK)
+    target_link_libraries(RigRoom PRIVATE rigroom_nam)
+endif()
 target_compile_options(RigRoom PRIVATE -rdynamic)
 if(RIGROOM_ENABLE_RT_METRICS)
     target_compile_definitions(RigRoom PRIVATE RIGROOM_ENABLE_RT_METRICS)
@@ -181,6 +223,24 @@ if(BUILD_TESTING)
     target_compile_options(RigRoomPresetTests PRIVATE -UNDEBUG)
     target_link_libraries(RigRoomPresetTests PRIVATE Qt6::Core)
     add_test(NAME RigRoomPresetTests COMMAND RigRoomPresetTests)
+
+    if(RIGROOM_CAPTURE_BLOCK)
+        add_executable(RigRoomCaptureTests
+            tests/CaptureTests.cpp
+            src/audio/CaptureNode.cpp
+            src/audio/CaptureNode.h
+            src/audio/AudioNode.h
+            src/audio/LV2Host.cpp
+            src/audio/LV2Host.h
+            src/audio/LilvUtil.h
+        )
+        target_include_directories(RigRoomCaptureTests PRIVATE src src/audio)
+        target_compile_options(RigRoomCaptureTests PRIVATE -UNDEBUG)
+        target_compile_definitions(RigRoomCaptureTests PRIVATE
+            NAM_EXAMPLE_MODELS="${NAM_CORE_DIR}/example_models")
+        target_link_libraries(RigRoomCaptureTests PRIVATE rigroom_nam PkgConfig::LILV)
+        add_test(NAME RigRoomCaptureTests COMMAND RigRoomCaptureTests)
+    endif()
 
     add_executable(RigRoomMidiTests
         tests/MidiTests.cpp
