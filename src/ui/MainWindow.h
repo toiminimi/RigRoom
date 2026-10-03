@@ -153,6 +153,11 @@ private:
                                                       const std::function<std::shared_ptr<AudioNode>()>& create);
     // Creates the plugin and places it (insert = open a column there).
     bool addPluginAt(const QString& uri, int row, int col, int insert);
+    // Built-in capture block (RIGROOM_CAPTURE_BLOCK): files dropped on the
+    // canvas, and what happens after a capture is chosen. No-ops otherwise.
+    void addCaptureFromFiles(const QStringList& paths, int row, int col, int insert);
+    void afterCaptureModelLoaded(const std::shared_ptr<AudioNode>& node, bool askForCab);
+    void browseCaptureFor(const std::shared_ptr<AudioNode>& node, bool ir);
     // Adds after the last block of the main lane.
     bool appendPluginToChain(const QString& uri);
     void togglePluginLibrary();

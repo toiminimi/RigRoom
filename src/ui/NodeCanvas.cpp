@@ -12,7 +12,9 @@
 #include <QEasingCurve>
 #include <QKeyEvent>
 #include <QDragEnterEvent>
+#include <QFileInfo>
 #include <QMimeData>
+#include <QUrl>
 #include <QGraphicsPathItem>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsSceneMouseEvent>
@@ -2473,6 +2475,26 @@ void NodeCanvas::setMidiMarkedNodes(std::unordered_set<std::string> ids) {
 
 namespace {
 constexpr const char* kPluginMime = "application/x-rigroom-plugin-uri";
+
+// Capture files (.nam models, .wav IRs) among the dropped URLs.
+QStringList captureFiles(const QMimeData* mime) {
+    QStringList paths;
+#ifdef RIGROOM_CAPTURE_BLOCK
+    if (!mime->hasUrls()) return paths;
+    for (const QUrl& url : mime->urls()) {
+        const QString path = url.toLocalFile();
+        const QString suffix = QFileInfo(path).suffix().toLower();
+        if (suffix == "nam" || suffix == "wav") paths << path;
+    }
+#else
+    Q_UNUSED(mime);
+#endif
+    return paths;
+}
+
+bool acceptsDrop(const QMimeData* mime) {
+    return mime->hasFormat(kPluginMime) || !captureFiles(mime).isEmpty();
+}
 }
 
 PlusButtonWidget* NodeCanvas::nearestDropTarget(const QPointF& scenePos) const {
@@ -2492,12 +2514,12 @@ PlusButtonWidget* NodeCanvas::nearestDropTarget(const QPointF& scenePos) const {
 }
 
 void NodeCanvas::dragEnterEvent(QDragEnterEvent* event) {
-    if (event->mimeData()->hasFormat(kPluginMime)) event->acceptProposedAction();
+    if (acceptsDrop(event->mimeData())) event->acceptProposedAction();
     else QGraphicsView::dragEnterEvent(event);
 }
 
 void NodeCanvas::dragMoveEvent(QDragMoveEvent* event) {
-    if (!event->mimeData()->hasFormat(kPluginMime)) {
+    if (!acceptsDrop(event->mimeData())) {
         QGraphicsView::dragMoveEvent(event);
         return;
     }
@@ -2516,8 +2538,21 @@ void NodeCanvas::dragLeaveEvent(QDragLeaveEvent* event) {
 }
 
 void NodeCanvas::dropEvent(QDropEvent* event) {
-    if (!event->mimeData()->hasFormat(kPluginMime)) {
+    if (!acceptsDrop(event->mimeData())) {
         QGraphicsView::dropEvent(event);
+        return;
+    }
+    const QStringList files = captureFiles(event->mimeData());
+    if (!files.isEmpty() && !event->mimeData()->hasFormat(kPluginMime)) {
+        PlusButtonWidget* target = nearestDropTarget(mapToScene(event->position().toPoint()));
+        clearDragGap();
+        if (!target) {
+            event->ignore();
+            return;
+        }
+        const int row = target->getRow(), col = target->getCol(), insert = target->insertMode();
+        event->acceptProposedAction();
+        QTimer::singleShot(0, this, [this, files, row, col, insert]() { emit captureFilesDropped(files, row, col, insert); });
         return;
     }
     const QString uri = QString::fromUtf8(event->mimeData()->data(kPluginMime));

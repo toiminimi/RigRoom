@@ -274,6 +274,7 @@ std::vector<AudioNode::FileProperty> CaptureNode::getFileProperties() const {
 }
 
 void CaptureNode::setFileProperty(const std::string& uri, const std::string& path) {
-    if (uri == kModelProperty) loadModel(path);
-    else if (uri == kIrProperty) loadIr(path);
+    // Presets restore the model both as model_file_path and as a file property.
+    if (uri == kModelProperty && path != m_modelPath) loadModel(path);
+    else if (uri == kIrProperty && path != m_irPath) loadIr(path);
 }

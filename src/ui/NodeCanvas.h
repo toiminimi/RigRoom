@@ -171,6 +171,8 @@ signals:
     void nodeBypassToggled(std::shared_ptr<AudioNode> node);
     // A plugin from the browser was dropped on a free slot or insert marker.
     void pluginDropped(const QString& uri, int row, int col, int insert);
+    // .nam / .wav files dropped from a file manager.
+    void captureFilesDropped(const QStringList& paths, int row, int col, int insert);
     // An insert or move could not fit (no column is empty in every lane).
     void boardFull();
     void editPluginUI(std::shared_ptr<AudioNode> node);
