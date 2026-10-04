@@ -4,6 +4,7 @@
 #include <QProgressBar>
 #include <QLabel>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QVBoxLayout>
 #include <QDial>
 #include <QToolButton>
@@ -224,6 +225,7 @@ private:
     void triggerSaveFeedback();
     int m_globalDefaultSlots = 6;
     QComboBox* m_bufferSizeCombo = nullptr;
+    QElapsedTimer m_bufferSizeRequested; // PipeWire applies a new size a moment later
     QComboBox* m_hwInputModeCombo = nullptr;
     QComboBox* m_hwInputCombo = nullptr;
     QComboBox* m_hwOutputModeCombo = nullptr;

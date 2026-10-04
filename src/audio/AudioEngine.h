@@ -53,7 +53,9 @@ public:
     void clearConnections();
     void clearGraph();
     
-    void setBufferSize(int size);
+    // False when JACK refuses the size (jack2 then keeps the old one). PipeWire
+    // accepts any size and applies it a moment later.
+    bool setBufferSize(int size);
     int getBufferSize() const { return m_bufferSize; }
     double getSampleRate() const { return m_sampleRate; }
     float getCPULoad() const;

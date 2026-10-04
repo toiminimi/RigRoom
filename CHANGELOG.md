@@ -8,6 +8,7 @@
 - The bank grid is larger and easier to read, and moving, duplicating, renaming and deleting there keep it open in place. Moves can be undone (Ctrl+Z); deleting still asks first.
 - Deleting the loaded preset clears the board and leaves the slot empty, instead of loading the next preset.
 - The bank number is now a button that opens the bank grid; right-click it to name the bank.
+- A 32-frame buffer can be picked in Settings. If the audio interface doesn't accept a buffer size, the setting shows the size actually in use.
 
 ## 0.13.0 - 2026-10-01
 

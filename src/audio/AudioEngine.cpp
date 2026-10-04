@@ -265,10 +265,8 @@ void AudioEngine::clearGraph() {
     );
 }
 
-void AudioEngine::setBufferSize(int size) {
-    if (m_jackClient) {
-        jack_set_buffer_size(m_jackClient, size);
-    }
+bool AudioEngine::setBufferSize(int size) {
+    return m_jackClient && jack_set_buffer_size(m_jackClient, size) == 0;
 }
 
 float AudioEngine::getCPULoad() const {

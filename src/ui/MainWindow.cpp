@@ -840,7 +840,7 @@ void MainWindow::setupUI() {
     connect(m_hwOutputCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onOutputHardwareChanged);
     
     m_bufferSizeCombo = new QComboBox(m_settingsDialog);
-    m_bufferSizeCombo->addItems({"64", "128", "256", "512", "1024"});
+    m_bufferSizeCombo->addItems({"32", "64", "128", "256", "512", "1024"});
     int currentSize = m_engine.getBufferSize();
     int sizeIdx = m_bufferSizeCombo->findText(QString::number(currentSize));
     if (sizeIdx != -1) m_bufferSizeCombo->setCurrentIndex(sizeIdx);
@@ -4319,7 +4319,14 @@ void MainWindow::triggerSaveFeedback() {
 
 void MainWindow::onBufferSizeChanged(int index) {
     int size = m_bufferSizeCombo->currentText().toInt();
-    m_engine.setBufferSize(size);
+    if (!m_engine.setBufferSize(size)) {
+        const int actual = m_engine.getBufferSize();
+        const QSignalBlocker blocker(m_bufferSizeCombo);
+        m_bufferSizeCombo->setCurrentIndex(m_bufferSizeCombo->findText(QString::number(actual)));
+        m_statusLabel->setText(QString("The audio interface does not accept %1 frames; staying at %2").arg(size).arg(actual));
+        return;
+    }
+    m_bufferSizeRequested.start();
     m_statusLabel->setText("Ready | JACK Latency: " + QString::number(size * 1000.0 / m_engine.getSampleRate(), 'f', 2) + " ms");
     saveConfigSettings();
 }
@@ -4568,6 +4575,23 @@ void MainWindow::updateCPUStatus() {
                 .arg(m_engine.getMaxProcessDurationUsec());
 #endif
             m_dspCpuButton->setToolTip(tooltip + "\nClick to reset peak");
+        }
+
+        // Show the size JACK actually runs at: PipeWire applies a change late,
+        // and qjackctl or another client can change it too.
+        if (m_bufferSizeCombo && (!m_bufferSizeRequested.isValid() || m_bufferSizeRequested.hasExpired(1000))) {
+            const int actual = m_engine.getBufferSize();
+            if (actual > 0 && m_bufferSizeCombo->currentText().toInt() != actual) {
+                const QSignalBlocker blocker(m_bufferSizeCombo);
+                const QString text = QString::number(actual);
+                int idx = m_bufferSizeCombo->findText(text);
+                if (idx == -1) {
+                    idx = 0;
+                    while (idx < m_bufferSizeCombo->count() && m_bufferSizeCombo->itemText(idx).toInt() < actual) ++idx;
+                    m_bufferSizeCombo->insertItem(idx, text);
+                }
+                m_bufferSizeCombo->setCurrentIndex(idx);
+            }
         }
     }
     
